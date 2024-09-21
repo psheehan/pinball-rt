@@ -16,12 +16,6 @@
 namespace py = pybind11;
 
 struct Image {
-    py::array_t<double> _x;
-    py::array_t<double> _y;
-    py::array_t<double> _intensity;
-    py::array_t<double> _lam;
-    py::array_t<double> _nu;
-
     Kokkos::View<double*> x{"x", 0};
     Kokkos::View<double*> y{"y", 0};
     Kokkos::View<double*> lam{"lam", 0};
@@ -39,12 +33,6 @@ struct Image {
 };
 
 struct UnstructuredImage {
-    py::array_t<double> _x;
-    py::array_t<double> _y;
-    py::array_t<double> _intensity;
-    py::array_t<double> _lam;
-    py::array_t<double> _nu;
-
     Kokkos::View<double*> x{"x", 0};
     Kokkos::View<double*> y{"y", 0};
     Kokkos::View<double*> lam{"lam", 0};
@@ -63,10 +51,6 @@ struct UnstructuredImage {
 };
 
 struct Spectrum {
-    py::array_t<double> _intensity;
-    py::array_t<double> _lam;
-    py::array_t<double> _nu;
-
     Kokkos::View<double*> lam{"lam", 0};
     Kokkos::View<double*> nu{"nu", 0};
     Kokkos::View<double*> intensity{"intensity", 0};

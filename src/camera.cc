@@ -16,11 +16,6 @@ Image::Image(int _nx, int _ny, double _pixel_size, py::array_t<double> __lam) {
     for (int i = 0; i < ny; i++)
         y(i) = (i - ny/2)*pixel_size;
 
-    // Now get the correct format.
-    
-    _x = array_from_view(x, 1, {(size_t) nx});
-    _y = array_from_view(y, 1, {(size_t) ny});
-    
     // Set up the wavelength array.
 
     auto _lam_buf = __lam.request();
@@ -28,22 +23,18 @@ Image::Image(int _nx, int _ny, double _pixel_size, py::array_t<double> __lam) {
 
     Kokkos::resize(lam, nnu);
     Kokkos::deep_copy(lam, view_from_array(__lam));
-    _lam = __lam;
 
     // Set up the frequency array.
 
     Kokkos::resize(nu, nnu);
     for (int i = 0; i < nnu; i++)
         nu(i) = c_l / (lam(i)*1.0e-4);
-    _nu = array_from_view(nu, 1, {(size_t) nnu});
 
     // Set up the volume of each cell.
 
     Kokkos::resize(intensity, nx*ny*nnu);
     for (int i = 0; i < nx*ny*nnu; i++)
         intensity(i) = 0.;
-
-    _intensity = array_from_view(intensity, 3, {(size_t) nx, (size_t) ny, (size_t) nnu});
 }
 
 Image::~Image() {
@@ -54,9 +45,8 @@ UnstructuredImage::UnstructuredImage(int _nx, int _ny, double _pixel_size,
     // Start by setting up the appropriate Python arrays.
 
     nx = _nx; ny = _ny;
-    _lam = __lam;
 
-    auto _lam_buf = _lam.request();
+    auto _lam_buf = __lam.request();
 
     if (_lam_buf.ndim != 1)
         throw std::runtime_error("Number of dimensions must be one");
@@ -66,8 +56,7 @@ UnstructuredImage::UnstructuredImage(int _nx, int _ny, double _pixel_size,
     // Now get the correct format.
 
     Kokkos::resize(lam, nnu);
-    lam = view_from_array(_lam);
-    _lam = __lam;
+    lam = view_from_array(__lam);
 
     // Set up the x and y values properly.
 
@@ -94,7 +83,6 @@ UnstructuredImage::UnstructuredImage(int _nx, int _ny, double _pixel_size,
     Kokkos::resize(nu, nnu);
     for (int i = 0; i < nnu; i++)
         nu(i) = c_l / (lam(i)*1.0e-4);
-    _nu = array_from_view(nu, 1, {(size_t) nnu});
 }
 
 UnstructuredImage::UnstructuredImage(int _nr, int _nphi, double rmin, 
@@ -102,9 +90,8 @@ UnstructuredImage::UnstructuredImage(int _nr, int _nphi, double rmin,
     // Start by setting up the appropriate Python arrays.
 
     nx = _nr; ny = _nphi;
-    _lam = __lam;
 
-    auto _lam_buf = _lam.request();
+    auto _lam_buf = __lam.request();
 
     if (_lam_buf.ndim != 1)
         throw std::runtime_error("Number of dimensions must be one");
@@ -114,8 +101,7 @@ UnstructuredImage::UnstructuredImage(int _nr, int _nphi, double rmin,
     // Now get the correct format.
 
     Kokkos::resize(lam, nnu);
-    Kokkos::deep_copy(lam, view_from_array(_lam));
-    _lam = __lam;
+    Kokkos::deep_copy(lam, view_from_array(__lam));
 
     // Set up the x and y values properly.
 
@@ -148,14 +134,12 @@ UnstructuredImage::UnstructuredImage(int _nr, int _nphi, double rmin,
     Kokkos::resize(nu, nnu);
     for (int i = 0; i < nnu; i++)
         nu(i) = c_l / (lam(i)*1.0e-4);
-    _nu = array_from_view(nu, 1, {(size_t) nnu});
 }
 
 Spectrum::Spectrum(py::array_t<double> __lam) {
     // Start by setting up the appropriate Python arrays.
 
-    _lam = __lam;
-    auto _lam_buf = _lam.request();
+    auto _lam_buf = __lam.request();
 
     if (_lam_buf.ndim != 1)
         throw std::runtime_error("Number of dimensions must be one");
@@ -165,22 +149,19 @@ Spectrum::Spectrum(py::array_t<double> __lam) {
     // Now get the correct format.
 
     Kokkos::resize(lam, nnu);
-    Kokkos::deep_copy(lam, view_from_array(_lam));
-    _lam = __lam;
+    Kokkos::deep_copy(lam, view_from_array(__lam));
 
     // Set up the frequency array.
 
     Kokkos::resize(nu, nnu);
     for (int i = 0; i < nnu; i++)
         nu(i) = c_l / (lam(i)*1.0e-4);
-    _nu = array_from_view(nu, 1, {(size_t) nnu});
 
     // Set up the volume of each cell.
 
     Kokkos::resize(intensity, nnu);
     for (int i = 0; i < nnu; i++)
         intensity(i) = 0;
-    _intensity = array_from_view(intensity, 1, {(size_t) nnu});
 }
 
 Camera::Camera(Grid *_G, Params *_Q) {
@@ -250,8 +231,6 @@ Image *Camera::make_image(int nx, int ny, double pixel_size,
 
     // And return.
 
-    image->_intensity = array_from_view(image->intensity, 3, {(size_t) image->nx, (size_t) image->ny, (size_t) image->nnu});
-
     return image;
 }
 
@@ -279,12 +258,6 @@ UnstructuredImage *Camera::make_unstructured_image(int nx, int ny,
     // Also raytrace the sources.
 
     //raytrace_sources(image);
-
-    // Now that thats done, create an intensity Python array to populate.
-    
-    image->_x = array_from_view(image->x, 1, {image->x.extent(0)});
-    image->_y = array_from_view(image->y, 1, {image->y.extent(0)});
-    image->_intensity = array_from_view(image->intensity, 2, {image->intensity.extent(0), image->intensity.extent(1)});
 
     // And return.
 
@@ -315,12 +288,6 @@ UnstructuredImage *Camera::make_circular_image(int nr, int nphi,
     // Also raytrace the sources.
 
     //raytrace_sources(image);
-
-    // Now that thats done, create an intensity Python array to populate.
-
-    image->_x = array_from_view(image->x, 1, {image->x.extent(0)});
-    image->_y = array_from_view(image->y, 1, {image->y.extent(0)});
-    image->_intensity = array_from_view(image->intensity, 2, {image->intensity.extent(0), image->intensity.extent(1)});
 
     // And return.
 
@@ -353,8 +320,6 @@ Spectrum *Camera::make_spectrum(py::array_t<double> lam, double incl,
             }
         }
     }
-
-    S->_intensity = array_from_view(S->intensity, 1, {(size_t) S->nnu});
 
     // Delete the parts of the image we no longer need.
     delete image;

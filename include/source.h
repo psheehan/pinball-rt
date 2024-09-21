@@ -20,10 +20,6 @@ struct Source {
     Kokkos::View<double*> Bnu{"Bnu", 0};
     int nnu;
 
-    py::array_t<double> _lam;
-    py::array_t<double> _nu;
-    py::array_t<double> _flux;
-
     bool spectrum_set;
 
     virtual ~Source();

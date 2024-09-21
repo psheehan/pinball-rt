@@ -27,14 +27,9 @@ Grid::Grid(py::array_t<double> __w1, py::array_t<double> __w2,
     Kokkos::resize(w3, nw3);
     for (size_t i = 0; i < nw3; i++) w3(i) = _w3_buf[i];
 
-    _w1 = array_from_view(w1, 1, {(size_t) nw1});
-    _w2 = array_from_view(w2, 1, {(size_t) nw2});
-    _w3 = array_from_view(w3, 1, {(size_t) nw3});
-
     // Set up the volume of each cell.
 
     Kokkos::resize(volume, n1, n2, n3);
-    _volume = array_from_view<double,double***>(volume, 3, {(size_t) n1, (size_t) n2, (size_t) n3});
 
     // Make sure the number of species and sources are set correctly.
 
@@ -115,14 +110,12 @@ void Grid::add_density(py::array_t<double> ___dens, Dust *D) {
         }
     }
 
-    std::vector<size_t> extents = {(size_t) nspecies+1, (size_t) n1, (size_t) n2, (size_t) n3};
-    _dens = array_from_view<double,double****>(dens, 4, extents);
-    _temp = array_from_view<double,double****>(temp, 4, extents);
+    //std::vector<size_t> extents = {(size_t) nspecies+1, (size_t) n1, (size_t) n2, (size_t) n3};
+    //_temp = array_from_view<double,double****>(temp, 4, extents);
 
     // Add the dust to the list of dust classes.
 
     dust.push_back(D);
-    _dust.append(D);
     nspecies++;
 }
 
@@ -152,17 +145,9 @@ void Grid::add_number_density(py::array_t<double> ___number_dens,
         }
     }
 
-    std::vector<size_t> extents = {(size_t) ngases+1, (size_t) n1, (size_t) n2, (size_t) n3};
-    _number_dens = array_from_view<double,double****>(number_dens, 4, extents);
-    _gas_temp = array_from_view<double,double****>(gas_temp, 4, extents);
-    _microturbulence = array_from_view<double,double****>(microturbulence, 4, extents);
-    extents.insert(extents.begin()+1, 3);
-    _velocity = array_from_view<double,double*****>(velocity, 5, extents);
-
     // Add the dust to the list of dust classes.
 
     gas.push_back(G);
-    _gas.append(G);
     ngases++;
 }
 
@@ -174,7 +159,6 @@ void Grid::add_star(double x, double y, double z, double _mass, double _radius,
     //TODO: calculate the lookup tables somehow!
     
     sources.push_back(S);
-    _sources.append(S);
     nsources++;
 }
 

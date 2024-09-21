@@ -43,13 +43,6 @@ struct Grid {
 
     bool mirror_symmetry;
 
-    py::array_t<double> _w1;
-    py::array_t<double> _w2;
-    py::array_t<double> _w3;
-    py::array_t<double> _volume;
-
-    py::array_t<double> _dens;
-    py::array_t<double> _temp;
     py::list _scatt;
 
     Kokkos::View<double****> dens{"density", 0, 0, 0, 0};
@@ -69,18 +62,11 @@ struct Grid {
     Kokkos::View<double****[3]> velocity{"velocity", 0, 0, 0, 0};
     Kokkos::View<double****> microturbulence{"microturbulence", 0, 0, 0, 0};
 
-    py::array_t<double> _number_dens;
-    py::array_t<double> _gas_temp;
-    py::array_t<double> _microturbulence;
-    py::array_t<double> _velocity;
-
     int nspecies;
     std::vector<Dust*> dust;
-    py::list _dust;
 
     int ngases;
     std::vector<Gas *> gas;
-    py::list _gas;
 
     Kokkos::View<int*> include_lines{"include_lines", 0};
     Kokkos::View<double****> level_populations{"level_populations", 0, 0, 0, 0};
@@ -90,7 +76,6 @@ struct Grid {
 
     int nsources;
     std::vector<Source*> sources;
-    py::list _sources;
     double total_lum;
 
     Params *Q;

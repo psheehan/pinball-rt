@@ -26,13 +26,6 @@ struct Dust {
 
     Kokkos::Random_XorShift64_Pool<> *random_pool;
 
-    py::array_t<double> _nu;
-    py::array_t<double> _lam;
-    py::array_t<double> _kabs;
-    py::array_t<double> _ksca;
-    py::array_t<double> _kext;
-    py::array_t<double> _albedo;
-
     int ntemp;
     Kokkos::View<double*> temp{"temp", 0};
     Kokkos::View<double*> planck_opacity{"planck_opacity", 0};

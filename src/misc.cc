@@ -70,6 +70,31 @@ py::array_t<Ta> array_from_view(Kokkos::View<Tv> v, int ndim, std::vector<size_t
     return arr;
 };
 
+template<typename Ta, typename Tv>
+py::array_t<Ta> array_from_view(Kokkos::View<Tv> v) {
+    size_t ndim = v.rank();
+
+    std::vector<size_t> extents;
+    std::vector<size_t> strides;
+    for (int i=0; i < ndim; i++) {
+        extents.push_back(v.extent(i));
+        strides.push_back(sizeof(Ta));
+        for (int j = i+1; j<ndim; j++)
+            strides[i] *= extents[j];
+    }
+    py::array_t<Ta> arr = py::array_t<Ta>(py::buffer_info(
+            v.data(),                               /* Pointer to buffer */
+            sizeof(Ta),                          /* Size of one scalar */
+            py::format_descriptor<Ta>::format(), /* Python struct-style format descriptor */
+            ndim,                                      /* Number of dimensions */
+            extents,                                /* Buffer dimensions */
+            strides
+        )
+    );
+
+    return arr;
+};
+
 py::array_t<double> array_from_view(Kokkos::View<double*> v, int ndim, std::vector<size_t> extents) {
     std::vector<size_t> strides;
     for (int i=0; i < ndim; i++) {

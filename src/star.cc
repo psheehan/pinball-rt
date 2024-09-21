@@ -35,8 +35,6 @@ void Star::set_blackbody_spectrum(py::array_t<double> __lam) {
     Kokkos::resize(lam, nnu);
     Kokkos::deep_copy(lam, view_from_array(__lam));
 
-    _lam = array_from_view(lam, 1, {(size_t) nnu});
-
     // Set up the frequency array.
 
     Kokkos::resize(nu, nnu);
@@ -44,16 +42,12 @@ void Star::set_blackbody_spectrum(py::array_t<double> __lam) {
     for (int i = 0; i < nnu; i++)
         nu(i) = c_l / lam(i);
 
-    _nu = array_from_view(nu, 1, {(size_t) nnu});
-
     // And set up the spectrum.
 
     Kokkos::resize(Bnu, nnu);
 
     for (int i = 0; i < nnu; i++)
         Bnu(i) = planck_function(nu(i), temperature);
-
-    _flux = array_from_view(Bnu, 1, {(size_t) nnu});
 
     luminosity = 4*pi*radius*radius*sigma*temperature*temperature*temperature*
             temperature;

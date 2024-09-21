@@ -17,19 +17,11 @@ Dust::Dust(py::array_t<double> __lam, py::array_t<double> __kabs,
     Kokkos::resize(ksca, nlam);
     Kokkos::deep_copy(ksca, view_from_array(__ksca));
 
-    _lam = array_from_view(lam, 1, {(size_t) nlam});
-    _kabs = array_from_view(kabs, 1, {(size_t) nlam});
-    _ksca = array_from_view(ksca, 1, {(size_t) nlam});
-
     // Set up the volume of each cell.
 
     Kokkos::resize(nu, nlam);
     Kokkos::resize(kext, nlam);
     Kokkos::resize(albedo, nlam);
-
-    _nu = array_from_view(nu, 1, {(size_t) nlam});
-    _kext = array_from_view(kext, 1, {(size_t) nlam});
-    _albedo = array_from_view(albedo, 1, {(size_t) nlam});
 
     // Finally, calculate their values.
 

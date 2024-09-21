@@ -60,11 +60,6 @@ Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies,
     Kokkos::resize(J, nlevels);
     Kokkos::deep_copy(J, view_from_array(__J));
 
-    _levels = array_from_view(levels, 1, {(size_t) nlevels});
-    _energies = array_from_view(energies, 1, {(size_t) nlevels});
-    _weights = array_from_view(weights, 1, {(size_t) nlevels});
-    _J = array_from_view(J, 1, {(size_t) nlevels});
-
     Kokkos::resize(transitions, ntransitions);
     Kokkos::deep_copy(transitions, view_from_array(__transitions));
     Kokkos::resize(up, ntransitions);
@@ -77,13 +72,6 @@ Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies,
     Kokkos::deep_copy(nu, view_from_array(__nu));
     Kokkos::resize(Eu, ntransitions);
     Kokkos::deep_copy(Eu, view_from_array(__Eu));
-
-    _transitions = array_from_view(transitions, 1, {(size_t) ntransitions});
-    _up = array_from_view(up, 1, {(size_t) ntransitions});
-    _low = array_from_view(low, 1, {(size_t) ntransitions});
-    _A = array_from_view(A, 1, {(size_t) ntransitions});
-    _nu = array_from_view(nu, 1, {(size_t) ntransitions});
-    _Eu = array_from_view(Eu, 1, {(size_t) ntransitions});
 
     // Calculate the partition function.
 

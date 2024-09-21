@@ -120,8 +120,6 @@ void Model::thermal_mc(int nphot, bool bw, bool use_mrw, double mrw_gamma,
         }
     }
 
-    G->_temp = array_from_view<double,double****>(G->temp, 4, {(size_t) G->nspecies, (size_t) G->n1, (size_t) G->n2, (size_t) G->n3});
-
     // Clean up the energy arrays that were calculated.
     //G->deallocate_energy_arrays();
 }
@@ -397,12 +395,12 @@ PYBIND11_MODULE(cpu, m) {
     py::class_<Dust>(m, "Dust")
         .def(py::init<py::array_t<double>, py::array_t<double>, 
                 py::array_t<double>>())
-        .def_readonly("lam", &Dust::_lam)
-        .def_readonly("nu", &Dust::_nu)
-        .def_readonly("kabs", &Dust::_kabs)
-        .def_readonly("ksca", &Dust::_ksca)
-        .def_readonly("kext", &Dust::_kext)
-        .def_readonly("albedo", &Dust::_albedo);
+        .def_property("lam", [](const Dust &D) {return array_from_view<double,double*>(D.lam);}, nullptr)
+        .def_property("nu", [](const Dust &D) {return array_from_view<double,double*>(D.nu);}, nullptr)
+        .def_property("kabs", [](const Dust &D) {return array_from_view<double,double*>(D.kabs);}, nullptr)
+        .def_property("ksca", [](const Dust &D) {return array_from_view<double,double*>(D.ksca);}, nullptr)
+        .def_property("kext", [](const Dust &D) {return array_from_view<double,double*>(D.kext);}, nullptr)
+        .def_property("albedo", [](const Dust &D) {return array_from_view<double,double*>(D.albedo);}, nullptr);
 
     py::class_<IsotropicDust, Dust>(m, "IsotropicDust")
         .def(py::init<py::array_t<double>, py::array_t<double>, 
@@ -413,21 +411,21 @@ PYBIND11_MODULE(cpu, m) {
                 py::array_t<double>, py::array_t<int>, py::array_t<int>, 
                 py::array_t<int>, py::array_t<int>, py::array_t<double>,
                 py::array_t<double>, py::array_t<double>>())
-        .def_readonly("levels", &Gas::_levels)
-        .def_readonly("energies", &Gas::_energies)
-        .def_readonly("weights", &Gas::_weights)
-        .def_readonly("J", &Gas::_J)
-        .def_readonly("transitions", &Gas::_transitions)
-        .def_readonly("up", &Gas::_up)
-        .def_readonly("low", &Gas::_low)
-        .def_readonly("A", &Gas::_A)
-        .def_readonly("nu", &Gas::_nu)
-        .def_readonly("Eu", &Gas::_Eu);
+        .def_property("levels", [](const Gas &G) {return array_from_view<int,int*>(G.levels);}, nullptr)
+        .def_property("energies", [](const Gas &G){return array_from_view<double,double*>(G.energies);}, nullptr)
+        .def_property("weights", [](const Gas &G){return array_from_view<double,double*>(G.weights);}, nullptr)
+        .def_property("J", [](const Gas &G){return array_from_view<int,int*>(G.J);}, nullptr)
+        .def_property("transitions", [](const Gas &G){return array_from_view<int,int*>(G.transitions);}, nullptr)
+        .def_property("up", [](const Gas &G){return array_from_view<int,int*>(G.up);}, nullptr)
+        .def_property("low", [](const Gas &G){return array_from_view<int,int*>(G.low);}, nullptr)
+        .def_property("A", [](const Gas &G){return array_from_view<double,double*>(G.A);}, nullptr)
+        .def_property("nu", [](const Gas &G){return array_from_view<double,double*>(G.nu);}, nullptr)
+        .def_property("Eu", [](const Gas &G){return array_from_view<double,double*>(G.Eu);}, nullptr);
 
     py::class_<Source>(m, "Source")
-        .def_readonly("lam", &Source::_lam)
-        .def_readonly("nu", &Source::_nu)
-        .def_readonly("flux", &Source::_flux);
+        .def_property("lam", [](const Source &S) {return array_from_view<double,double*>(S.lam);}, nullptr)
+        .def_property("nu", [](const Source &S) {return array_from_view<double,double*>(S.nu);}, nullptr)
+        .def_property("flux", [](const Source &S) {return array_from_view<double,double*>(S.Bnu);}, nullptr);
 
     py::class_<Star, Source>(m, "Star")
         .def(py::init<double, double, double, double, double, double>())
@@ -435,13 +433,21 @@ PYBIND11_MODULE(cpu, m) {
                 "Set the spectrum of the star to be a blackbody.");
 
     py::class_<Grid>(m, "Grid")
-        .def_readonly("volume", &Grid::_volume)
-        .def_readonly("density", &Grid::_dens)
-        .def_readonly("temperature", &Grid::_temp)
-        .def_readonly("gas_temperature", &Grid::_gas_temp)
-        .def_readonly("dust", &Grid::_dust)
+        .def_property("density", [](const Grid &G) {
+            return array_from_view<double,double****>(G.dens);}, nullptr)
+        .def_property("temperature", [](const Grid &G) {
+            return array_from_view<double,double****>(G.temp);}, nullptr)
+        .def_property("gas_temperature", [](const Grid &G) {
+            return array_from_view<double,double****>(G.gas_temp);}, nullptr)
+        .def_property("number_density", [](const Grid &G) {
+            return array_from_view<double,double****>(G.number_dens);}, nullptr)
+        .def_property("microturbulence", [](const Grid &G) {
+            return array_from_view<double,double****>(G.microturbulence);}, nullptr)
+        .def_property("velocity", [](const Grid &G) {
+            return array_from_view<double,double*****>(G.velocity);}, nullptr)
+        .def_readonly("dust", &Grid::dust)
         .def_readonly("scatt", &Grid::_scatt)
-        .def_readonly("sources", &Grid::_sources)
+        .def_readonly("sources", &Grid::sources)
         .def("add_density", &Grid::add_density, 
                 "Add a density layer to the Grid.")
         .def("add_number_density", &Grid::add_number_density, 
@@ -467,23 +473,23 @@ PYBIND11_MODULE(cpu, m) {
         .def_readonly("phi", &SphericalGrid::phi);
 
     py::class_<Image>(m, "Image")
-        .def_readonly("x", &Image::_x)
-        .def_readonly("y", &Image::_x)
-        .def_readonly("intensity", &Image::_intensity)
-        .def_readonly("nu", &Image::_nu)
-        .def_readonly("lam", &Image::_lam);
+        .def_property("x", [](const Image &I) {return array_from_view<double,double*>(I.x);}, nullptr)
+        .def_property("y", [](const Image &I) {return array_from_view<double,double*>(I.y);}, nullptr)
+        .def_property("intensity", [](const Image &I) {return array_from_view<double,double*>(I.intensity, 3, {(size_t) I.nx, (size_t) I.ny, (size_t) I.nnu});;}, nullptr)
+        .def_property("nu", [](const Image &I) {return array_from_view<double,double*>(I.nu);}, nullptr)
+        .def_property("lam", [](const Image &I) {return array_from_view<double,double*>(I.lam);}, nullptr);
 
     py::class_<UnstructuredImage>(m, "UnstructuredImage")
-        .def_readonly("x", &UnstructuredImage::_x)
-        .def_readonly("y", &UnstructuredImage::_y)
-        .def_readonly("intensity", &UnstructuredImage::_intensity)
-        .def_readonly("nu", &UnstructuredImage::_nu)
-        .def_readonly("lam", &UnstructuredImage::_lam);
+        .def_property("x", [](const UnstructuredImage &I) {return array_from_view<double,double*>(I.x);}, nullptr)
+        .def_property("y", [](const UnstructuredImage &I) {return array_from_view<double,double*>(I.y);}, nullptr)
+        .def_property("intensity", [](const UnstructuredImage &I) {return array_from_view<double,double**>(I.intensity);}, nullptr)
+        .def_property("nu", [](const UnstructuredImage &I) {return array_from_view<double,double*>(I.nu);}, nullptr)
+        .def_property("lam", [](const UnstructuredImage &I) {return array_from_view<double,double*>(I.lam);}, nullptr);
 
     py::class_<Spectrum>(m, "Spectrum")
-        .def_readonly("intensity", &Spectrum::_intensity)
-        .def_readonly("nu", &Spectrum::_nu)
-        .def_readonly("lam", &Spectrum::_lam);
+        .def_property("intensity", [](const Spectrum &S) {return array_from_view<double,double*>(S.intensity);}, nullptr)
+        .def_property("nu", [](const Spectrum &S) {return array_from_view<double,double*>(S.nu);}, nullptr)
+        .def_property("lam", [](const Spectrum &S) {return array_from_view<double,double*>(S.lam);}, nullptr);
 
     py::class_<Model>(m, "Model")
         .def(py::init<>())

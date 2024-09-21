@@ -59,6 +59,8 @@ Kokkos::View<int*> view_from_array(py::array_t<int> arr);
 
 template<typename Ta, typename Tv>
 py::array_t<Ta> array_from_view(Kokkos::View<Tv> v, int ndim, std::vector<size_t> extents);
+template<typename Ta, typename Tv>
+py::array_t<Ta> array_from_view(Kokkos::View<Tv> v);
 py::array_t<double> array_from_view(Kokkos::View<double*> view, int ndim, std::vector<size_t> extents);
 py::array_t<double> array_from_view(Kokkos::View<double**> view, int ndim, std::vector<size_t> extents);
 py::array_t<int> array_from_view(Kokkos::View<int*> view, int ndim, std::vector<size_t> extents);
