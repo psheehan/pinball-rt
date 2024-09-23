@@ -79,13 +79,13 @@ Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies,
     Kokkos::resize(temp, ntemp);
     Kokkos::resize(Z, ntemp);
 
-    for (int i = 0; i < ntemp; i++) {
+    Kokkos::parallel_for(ntemp, [=](const size_t i) {
         temp(i) = pow(10.,-1.+i*6./(ntemp-1));
         Z(i) = 0;
 
         for (int j = 0; j < nlevels; j++)
             Z(i) += weights(j)*exp(-h_p*c_l*energies(j) / (k_B * temp(i)));
-    }
+    });
 
     Kokkos::resize(dZdT, ntemp-1);
     Kokkos::deep_copy(dZdT, derivative(Z, temp, ntemp));

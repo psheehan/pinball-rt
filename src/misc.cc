@@ -31,7 +31,7 @@ Kokkos::View<double*> view_from_array(py::array_t<double> arr) {
     auto arr_buf = arr.request();
     int n = arr_buf.shape[0];
 
-    Kokkos::View<double*> result("result", n);
+    Kokkos::View<double*,Kokkos::HostSpace> result("result", n);
     auto arr_access = arr.unchecked<1>();
     for (size_t i = 0; i < n; i++) result(i) = arr_access[i];
 
@@ -42,7 +42,7 @@ Kokkos::View<int*> view_from_array(py::array_t<int> arr) {
     auto arr_buf = arr.request();
     int n = arr_buf.shape[0];
 
-    Kokkos::View<int*> result("result", n);
+    Kokkos::View<int*,Kokkos::HostSpace> result("result", n);
     auto arr_access = arr.unchecked<1>();
     for (size_t i = 0; i < n; i++) result(i) = arr_access[i];
 
@@ -72,6 +72,10 @@ py::array_t<Ta> array_from_view(Kokkos::View<Tv> v, int ndim, std::vector<size_t
 
 template<typename Ta, typename Tv>
 py::array_t<Ta> array_from_view(Kokkos::View<Tv> v) {
+    //typedef Kokkos::View<Tv> ViewType;
+    //(ViewType) ViewType::HostMirror v = Kokkos::create_mirror_view(_v);
+    //Kokkos::deep_copy(v, _v);
+    
     size_t ndim = v.rank();
 
     std::vector<size_t> extents;

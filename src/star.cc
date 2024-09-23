@@ -39,15 +39,17 @@ void Star::set_blackbody_spectrum(py::array_t<double> __lam) {
 
     Kokkos::resize(nu, nnu);
 
-    for (int i = 0; i < nnu; i++)
+    Kokkos::parallel_for(nnu, [=] (const size_t i) {
         nu(i) = c_l / lam(i);
+    });
 
     // And set up the spectrum.
 
     Kokkos::resize(Bnu, nnu);
 
-    for (int i = 0; i < nnu; i++)
+    Kokkos::parallel_for(nnu, [=](const size_t i) {
         Bnu(i) = planck_function(nu(i), temperature);
+    });
 
     luminosity = 4*pi*radius*radius*sigma*temperature*temperature*temperature*
             temperature;
