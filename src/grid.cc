@@ -21,11 +21,11 @@ Grid::Grid(py::array_t<double> __w1, py::array_t<double> __w2,
     n1 = _w1_buf.shape(0)-1, n2 = _w2_buf.shape(0)-1, n3 = _w3_buf.shape(0)-1;
     
     Kokkos::resize(w1, nw1);
-    for (size_t i = 0; i < nw1; i++) w1(i) = _w1_buf[i];
+    Kokkos::deep_copy(w1, view_from_array(__w1));
     Kokkos::resize(w2, nw2);
-    for (size_t i = 0; i < nw2; i++) w2(i) = _w2_buf[i];
+    Kokkos::deep_copy(w2, view_from_array(__w2));
     Kokkos::resize(w3, nw3);
-    for (size_t i = 0; i < nw3; i++) w3(i) = _w3_buf[i];
+    Kokkos::deep_copy(w3, view_from_array(__w3));
 
     // Set up the volume of each cell.
 
@@ -38,10 +38,11 @@ Grid::Grid(py::array_t<double> __w1, py::array_t<double> __w2,
     // Initialize the uses_mrw array.
 
     Kokkos::resize(uses_mrw, n1, n2, n3);
-    for (int i=0; i<n1; i++)
-        for (int j=0; j < n2; j++)
-            for (int k=0; k < n3; k++)
-                uses_mrw(i,j,k) = -1;
+    Kokkos::deep_copy(uses_mrw, -1);
+    //for (int i=0; i<n1; i++)
+    //    for (int j=0; j < n2; j++)
+    //        for (int k=0; k < n3; k++)
+    //            uses_mrw(i,j,k) = -1;
 }
 
 /* Functions to set up the grid. */
@@ -93,11 +94,20 @@ void Grid::add_density(py::array_t<double> ___dens, Dust *D) {
     Kokkos::resize(planck_mean_opacity, planck_mean_opacity.extent(0)+1, n1, n2, n3);
 
     auto ___dens_access = ___dens.unchecked<3>();
+    Kokkos::View<double****>::HostMirror h_dens = Kokkos::create_mirror_view(dens);
+    Kokkos::deep_copy(h_dens, dens);
     for (int i = 0; i < n1; i++) {
         for (int j = 0; j < n2; j++) {
             for (int k = 0; k < n3; k++) {
-                dens(idust,i,j,k) = ___dens_access(i,j,k);
-                if (dens(nspecies,i,j,k) < 1.0e-99) dens(nspecies,i,j,k) = 1.0e-99;
+                h_dens(idust,i,j,k) = ___dens_access(i,j,k);
+                if (h_dens(nspecies,i,j,k) < 1.0e-99) h_dens(nspecies,i,j,k) = 1.0e-99;
+            }
+        }
+    }
+    Kokkos::deep_copy(dens, h_dens);
+
+    Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<3>>({0,0,0},{n1,n2,n3}), 
+            [=] (const size_t i, const size_t j, const size_t k) {
                 temp(idust,i,j,k) = 0.1;
                 mass(nspecies,i,j,k) = dens(nspecies,i,j,k) * volume(i,j,k);
                 rosseland_mean_extinction(nspecies,i,j,k) = 
@@ -106,9 +116,7 @@ void Grid::add_density(py::array_t<double> ___dens, Dust *D) {
                         temp(nspecies,i,j,k));
                 energy(nspecies,i,j,k) = 0;
                 energy_mrw(nspecies,i,j,k) = 0;
-            }
-        }
-    }
+            });
 
     //std::vector<size_t> extents = {(size_t) nspecies+1, (size_t) n1, (size_t) n2, (size_t) n3};
     //_temp = array_from_view<double,double****>(temp, 4, extents);
@@ -128,6 +136,16 @@ void Grid::add_number_density(py::array_t<double> ___number_dens,
     Kokkos::resize(velocity, velocity.extent(0)+1, n1, n2, n3);
     Kokkos::resize(microturbulence, microturbulence.extent(0)+1, n1, n2, n3);
 
+    Kokkos::View<double****>::HostMirror h_number_dens = Kokkos::create_mirror_view(number_dens);
+    Kokkos::View<double****>::HostMirror h_gas_temp = Kokkos::create_mirror_view(gas_temp);
+    Kokkos::View<double*****>::HostMirror h_velocity = Kokkos::create_mirror_view(velocity);
+    Kokkos::View<double****>::HostMirror h_microturbulence = Kokkos::create_mirror_view(microturbulence);
+
+    Kokkos::deep_copy(h_number_dens, number_dens);
+    Kokkos::deep_copy(h_gas_temp, gas_temp);
+    Kokkos::deep_copy(h_velocity, velocity);
+    Kokkos::deep_copy(h_microturbulence, microturbulence);
+
     auto number_dens_access = ___number_dens.unchecked<3>();
     auto velocity_access = ___velocity.unchecked<4>();
     auto microturbulence_access = ___microturbulence.unchecked<3>();
@@ -135,15 +153,20 @@ void Grid::add_number_density(py::array_t<double> ___number_dens,
         for (int j = 0; j < n2; j++) {
             for (int k = 0; k < n3; k++) {
                 int icell = i*n2*n3 + j*n3 + k;
-                number_dens(ngases,i,j,k) = number_dens_access(i,j,k);
-                gas_temp(ngases,i,j,k) = 0.;
-                microturbulence(ngases,i,j,k) = microturbulence_access(i,j,k);
-                velocity(ngases,0,i,j,k) = velocity_access(0,i,j,k);
-                velocity(ngases,1,i,j,k) = velocity_access(1,i,j,k);
-                velocity(ngases,2,i,j,k) = velocity_access(2,i,j,k);
+                h_number_dens(ngases,i,j,k) = number_dens_access(i,j,k);
+                h_gas_temp(ngases,i,j,k) = 0.;
+                h_microturbulence(ngases,i,j,k) = microturbulence_access(i,j,k);
+                h_velocity(ngases,0,i,j,k) = velocity_access(0,i,j,k);
+                h_velocity(ngases,1,i,j,k) = velocity_access(1,i,j,k);
+                h_velocity(ngases,2,i,j,k) = velocity_access(2,i,j,k);
             }
         }
     }
+
+    Kokkos::deep_copy(number_dens, h_number_dens);
+    Kokkos::deep_copy(gas_temp, h_gas_temp);
+    Kokkos::deep_copy(velocity, h_velocity);
+    Kokkos::deep_copy(microturbulence, h_microturbulence);
 
     // Add the dust to the list of dust classes.
 
