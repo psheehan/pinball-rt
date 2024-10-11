@@ -3,6 +3,7 @@
 #include <pybind11/stl.h>
 #include <Kokkos_Core.hpp>
 #include <Kokkos_Random.hpp>
+#include <Kokkos_MathematicalFunctions.hpp>
 
 #ifdef _OPENMP
 #include <omp.h>

@@ -27,7 +27,7 @@ double random_number(Kokkos::Random_XorShift64_Pool<> *random_pool) {
     return x;
 };
 
-Kokkos::View<double*> view_from_array(py::array_t<double> arr) {
+Kokkos::View<double*,Kokkos::HostSpace> view_from_array(py::array_t<double> arr) {
     auto arr_buf = arr.request();
     int n = arr_buf.shape[0];
 
@@ -38,7 +38,7 @@ Kokkos::View<double*> view_from_array(py::array_t<double> arr) {
     return result;
 }
 
-Kokkos::View<int*> view_from_array(py::array_t<int> arr) {
+Kokkos::View<int*,Kokkos::HostSpace> view_from_array(py::array_t<int> arr) {
     auto arr_buf = arr.request();
     int n = arr_buf.shape[0];
 

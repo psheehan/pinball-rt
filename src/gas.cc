@@ -79,13 +79,28 @@ Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies,
     Kokkos::resize(temp, ntemp);
     Kokkos::resize(Z, ntemp);
 
-    Kokkos::parallel_for(ntemp, [=](const size_t i) {
-        temp(i) = pow(10.,-1.+i*6./(ntemp-1));
-        Z(i) = 0;
+    Kokkos::View<double*>::HostMirror h_temp = Kokkos::create_mirror_view(temp);
+    Kokkos::View<double*>::HostMirror h_Z = Kokkos::create_mirror_view(Z);
+    Kokkos::View<double*>::HostMirror h_weights = Kokkos::create_mirror_view(weights);
+    Kokkos::View<double*>::HostMirror h_energies = Kokkos::create_mirror_view(energies);
+
+    Kokkos::deep_copy(h_temp, temp);
+    Kokkos::deep_copy(h_Z, Z);
+    Kokkos::deep_copy(h_weights, weights);
+    Kokkos::deep_copy(h_energies, energies);
+
+    for (size_t i = 0; i < ntemp; i++) {
+        h_temp(i) = pow(10.,-1.+i*6./(ntemp-1));
+        h_Z(i) = 0;
 
         for (int j = 0; j < nlevels; j++)
-            Z(i) += weights(j)*exp(-h_p*c_l*energies(j) / (k_B * temp(i)));
-    });
+            h_Z(i) += h_weights(j)*exp(-h_p*c_l*h_energies(j) / (k_B * h_temp(i)));
+    }
+
+    Kokkos::deep_copy(temp, h_temp);
+    Kokkos::deep_copy(Z, h_Z);
+    Kokkos::deep_copy(weights, h_weights);
+    Kokkos::deep_copy(energies, h_energies);
 
     Kokkos::resize(dZdT, ntemp-1);
     Kokkos::deep_copy(dZdT, derivative(Z, temp, ntemp));

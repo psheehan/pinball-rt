@@ -11,12 +11,15 @@ Image::Image(int _nx, int _ny, double _pixel_size, py::array_t<double> __lam) {
 
     pixel_size = _pixel_size;
     
-    Kokkos::parallel_for(nx, [=](const size_t i) {
-        x(i) = (i - nx/2)*pixel_size;
-    });
-    Kokkos::parallel_for(ny, [=](const size_t i) {
-        y(i) = (i - ny/2)*pixel_size;
-    });
+    Kokkos::View<double*>::HostMirror h_x = Kokkos::create_mirror_view(x);
+    for (size_t i = 0; i < nx; i++)
+        h_x(i) = (i - nx/2)*pixel_size;
+    Kokkos::deep_copy(x, h_x);
+
+    Kokkos::View<double*>::HostMirror h_y = Kokkos::create_mirror_view(y);
+    for (size_t i = 0; i < ny; i++)
+        h_y(i) = (i - ny/2)*pixel_size;
+    Kokkos::deep_copy(y, h_y);
 
     // Set up the wavelength array.
 
@@ -24,21 +27,22 @@ Image::Image(int _nx, int _ny, double _pixel_size, py::array_t<double> __lam) {
     nnu = _lam_buf.shape[0];
 
     Kokkos::resize(lam, nnu);
-    Kokkos::deep_copy(lam, view_from_array(__lam));
+    auto h_lam = view_from_array(__lam);
+    Kokkos::deep_copy(lam, h_lam);
 
     // Set up the frequency array.
 
     Kokkos::resize(nu, nnu);
-    Kokkos::parallel_for(nnu, [=](const size_t i) {
-        nu(i) = c_l / (lam(i)*1.0e-4);
-    });
+    Kokkos::View<double*>::HostMirror h_nu = Kokkos::create_mirror_view(nu);
+    for (size_t i = 0; i < nnu; i++) {
+        h_nu(i) = c_l / (h_lam(i)*1.0e-4);
+    }
+    Kokkos::deep_copy(nu, h_nu);
 
     // Set up the volume of each cell.
 
     Kokkos::resize(intensity, nx*ny*nnu);
-    Kokkos::parallel_for(nx*ny*nnu, [=](const size_t i) {
-        intensity(i) = 0.;
-    });
+    Kokkos::deep_copy(intensity, 0.);
 }
 
 Image::~Image() {
@@ -60,7 +64,8 @@ UnstructuredImage::UnstructuredImage(int _nx, int _ny, double _pixel_size,
     // Now get the correct format.
 
     Kokkos::resize(lam, nnu);
-    lam = view_from_array(__lam);
+    auto h_lam = view_from_array(__lam);
+    Kokkos::deep_copy(lam, h_lam);
 
     // Set up the x and y values properly.
 
@@ -70,23 +75,30 @@ UnstructuredImage::UnstructuredImage(int _nx, int _ny, double _pixel_size,
     Kokkos::resize(y, nx*ny);
     Kokkos::resize(intensity, nx*ny, nnu);
 
-    Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0,0},{nx,ny}), 
-        [=](const size_t i, const size_t j) {
-            x(i*ny+j) = (i - nx/2)*pixel_size + (random_number()-0.5)*
+    Kokkos::View<double*>::HostMirror h_x = Kokkos::create_mirror_view(x);
+    Kokkos::View<double*>::HostMirror h_y = Kokkos::create_mirror_view(y);
+
+    for (size_t i = 0; i < nx; i++) {
+        for (size_t j = 0; j < ny; j++) {
+            h_x(i*ny+j) = (i - nx/2)*pixel_size + (random_number()-0.5)*
                     pixel_size/10000;
-            y(i*ny+j) = (j - ny/2)*pixel_size + (random_number()-0.5)*
+            h_y(i*ny+j) = (j - ny/2)*pixel_size + (random_number()-0.5)*
                     pixel_size/10000;
-            
-            for (int k = 0; k < nnu; k++)
-                intensity(i*ny+j,k) = 0.;
-    });
+        }
+    }
+
+    Kokkos::deep_copy(x, h_x);
+    Kokkos::deep_copy(y, h_y);
+    Kokkos::deep_copy(intensity, 0.);
 
     // Set up the frequency array.
 
     Kokkos::resize(nu, nnu);
-    Kokkos::parallel_for(nnu, [=](const size_t i) {
-        nu(i) = c_l / (lam(i)*1.0e-4);
-    });
+    Kokkos::View<double*>::HostMirror h_nu = Kokkos::create_mirror_view(nu);
+    for (size_t i = 0; i < nnu; i++) {
+        h_nu(i) = c_l / (h_lam(i)*1.0e-4);
+    }
+    Kokkos::deep_copy(nu, h_nu);
 }
 
 UnstructuredImage::UnstructuredImage(int _nr, int _nphi, double rmin, 
@@ -105,7 +117,8 @@ UnstructuredImage::UnstructuredImage(int _nr, int _nphi, double rmin,
     // Now get the correct format.
 
     Kokkos::resize(lam, nnu);
-    Kokkos::deep_copy(lam, view_from_array(__lam));
+    auto h_lam = view_from_array(__lam);
+    Kokkos::deep_copy(lam, h_lam);
 
     // Set up the x and y values properly.
 
@@ -119,25 +132,32 @@ UnstructuredImage::UnstructuredImage(int _nr, int _nphi, double rmin,
     Kokkos::resize(y, nx*ny+1);
     Kokkos::resize(intensity, nx*ny+1, nnu);
 
-    Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0,0},{nx,ny}), 
-        [=](const size_t i, const size_t j) {
+    Kokkos::View<double*>::HostMirror h_x = Kokkos::create_mirror_view(x);
+    Kokkos::View<double*>::HostMirror h_y = Kokkos::create_mirror_view(y);
+
+    for (size_t i = 0; i < nx; i++) {
+        for (size_t j = 0; j < ny; j++) {
             double r = pow(10, logrmin + dlogr*i);
             double phi = 2*pi * (j + 0.5) / ny;
             x(i*ny+j) = r*cos(phi);
             y(i*ny+j) = r*sin(phi);
-            
-            for (int k = 0; k < nnu; k++)
-                intensity(i*ny+j,k) = 0.;
-    });
+        }
+    }
     x(x.extent(0)-1) = 0.;
     y(x.extent(0)-1) = 0.;
+
+    Kokkos::deep_copy(x, h_x);
+    Kokkos::deep_copy(y, h_y);
+    Kokkos::deep_copy(intensity, 0.);
 
     // Set up the frequency array.
 
     Kokkos::resize(nu, nnu);
-    Kokkos::parallel_for(nnu, [=](const size_t i) {
-        nu(i) = c_l / (lam(i)*1.0e-4);
-    });
+    Kokkos::View<double*>::HostMirror h_nu = Kokkos::create_mirror_view(nu);
+    for (size_t i = 0; i < nnu; i++)  {
+        h_nu(i) = c_l / (h_lam(i)*1.0e-4);
+    }
+    Kokkos::deep_copy(nu, h_nu);
 }
 
 Spectrum::Spectrum(py::array_t<double> __lam) {
@@ -153,21 +173,22 @@ Spectrum::Spectrum(py::array_t<double> __lam) {
     // Now get the correct format.
 
     Kokkos::resize(lam, nnu);
-    Kokkos::deep_copy(lam, view_from_array(__lam));
+    auto h_lam = view_from_array(__lam);
+    Kokkos::deep_copy(lam, h_lam);
 
     // Set up the frequency array.
 
     Kokkos::resize(nu, nnu);
-    Kokkos::parallel_for(nnu, [=](const size_t i) {
-        nu(i) = c_l / (lam(i)*1.0e-4);
-    });
+    Kokkos::View<double*>::HostMirror h_nu = Kokkos::create_mirror_view(nu);
+    for (size_t i = 0; i < nnu; i++) {
+        h_nu(i) = c_l / (h_lam(i)*1.0e-4);
+    }
+    Kokkos::deep_copy(nu, h_nu);
 
     // Set up the volume of each cell.
 
     Kokkos::resize(intensity, nnu);
-    Kokkos::parallel_for(nnu, [=](const size_t i) {
-        intensity(i) = 0;
-    });
+    Kokkos::deep_copy(intensity, 0.);
 }
 
 Camera::Camera(Grid *_G, Params *_Q) {
@@ -217,7 +238,7 @@ Image *Camera::make_image(int nx, int ny, double pixel_size,
 
     Kokkos::parallel_for("RaytraceRectangularImage", 
             Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0,0},{image->nx,image->ny}),
-            [=] (int64_t j, int64_t k) {
+            KL (int64_t j, int64_t k) {
     //for (int j=0; j<image->nx; j++)
     //    for (int k=0; k<image->ny; k++) {
         if (Q->verbose) printf("%d   %d\n", j, k);
@@ -257,7 +278,7 @@ UnstructuredImage *Camera::make_unstructured_image(int nx, int ny,
     seed1 = int(time(NULL));
     seed2 = int(time(NULL));
 
-    Kokkos::parallel_for(nx*ny, [=] (int64_t j) {
+    Kokkos::parallel_for(nx*ny, KL (int64_t j) {
         raytrace_pixel(image, j, image->pixel_size);
     });
 
@@ -287,7 +308,7 @@ UnstructuredImage *Camera::make_circular_image(int nr, int nphi,
     seed1 = int(time(NULL));
     seed2 = int(time(NULL));
 
-    Kokkos::parallel_for(image->x.extent(0), [=] (int64_t j) {
+    Kokkos::parallel_for(image->x.extent(0), KL (int64_t j) {
         raytrace_pixel(image, j, image->pixel_size);
     });
 

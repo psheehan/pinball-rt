@@ -107,7 +107,7 @@ void Grid::add_density(py::array_t<double> ___dens, Dust *D) {
     Kokkos::deep_copy(dens, h_dens);
 
     Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<3>>({0,0,0},{n1,n2,n3}), 
-            [=] (const size_t i, const size_t j, const size_t k) {
+            KL (const size_t i, const size_t j, const size_t k) {
                 temp(idust,i,j,k) = 0.1;
                 mass(nspecies,i,j,k) = dens(nspecies,i,j,k) * volume(i,j,k);
                 rosseland_mean_extinction(nspecies,i,j,k) = 

@@ -28,6 +28,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 
+#define KL [=] __device__ __host__
+
 namespace py = pybind11;
 
 const double pi = 3.14159265;
@@ -54,8 +56,8 @@ double random_number();
 
 double random_number(Kokkos::Random_XorShift64_Pool<> *random_pool);
 
-Kokkos::View<double*> view_from_array(py::array_t<double> arr);
-Kokkos::View<int*> view_from_array(py::array_t<int> arr);
+Kokkos::View<double*,Kokkos::HostSpace> view_from_array(py::array_t<double> arr);
+Kokkos::View<int*,Kokkos::HostSpace> view_from_array(py::array_t<int> arr);
 
 template<typename Ta, typename Tv>
 py::array_t<Ta> array_from_view(Kokkos::View<Tv> v, int ndim, std::vector<size_t> extents);

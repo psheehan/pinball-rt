@@ -200,7 +200,7 @@ void Model::mc_iteration(int nthreads) {
 
     //for (int i=0; i<Q->nphot; i++) {
     Kokkos::parallel_for(Q->nphot, 
-        [=] (const int64_t i) {
+        KL (const int64_t i) {
         Photon *P = G->emit(i);
         P->event_count = 0;
         P->ithread = 0;
@@ -226,7 +226,7 @@ void Model::mc_iteration(int nthreads) {
 
         Kokkos::atomic_increment(&photon_count());
 
-        if (fmod(photon_count(),Q->nphot/10) == 0) printf("%i\n", photon_count());
+        if (Kokkos::fmod(photon_count(),Q->nphot/10) == 0) printf("%i\n", photon_count());
     });
 
     printf("Average number of abs/scat events per photon package = %f \n", 

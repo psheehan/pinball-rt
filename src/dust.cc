@@ -11,11 +11,14 @@ Dust::Dust(py::array_t<double> __lam, py::array_t<double> __kabs,
     nlam = __lam_buf.shape[0];
 
     Kokkos::resize(lam, nlam);
-    Kokkos::deep_copy(lam, view_from_array(__lam));
+    auto h_lam = view_from_array(__lam);
+    Kokkos::deep_copy(lam, h_lam);
     Kokkos::resize(kabs, nlam);
-    Kokkos::deep_copy(kabs, view_from_array(__kabs));
+    auto h_kabs = view_from_array(__kabs);
+    Kokkos::deep_copy(kabs, h_kabs);
     Kokkos::resize(ksca, nlam);
-    Kokkos::deep_copy(ksca, view_from_array(__ksca));
+    auto h_ksca = view_from_array(__ksca);
+    Kokkos::deep_copy(ksca, h_ksca);
 
     // Set up the volume of each cell.
 
@@ -25,15 +28,23 @@ Dust::Dust(py::array_t<double> __lam, py::array_t<double> __kabs,
 
     // Finally, calculate their values.
 
-    Kokkos::parallel_for(nlam, [=](const size_t i) {
-        nu(i) = c_l / lam(i); 
-        kext(i) = kabs(i) + ksca(i);
-        albedo(i) = ksca(i) / kext(i); 
-    });
+    Kokkos::View<double*>::HostMirror h_nu = Kokkos::create_mirror_view(nu);
+    Kokkos::View<double*>::HostMirror h_kext = Kokkos::create_mirror_view(kext);
+    Kokkos::View<double*>::HostMirror h_albedo = Kokkos::create_mirror_view(albedo);
+
+    for (size_t i = 0; i < nlam; i++) {
+        h_nu(i) = c_l / h_lam(i); 
+        h_kext(i) = h_kabs(i) + h_ksca(i);
+        h_albedo(i) = h_ksca(i) / h_kext(i); 
+    }
+
+    Kokkos::deep_copy(nu, h_nu);
+    Kokkos::deep_copy(kext, h_kext);
+    Kokkos::deep_copy(albedo, h_albedo);
 
     // Catch if nu is not increasing.
 
-    if (nu(1) - nu(0) <= 0.)
+    if (h_nu(1) - h_nu(0) <= 0.)
         throw std::runtime_error("nu must be monotonically increasing.");
 
     // Finally, make the lookup tables;
@@ -60,7 +71,7 @@ void Dust::set_lookup_tables() {
     ntemp = 1000;
     Kokkos::resize(temp, ntemp);
 
-    Kokkos::parallel_for(ntemp, [=](const size_t i) {
+    Kokkos::parallel_for(ntemp, KL (const size_t i) {
         temp(i) = pow(10.,-1.+i*6./(ntemp-1));
     });
 
@@ -73,12 +84,12 @@ void Dust::set_lookup_tables() {
     // Calculate the Planck Mean Opacity and its derivative.
     Kokkos::View<double**> tmp_planck("tmp_planck", ntemp, nlam);
     Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0,0},{ntemp,nlam}), 
-        [=](const size_t i, const size_t j) {
+        KL (const size_t i, const size_t j) {
             tmp_planck(i,j) = planck_function(nu(j), temp(i)) * kabs(j);
     });
 
     Kokkos::resize(planck_opacity, ntemp);
-    Kokkos::parallel_for(ntemp, [=](const size_t i) {
+    Kokkos::parallel_for(ntemp, KL (const size_t i) {
         planck_opacity(i) = pi / (sigma * pow(temp(i),4)) * 
                 integrate(Kokkos::subview(tmp_planck, i, Kokkos::ALL), nu, nlam);
     });
@@ -90,13 +101,13 @@ void Dust::set_lookup_tables() {
     Kokkos::View<double**> tmp_ross("tmp_ross", ntemp, nlam);
     Kokkos::View<double**> tmp_ross_num("tmp_ross_num", ntemp, nlam);
     Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0,0},{ntemp,nlam}), 
-        [=](const size_t i, const size_t j) {
+        KL (const size_t i, const size_t j) {
             tmp_ross(i,j) = planck_function_derivative(nu(j), temp(i)) / kext(j);
             tmp_ross_num(i,j) = planck_function_derivative(nu(j), temp(i));
     });
 
     Kokkos::resize(rosseland_extinction, ntemp);
-    Kokkos::parallel_for(ntemp, [=](const size_t i) {
+    Kokkos::parallel_for(ntemp, KL (const size_t i) {
         rosseland_extinction(i) = integrate(Kokkos::subview(tmp_ross_num, i, Kokkos::ALL), nu, nlam) / 
                 integrate(Kokkos::subview(tmp_ross, i, Kokkos::ALL), nu, nlam);
     });
@@ -108,12 +119,12 @@ void Dust::set_lookup_tables() {
     // random nu value, for regular.
     Kokkos::View<double**> tmp("tmp", ntemp, nlam);
     Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0,0},{ntemp,nlam}), 
-        [=](const size_t i, const size_t j) {
+        KL (const size_t i, const size_t j) {
             tmp(i,j) = kabs(j) * planck_function(nu(j), temp(i));
     });
 
     Kokkos::resize(random_nu_CPD, ntemp, nlam);
-    Kokkos::parallel_for(ntemp, [=](const size_t i) {
+    Kokkos::parallel_for(ntemp, KL (const size_t i) {
         auto random_nu_CPD_tmp = cumulative_integrate(Kokkos::subview(tmp, i, Kokkos::ALL), nu, nlam);
         for (int j = 0; j < nlam; j++)
             random_nu_CPD(i,j) = random_nu_CPD_tmp(j);
@@ -125,12 +136,12 @@ void Dust::set_lookup_tables() {
     // Create the cumulative probability density functions for generating a
     // random nu value, for bw.
     Kokkos::parallel_for(Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0,0},{ntemp,nlam}), 
-        [=](const size_t i, const size_t j) {
+        KL (const size_t i, const size_t j) {
             tmp(i,j) = kabs(j) * planck_function_derivative(nu(j), temp(i));
     });
 
     Kokkos::resize(random_nu_CPD_bw, ntemp, nlam);
-    Kokkos::parallel_for(ntemp, [=](const size_t i) {
+    Kokkos::parallel_for(ntemp, KL (const size_t i) {
         auto random_nu_CPD_bw_tmp = cumulative_integrate(Kokkos::subview(tmp, i, Kokkos::ALL), nu, nlam);
         for (int j = 0; j < nlam; j++)
             random_nu_CPD_bw(i,j) = random_nu_CPD_bw_tmp(j);

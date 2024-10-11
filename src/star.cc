@@ -39,7 +39,7 @@ void Star::set_blackbody_spectrum(py::array_t<double> __lam) {
 
     Kokkos::resize(nu, nnu);
 
-    Kokkos::parallel_for(nnu, [=] (const size_t i) {
+    Kokkos::parallel_for(nnu, KL (const size_t i) {
         nu(i) = c_l / lam(i);
     });
 
@@ -47,7 +47,7 @@ void Star::set_blackbody_spectrum(py::array_t<double> __lam) {
 
     Kokkos::resize(Bnu, nnu);
 
-    Kokkos::parallel_for(nnu, [=](const size_t i) {
+    Kokkos::parallel_for(nnu, KL (const size_t i) {
         Bnu(i) = planck_function(nu(i), temperature);
     });
 
