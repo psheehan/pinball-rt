@@ -28,7 +28,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 
-#define KL [=] __device__ __host__
+#define KL KOKKOS_LAMBDA
 
 namespace py = pybind11;
 
