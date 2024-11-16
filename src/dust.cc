@@ -2,22 +2,41 @@
 
 /* Functions to set up the dust. */
 
+Dust::Dust() {
+    random_pool = new Kokkos::Random_XorShift64_Pool<>(/*seed=*/12345);
+}
+
 Dust::Dust(py::array_t<double> __lam, py::array_t<double> __kabs,
+            py::array_t<double> __ksca) : Dust() {
+    set_properties(__lam, __kabs, __ksca);
+}
+
+void Dust::copy(Dust *D) {
+    set_properties(D->lam, D->kabs, D->ksca);
+}
+
+void Dust::set_properties(py::array_t<double> __lam, py::array_t<double> __kabs,
             py::array_t<double> __ksca) {
 
-    random_pool = new Kokkos::Random_XorShift64_Pool<>(/*seed=*/12345);
-
     auto __lam_buf = __lam.request();
-    nlam = __lam_buf.shape[0];
+
+    auto h_lam = view_from_array(__lam);
+    auto h_kabs = view_from_array(__kabs);
+    auto h_ksca = view_from_array(__ksca);
+
+    set_properties(h_lam, h_kabs, h_ksca);
+}
+
+void Dust::set_properties(Kokkos::View<double*> h_lam, Kokkos::View<double*> h_kabs, 
+        Kokkos::View<double*> h_ksca) {
+
+    nlam = (int) h_lam.extent(0);
 
     Kokkos::resize(lam, nlam);
-    auto h_lam = view_from_array(__lam);
     Kokkos::deep_copy(lam, h_lam);
     Kokkos::resize(kabs, nlam);
-    auto h_kabs = view_from_array(__kabs);
     Kokkos::deep_copy(kabs, h_kabs);
     Kokkos::resize(ksca, nlam);
-    auto h_ksca = view_from_array(__ksca);
     Kokkos::deep_copy(ksca, h_ksca);
 
     // Set up the volume of each cell.

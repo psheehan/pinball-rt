@@ -63,7 +63,7 @@ struct Grid {
     Kokkos::View<double****> microturbulence{"microturbulence", 0, 0, 0, 0};
 
     int nspecies;
-    std::vector<Dust*> dust;
+    Kokkos::View<Dust*> dust;
 
     int ngases;
     std::vector<Gas *> gas;

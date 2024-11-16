@@ -378,8 +378,8 @@ Ray *Camera::emit_ray(double x, double y, double pixel_size, Kokkos::View<double
 
     for (int j=0; j<G->nspecies; j++) {
         for (int k = 0; k < nnu; k++) {
-            R->current_kext(j,k) = G->dust[j]->opacity(R->nu(k));
-            R->current_albedo(j,k) = G->dust[j]->albdo(R->nu(k));
+            R->current_kext(j,k) = G->dust(j).opacity(R->nu(k));
+            R->current_albedo(j,k) = G->dust(j).albdo(R->nu(k));
         }
     }
 
@@ -550,8 +550,8 @@ void Camera::raytrace_sources(Image *image, int nthreads) {
 
             for (int j=0; j<G->nspecies; j++) {
                 for (int k = 0; k < image->nnu; k++) {
-                    R->current_kext(j,k) = G->dust[j]->opacity(R->nu(k));
-                    R->current_albedo(j,k) = G->dust[j]->albdo(R->nu(k));
+                    R->current_kext(j,k) = G->dust(j).opacity(R->nu(k));
+                    R->current_albedo(j,k) = G->dust(j).albdo(R->nu(k));
                 }
             }
 
@@ -603,8 +603,8 @@ void Camera::raytrace_sources(UnstructuredImage *image) {
 
             for (int j=0; j<G->nspecies; j++) {
                 for (int k = 0; k < image->nnu; k++) {
-                    R->current_kext(j,k) = G->dust[j]->opacity(R->nu(k));
-                    R->current_albedo(j,k) = G->dust[j]->albdo(R->nu(k));
+                    R->current_kext(j,k) = G->dust(j).opacity(R->nu(k));
+                    R->current_albedo(j,k) = G->dust(j).albdo(R->nu(k));
                 }
             }
 

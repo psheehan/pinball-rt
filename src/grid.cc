@@ -69,7 +69,7 @@ Grid::Grid(py::array_t<double> __w1, py::array_t<double> __w2,
 Grid::~Grid() {
     // Free the physical parameters;
 
-    dust.clear();
+    //dust.clear();
 
     // Clear the gas.
     
@@ -123,7 +123,9 @@ void Grid::add_density(py::array_t<double> ___dens, Dust *D) {
 
     // Add the dust to the list of dust classes.
 
-    dust.push_back(D);
+    //dust.push_back(D);
+    Kokkos::resize(dust, dust.extent(0)+1);
+    dust(nspecies).copy(D);
     nspecies++;
 }
 
@@ -318,8 +320,8 @@ Photon *Grid::emit(int iphot) {
     Kokkos::resize(P->current_kext, nspecies);
     Kokkos::resize(P->current_albedo, nspecies);
     for (int i=0; i<nspecies; i++) {
-        P->current_kext(i) = dust[i]->opacity(P->nu);
-        P->current_albedo(i) = dust[i]->albdo(P->nu);
+        P->current_kext(i) = dust(i).opacity(P->nu);
+        P->current_albedo(i) = dust(i).albdo(P->nu);
     }
 
     /* Check the photon's location in the grid. */
@@ -418,13 +420,13 @@ void Grid::absorb(Photon *P, int idust) {
 
     // Now do the absorption.
 
-    dust[idust]->absorb(P, temp(idust,P->l[0],P->l[1],P->l[2]), Q->bw);
+    dust(idust).absorb(P, temp(idust,P->l[0],P->l[1],P->l[2]), Q->bw);
 
     // Update the photon's arrays of kext and albedo since P->nu has changed
     // upon absorption.
     for (int i=0; i<nspecies; i++) {
-        P->current_kext(i) = dust[i]->opacity(P->nu);
-        P->current_albedo(i) = dust[i]->albdo(P->nu);
+        P->current_kext(i) = dust(i).opacity(P->nu);
+        P->current_albedo(i) = dust(i).albdo(P->nu);
     }
 
     // Check the photon's location again because there's a small chance that 
@@ -463,13 +465,13 @@ void Grid::absorb_mrw(Photon *P, int idust) {
 
     // Now do the absorption.
 
-    dust[idust]->absorb_mrw(P, temp(idust,P->l[0],P->l[1],P->l[2]), Q->bw);
+    dust(idust).absorb_mrw(P, temp(idust,P->l[0],P->l[1],P->l[2]), Q->bw);
 
     // Update the photon's arrays of kext and albedo since P->nu has changed
     // upon absorption.
     for (int i=0; i<nspecies; i++) {
-        P->current_kext(i) = dust[i]->opacity(P->nu);
-        P->current_albedo(i) = dust[i]->albdo(P->nu);
+        P->current_kext(i) = dust(i).opacity(P->nu);
+        P->current_albedo(i) = dust(i).albdo(P->nu);
     }
 
     // Check the photon's location again because there's a small chance that 
@@ -507,7 +509,7 @@ void Grid::scatter(Photon *P, int idust) {
 
     // Now do the absorption.
 
-    dust[idust]->scatter(P);
+    dust(idust).scatter(P);
 
     // Check the photon's location again because there's a small chance that 
     // the photon was absorbed on a wall, and if it was we may need to update
@@ -1117,7 +1119,7 @@ void Grid::update_grid(Vector<int, 3> l, int cell_index) {
             double T_old = temp(idust,l[0],l[1],l[2]);
 
             temp(idust,l[0],l[1],l[2])=pow(total_energy/
-                (4*sigma*dust[idust]->
+                (4*sigma*dust(idust).
                 planck_mean_opacity(temp(idust,l[0],l[1],l[2]))*
                 mass(idust,l[0],l[1],l[2])),0.25);
 
@@ -1132,10 +1134,10 @@ void Grid::update_grid(Vector<int, 3> l, int cell_index) {
 
         if (Q->use_mrw) {
             rosseland_mean_extinction(idust,l[0],l[1],l[2]) = 
-                    dust[idust]->rosseland_mean_extinction(
+                    dust(idust).rosseland_mean_extinction(
                     temp(idust,l[0],l[1],l[2]));
             planck_mean_opacity(idust,l[0],l[1],l[2]) = 
-                    dust[idust]->planck_mean_opacity(
+                    dust(idust).planck_mean_opacity(
                     temp(idust,l[0],l[1],l[2]));
         }
     }
@@ -1157,7 +1159,7 @@ void Grid::update_grid() {
 }*/
 
 double Grid::cell_lum(int idust, int i, int j, int k) {
-    return 4*mass(idust,i,j,k)*dust[idust]->
+    return 4*mass(idust,i,j,k)*dust(idust).
         planck_mean_opacity(temp(idust,i,j,k))*sigma*
         pow(temp(idust,i,j,k),4);
 }
@@ -1170,7 +1172,7 @@ double Grid::cell_lum(int idust, int i, int j, int k) {
 
 double Grid::cell_lum(int idust, int i, int j, int k, double nu) {
     return 4*pi*mass(idust,i,j,k)*
-        dust[idust]->opacity(nu)*(1. - dust[idust]->albdo(nu))*
+        dust(idust).opacity(nu)*(1. - dust(idust).albdo(nu))*
         planck_function(nu, temp(idust,i,j,k));
 }
 

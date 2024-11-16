@@ -37,8 +37,15 @@ struct Dust {
     Kokkos::View<double**> drandom_nu_CPD_dT{"drandom_nu_CPD_dT", 0, 0};
     Kokkos::View<double**> drandom_nu_CPD_bw_dT{"drandom_nu_CPD_bw_dT", 0, 0};
 
-    Dust(py::array_t<double> lam, py::array_t<double> kabs, 
+    Dust();
+    Dust(py::array_t<double> lam, py::array_t<double> kabs, py::array_t<double> ksca);
+
+    void copy(Dust *D);
+
+    void set_properties(py::array_t<double> lam, py::array_t<double> kabs, 
             py::array_t<double> ksca);
+    void set_properties(Kokkos::View<double*> h_lam, Kokkos::View<double*> h_kabs,
+        Kokkos::View<double*> h_ksca);
 
     /*Dust(int _nlam, double *_nu, double *_lam, double *_kabs, double *_ksca, 
             double *_kext, double *_albedo);*/
