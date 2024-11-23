@@ -2,10 +2,12 @@
 
 /* Functions to set up the sources. */
 
-Star::Star(double x, double y, double z, double _mass, double _radius, \
-        double _temperature) {
-
+Star::Star() {
     random_pool = new Kokkos::Random_XorShift64_Pool<>(/*seed=*/12345);
+}
+
+void Star::set_properties(double x, double y, double z, double _mass, double _radius, \
+        double _temperature) {
 
     r[0] = x;
     r[1] = y;

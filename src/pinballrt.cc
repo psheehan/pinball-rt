@@ -428,7 +428,7 @@ PYBIND11_MODULE(cpu, m) {
         .def_property("flux", [](const Source &S) {return array_from_view<double,double*>(S.Bnu);}, nullptr);
 
     py::class_<Star, Source>(m, "Star")
-        .def(py::init<double, double, double, double, double, double>())
+        //.def(py::init<double, double, double, double, double, double>())
         .def("set_blackbody_spectrum", &Star::set_blackbody_spectrum, 
                 "Set the spectrum of the star to be a blackbody.");
 
@@ -445,9 +445,10 @@ PYBIND11_MODULE(cpu, m) {
             return array_from_view<double,double****>(G.microturbulence);}, nullptr)
         .def_property("velocity", [](const Grid &G) {
             return array_from_view<double,double*****>(G.velocity);}, nullptr)
-        .def_readonly("dust", &Grid::dust)
+        .def("dust", [](const Grid &G, int i) {return &(G.dust(i));}, py::return_value_policy::reference, py::arg("i"))
+        .def("gas", [](const Grid &G, int i) {return &(G.gas(i));}, py::return_value_policy::reference, py::arg("i"))
         .def_readonly("scatt", &Grid::_scatt)
-        .def_readonly("sources", &Grid::sources)
+        .def("sources", [](const Grid &G, int i) {return &(G.sources(i));}, py::return_value_policy::reference, py::arg("i"))
         .def("add_density", &Grid::add_density, 
                 "Add a density layer to the Grid.")
         .def("add_number_density", &Grid::add_number_density, 

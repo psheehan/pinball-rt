@@ -73,11 +73,11 @@ Grid::~Grid() {
 
     // Clear the gas.
     
-    gas.clear();
+    //gas.clear();
 
     // Clear the sources.
 
-    sources.clear();
+    //sources.clear();
 }
 
 //void Grid::add_density(double *_dens, double *_temp, double *_mass, 
@@ -172,18 +172,18 @@ void Grid::add_number_density(py::array_t<double> ___number_dens,
 
     // Add the dust to the list of dust classes.
 
-    gas.push_back(G);
+    Kokkos::resize(gas, gas.extent(0)+1);
+    gas(ngases).copy(G);
     ngases++;
 }
 
 //void Grid::add_source(Source *S) {
 void Grid::add_star(double x, double y, double z, double _mass, double _radius, 
             double _temperature) {
-    Star *S = new Star(x, y, z, _mass, _radius, _temperature);
-
     //TODO: calculate the lookup tables somehow!
     
-    sources.push_back(S);
+    Kokkos::resize(sources, sources.extent(0)+1);
+    sources(nsources).set_properties(x, y, z, _mass, _radius, _temperature);
     nsources++;
 }
 
@@ -308,11 +308,11 @@ Photon *Grid::emit(int iphot) {
         if (isource == nsources)
             P = emit(Q->scattering_nu(Q->inu), Q->dnu, photons_per_source);
         else
-            P = sources[isource]->emit(Q->scattering_nu(Q->inu), Q->dnu, 
+            P = sources(isource).emit(Q->scattering_nu(Q->inu), Q->dnu, 
                     photons_per_source);
     }
     else
-        P = sources[isource]->emit(photons_per_source);
+        P = sources(isource).emit(photons_per_source);
 
     /* Calculate kext and albedo at the photon's current frequency for all
      * dust species. */
@@ -649,7 +649,7 @@ void Grid::propagate_photon(Photon *P, double tau, bool absorb) {
         // Calculate how far the photon can go before running into a source.
         int isource_intercept;
         for (int isource=0; isource<nsources; isource++) {
-            double s3 = sources[isource]->intercept_distance(P);
+            double s3 = sources(isource).intercept_distance(P);
 
             if (s3 < s) {
                 s = s3;
@@ -690,7 +690,7 @@ void Grid::propagate_photon(Photon *P, double tau, bool absorb) {
         // If the distance to the star is the shortest distance, kill the 
         // photon.
         if (absorbed_by_source) {
-            sources[isource_intercept]->reemit(P);
+            sources(isource_intercept).reemit(P);
             P->l = photon_loc(P);
             absorbed_by_source = false;
         }
@@ -1237,8 +1237,8 @@ double Grid::line_profile(int igas, int iline, int itrans, int ix, int iy, int i
         double nu) {
     double inv_gammat = inv_gamma_thermal(itrans,ix,iy,iz);
 
-    double profile = exp(-(nu - gas[igas]->nu(iline))*(nu - 
-            gas[igas]->nu(iline)) * (inv_gammat * inv_gammat));
+    double profile = exp(-(nu - gas(igas).nu(iline))*(nu - 
+            gas(igas).nu(iline)) * (inv_gammat * inv_gammat));
 
     return profile;
 }
@@ -1294,20 +1294,20 @@ void Grid::select_lines(py::array_t<double> _lam) {
     for (int igas = 0; igas < ngases; igas++) {
         double max_v = maximum_velocity(igas);
         double a_thermal = 3*sqrt(2 * k_B * maximum_gas_temperature(igas) / 
-                (gas[igas]->mu * m_p)); // 3-sigma width
+                (gas(igas).mu * m_p)); // 3-sigma width
         double a_microturb = maximum_microturbulence(igas);
 
         max_v += a_thermal + a_microturb;
 
-        for (int iline = 0; iline < gas[igas]->ntransitions; iline++) {
-            double max_frequency = gas[igas]->nu(iline) * (1. + max_v / c_l);
-            double min_frequency = gas[igas]->nu(iline) * (1. - max_v / c_l);
+        for (int iline = 0; iline < gas(igas).ntransitions; iline++) {
+            double max_frequency = gas(igas).nu(iline) * (1. + max_v / c_l);
+            double min_frequency = gas(igas).nu(iline) * (1. - max_v / c_l);
 
             if (((min_nu < min_frequency) && (min_frequency < max_nu)) || 
                     ((min_nu < max_frequency) && (max_frequency < max_nu)) ||
                     ((min_frequency < min_nu) && (max_nu < max_frequency))) {
                 printf("Including gas %d transition at %f GHz \n", igas, \
-                        gas[igas]->nu(iline)/1e9);
+                        gas(igas).nu(iline)/1e9);
 
                 Kokkos::resize(include_lines, include_lines.extent(0)+2);
                 include_lines(include_lines.extent(0)-2) = igas;
@@ -1326,42 +1326,42 @@ void Grid::calculate_level_populations(int igas, int iline) {
     Kokkos::resize(alpha_line, alpha_line.extent(0)+1, n1, n2, n3);
     Kokkos::resize(inv_gamma_thermal, inv_gamma_thermal.extent(0)+1, n1, n2, n3);
 
-    int level_up = gas[igas]->up(iline)-1;
-    int level_low = gas[igas]->low(iline)-1;
+    int level_up = gas(igas).up(iline)-1;
+    int level_low = gas(igas).low(iline)-1;
 
     for (int ix = 0; ix < n1; ix++) {
         for (int iy = 0; iy < n2; iy++) {
             for (int iz = 0; iz < n3; iz++) {
-                level_populations(i_up,ix,iy,iz) = gas[igas]->weights(level_up) * 
-                    exp(-h_p * c_l * gas[igas]->energies(level_up) / (k_B *
+                level_populations(i_up,ix,iy,iz) = gas(igas).weights(level_up) * 
+                    exp(-h_p * c_l * gas(igas).energies(level_up) / (k_B *
                     gas_temp(igas,ix,iy,iz))) / 
-                    gas[igas]->partition_function(gas_temp(igas,ix,iy,iz));
+                    gas(igas).partition_function(gas_temp(igas,ix,iy,iz));
 
-                level_populations(i_low,ix,iy,iz) = gas[igas]->weights(level_low) * 
-                    exp(-h_p * c_l * gas[igas]->energies(level_low) / (k_B *
+                level_populations(i_low,ix,iy,iz) = gas(igas).weights(level_low) * 
+                    exp(-h_p * c_l * gas(igas).energies(level_low) / (k_B *
                     gas_temp(igas,ix,iy,iz))) / 
-                    gas[igas]->partition_function(gas_temp(igas,ix,iy,iz));
+                    gas(igas).partition_function(gas_temp(igas,ix,iy,iz));
 
                 // Also calculate inv_gamma_thermal so we don't have to do it
                 // on the fly.
 
                 double a_thermal = sqrt(2 * k_B * gas_temp(igas,ix,iy,iz) / 
-                        (gas[igas]->mu * m_p));
+                        (gas(igas).mu * m_p));
                 double a_microturb = microturbulence(igas,ix,iy,iz);
 
-                inv_gamma_thermal(inv_gamma_thermal.extent(0), ix, iy, iz) = 1./(gas[igas]->nu(iline) / c_l * 
+                inv_gamma_thermal(inv_gamma_thermal.extent(0), ix, iy, iz) = 1./(gas(igas).nu(iline) / c_l * 
                         sqrt(a_thermal*a_thermal + a_microturb*a_microturb));
 
                 // Calculate the alpha value for the line in this cell, so this
                 // doesn't have to be done on the fly, either.
 
                 alpha_line(alpha_line.extent(0), ix, iy, iz) = c_l*c_l / (8*pi*
-                        gas[igas]->nu(iline)*gas[igas]->nu(iline)) * 
-                        gas[igas]->A(iline) * 
+                        gas(igas).nu(iline)*gas(igas).nu(iline)) * 
+                        gas(igas).A(iline) * 
                         number_dens(igas,ix,iy,iz) * 
                         (level_populations(i_low,ix,iy,iz)*
-                        gas[igas]->weights(level_up) / 
-                        gas[igas]->weights(level_low) - 
+                        gas(igas).weights(level_up) / 
+                        gas(igas).weights(level_low) - 
                         level_populations(i_up,ix,iy,iz)) *
                         inv_gamma_thermal(inv_gamma_thermal.extent(0), ix,iy,iz) / sqrt(pi);
             }

@@ -24,7 +24,8 @@ struct Star : public Source {
 
     Kokkos::Random_XorShift64_Pool<> *random_pool;
 
-    Star(double x, double y, double z, double _mass, double _radius, 
+    Star();
+    void set_properties(double x, double y, double z, double _mass, double _radius, 
             double _temperature);
 
     ~Star();

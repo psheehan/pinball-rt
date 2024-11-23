@@ -2,11 +2,50 @@
 
 /* Functions to set up the dust. */
 
+Gas::Gas() {}
+
 Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies, 
         py::array_t<double> __weights, py::array_t<int> __J, 
         py::array_t<int> __transitions, py::array_t<int> __up, 
         py::array_t<int> __low, py::array_t<double> __A, 
         py::array_t<double> __nu, py::array_t<double> __Eu) {
+
+    set_properties(_mu, __levels, __energies, __weights, __J, __transitions, __up, 
+            __low, __A, __nu, __Eu);
+}
+
+void Gas::copy(Gas *G) {
+    set_properties(G->mu, G->levels, G->energies, G->weights, G->J, G->transitions, G->up, 
+            G->low, G->A, G->nu, G->Eu);
+}
+
+void Gas::set_properties(double _mu, py::array_t<int> __levels, py::array_t<double> __energies, 
+        py::array_t<double> __weights, py::array_t<int> __J, 
+        py::array_t<int> __transitions, py::array_t<int> __up, 
+        py::array_t<int> __low, py::array_t<double> __A, 
+        py::array_t<double> __nu, py::array_t<double> __Eu) {
+
+    auto h_levels = view_from_array(__levels);
+    auto h_energies = view_from_array(__energies);
+    auto h_weights = view_from_array(__weights);
+    auto h_J = view_from_array(__J);
+
+    auto h_transitions = view_from_array(__transitions);
+    auto h_up = view_from_array(__up);
+    auto h_low = view_from_array(__low);
+    auto h_A = view_from_array(__A);
+    auto h_nu = view_from_array(__nu);
+    auto h_Eu = view_from_array(__Eu);
+
+    set_properties(_mu, h_levels, h_energies, h_weights, h_J, h_transitions, h_up, h_low, 
+            h_A, h_nu, h_Eu);
+}
+
+void Gas::set_properties(double _mu, Kokkos::View<int*> h_levels, Kokkos::View<double*> h__energies, 
+        Kokkos::View<double*> h__weights, Kokkos::View<int*> h_J, 
+        Kokkos::View<int*> h_transitions, Kokkos::View<int*> h_up, 
+        Kokkos::View<int*> h_low, Kokkos::View<double*> h_A, 
+        Kokkos::View<double*> h_nu, Kokkos::View<double*> h_Eu) {
 
     mu = _mu;
 
@@ -16,12 +55,10 @@ Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies,
 
     // Load the array buffers to get the proper setup info.*/
 
-    auto _levels_buf = __levels.request(); 
     /*auto _energies_buf = __energies.request();
     auto _weights_buf = __weights.request();
     auto _J_buf = __J.request();*/
 
-    auto _transitions_buf = __transitions.request(); 
     /*auto _up_buf = __up.request();
     auto _low_buf = __low.request();
     auto _A_buf = __A.request();
@@ -37,13 +74,13 @@ Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies,
 
     // Now get the correct format.*/
 
-    nlevels = _levels_buf.shape[0];
+    nlevels = (int) h_levels.extent(0);
     /*levels = (int *) _levels_buf.ptr;
     energies = (double *) _energies_buf.ptr;
     weights = (double *) _weights_buf.ptr;
     J = (int *) _J_buf.ptr;*/
 
-    ntransitions = _transitions_buf.shape[0];
+    ntransitions = (int) h_transitions.extent(0);
     /*transitions = (int *) _transitions_buf.ptr;
     up = (int *) _up_buf.ptr;
     low = (int *) _low_buf.ptr;
@@ -52,26 +89,26 @@ Gas::Gas(double _mu, py::array_t<int> __levels, py::array_t<double> __energies,
     Eu = (double *) _Eu_buf.ptr;*/
 
     Kokkos::resize(levels, nlevels);
-    Kokkos::deep_copy(levels, view_from_array(__levels));
+    Kokkos::deep_copy(levels, h_levels);
     Kokkos::resize(energies, nlevels);
-    Kokkos::deep_copy(energies, view_from_array(__energies));
+    Kokkos::deep_copy(energies, h__energies);
     Kokkos::resize(weights, nlevels);
-    Kokkos::deep_copy(weights, view_from_array(__weights));
+    Kokkos::deep_copy(weights, h__weights);
     Kokkos::resize(J, nlevels);
-    Kokkos::deep_copy(J, view_from_array(__J));
+    Kokkos::deep_copy(J, h_J);
 
     Kokkos::resize(transitions, ntransitions);
-    Kokkos::deep_copy(transitions, view_from_array(__transitions));
+    Kokkos::deep_copy(transitions, h_transitions);
     Kokkos::resize(up, ntransitions);
-    Kokkos::deep_copy(up, view_from_array(__up));
+    Kokkos::deep_copy(up, h_up);
     Kokkos::resize(low, ntransitions);
-    Kokkos::deep_copy(low, view_from_array(__low));
+    Kokkos::deep_copy(low, h_low);
     Kokkos::resize(A, ntransitions);
-    Kokkos::deep_copy(A, view_from_array(__A));
+    Kokkos::deep_copy(A, h_A);
     Kokkos::resize(nu, ntransitions);
-    Kokkos::deep_copy(nu, view_from_array(__nu));
+    Kokkos::deep_copy(nu, h_nu);
     Kokkos::resize(Eu, ntransitions);
-    Kokkos::deep_copy(Eu, view_from_array(__Eu));
+    Kokkos::deep_copy(Eu, h_Eu);
 
     // Calculate the partition function.
 

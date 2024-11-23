@@ -66,7 +66,7 @@ struct Grid {
     Kokkos::View<Dust*> dust;
 
     int ngases;
-    std::vector<Gas *> gas;
+    Kokkos::View<Gas*> gas;
 
     Kokkos::View<int*> include_lines{"include_lines", 0};
     Kokkos::View<double****> level_populations{"level_populations", 0, 0, 0, 0};
@@ -75,7 +75,7 @@ struct Grid {
 
 
     int nsources;
-    std::vector<Source*> sources;
+    Kokkos::View<Star*> sources;
     double total_lum;
 
     Params *Q;

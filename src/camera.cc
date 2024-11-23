@@ -537,7 +537,7 @@ void Camera::raytrace_sources(Image *image, int nthreads) {
     for (int isource=0; isource < G->nsources; isource++) {
         for (int iphot=0; iphot < 1000; iphot++) {
             // Emit the ray.
-            Ray *R = G->sources[isource]->emit_ray(image->nu, image->nnu, 
+            Ray *R = G->sources(isource).emit_ray(image->nu, image->nnu, 
                     image->pixel_size, ez, 1000);
 
             R->l = G->photon_loc(R);
@@ -590,7 +590,7 @@ void Camera::raytrace_sources(UnstructuredImage *image) {
 
         for (int iphot=0; iphot < 1; iphot++) {
             // Emit the ray.
-            Ray *R = G->sources[isource]->emit_ray(image->nu, image->nnu, 
+            Ray *R = G->sources(isource).emit_ray(image->nu, image->nnu, 
                     ez, 1);
 
             R->l = G->photon_loc(R);
