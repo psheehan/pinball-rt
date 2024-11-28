@@ -400,7 +400,8 @@ PYBIND11_MODULE(cpu, m) {
         .def_property("kabs", [](const Dust &D) {return array_from_view<double,double*>(D.kabs);}, nullptr)
         .def_property("ksca", [](const Dust &D) {return array_from_view<double,double*>(D.ksca);}, nullptr)
         .def_property("kext", [](const Dust &D) {return array_from_view<double,double*>(D.kext);}, nullptr)
-        .def_property("albedo", [](const Dust &D) {return array_from_view<double,double*>(D.albedo);}, nullptr);
+        .def_property("albedo", [](const Dust &D) {return array_from_view<double,double*>(D.albedo);}, nullptr)
+        .def("random_nu", &Dust::random_nu);
 
     py::class_<IsotropicDust, Dust>(m, "IsotropicDust")
         .def(py::init<py::array_t<double>, py::array_t<double>, 
@@ -445,10 +446,11 @@ PYBIND11_MODULE(cpu, m) {
             return array_from_view<double,double****>(G.microturbulence);}, nullptr)
         .def_property("velocity", [](const Grid &G) {
             return array_from_view<double,double*****>(G.velocity);}, nullptr)
-        .def("dust", [](const Grid &G, int i) {return &(G.dust(i));}, py::return_value_policy::reference, py::arg("i"))
-        .def("gas", [](const Grid &G, int i) {return &(G.gas(i));}, py::return_value_policy::reference, py::arg("i"))
+        //.def("dust", [](const Grid &G, int i) {return &(G.dust(i));}, py::return_value_policy::reference, py::arg("i"))
+        //.def("gas", [](const Grid &G, int i) {return &(G.gas(i));}, py::return_value_policy::reference, py::arg("i"))
         .def_readonly("scatt", &Grid::_scatt)
-        .def("sources", [](const Grid &G, int i) {return &(G.sources(i));}, py::return_value_policy::reference, py::arg("i"))
+        //.def("sources", [](const Grid &G, int i) {return &(G.sources(i));}, py::return_value_policy::reference, py::arg("i"))
+        .def("sources", [](const Grid &G) {return G.sources;}, py::return_value_policy::reference)
         .def("add_density", &Grid::add_density, 
                 "Add a density layer to the Grid.")
         .def("add_number_density", &Grid::add_number_density, 

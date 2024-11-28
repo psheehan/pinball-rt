@@ -373,7 +373,7 @@ Ray *Camera::emit_ray(double x, double y, double pixel_size, Kokkos::View<double
     R->pixel_too_large = false;
 
     R->ndust = G->nspecies;
-    Kokkos::resize(R->current_kext, G->nspecies, nnu);
+    /*Kokkos::resize(R->current_kext, G->nspecies, nnu);
     Kokkos::resize(R->current_albedo, G->nspecies, nnu);
 
     for (int j=0; j<G->nspecies; j++) {
@@ -381,7 +381,7 @@ Ray *Camera::emit_ray(double x, double y, double pixel_size, Kokkos::View<double
             R->current_kext(j,k) = G->dust(j).opacity(R->nu(k));
             R->current_albedo(j,k) = G->dust(j).albdo(R->nu(k));
         }
-    }
+    }*/
 
     R->r = i + x*ex + y*ey;
     R->n = ez;
@@ -537,7 +537,8 @@ void Camera::raytrace_sources(Image *image, int nthreads) {
     for (int isource=0; isource < G->nsources; isource++) {
         for (int iphot=0; iphot < 1000; iphot++) {
             // Emit the ray.
-            Ray *R = G->sources(isource).emit_ray(image->nu, image->nnu, 
+            //Ray *R = G->sources(isource).emit_ray(image->nu, image->nnu, 
+            Ray *R = G->sources->emit_ray(image->nu, image->nnu, 
                     image->pixel_size, ez, 1000);
 
             R->l = G->photon_loc(R);
@@ -545,7 +546,7 @@ void Camera::raytrace_sources(Image *image, int nthreads) {
             // Get the appropriate dust opacities.
 
             R->ndust = G->nspecies;
-            Kokkos::resize(R->current_kext, G->nspecies, image->nnu);
+            /*Kokkos::resize(R->current_kext, G->nspecies, image->nnu);
             Kokkos::resize(R->current_albedo, G->nspecies, image->nnu);
 
             for (int j=0; j<G->nspecies; j++) {
@@ -553,7 +554,7 @@ void Camera::raytrace_sources(Image *image, int nthreads) {
                     R->current_kext(j,k) = G->dust(j).opacity(R->nu(k));
                     R->current_albedo(j,k) = G->dust(j).albdo(R->nu(k));
                 }
-            }
+            }*/
 
             // Now propagate the ray.
             G->propagate_ray_from_source(R);
@@ -590,7 +591,8 @@ void Camera::raytrace_sources(UnstructuredImage *image) {
 
         for (int iphot=0; iphot < 1; iphot++) {
             // Emit the ray.
-            Ray *R = G->sources(isource).emit_ray(image->nu, image->nnu, 
+            //Ray *R = G->sources(isource).emit_ray(image->nu, image->nnu, 
+            Ray *R = G->sources->emit_ray(image->nu, image->nnu, 
                     ez, 1);
 
             R->l = G->photon_loc(R);
@@ -598,7 +600,7 @@ void Camera::raytrace_sources(UnstructuredImage *image) {
             // Get the appropriate dust opacities.
 
             R->ndust = G->nspecies;
-            Kokkos::resize(R->current_kext, G->nspecies, image->nnu);
+            /*Kokkos::resize(R->current_kext, G->nspecies, image->nnu);
             Kokkos::resize(R->current_albedo, G->nspecies, image->nnu);
 
             for (int j=0; j<G->nspecies; j++) {
@@ -606,7 +608,7 @@ void Camera::raytrace_sources(UnstructuredImage *image) {
                     R->current_kext(j,k) = G->dust(j).opacity(R->nu(k));
                     R->current_albedo(j,k) = G->dust(j).albdo(R->nu(k));
                 }
-            }
+            }*/
 
             // Now propagate the ray.
             G->propagate_ray_from_source(R);

@@ -49,7 +49,8 @@ model.grid.add_density(density, d)
 # Set up the star.
 
 model.grid.add_star(mass=M_sun.cgs.value, radius=R_sun.cgs.value, temperature=4000.)
-model.grid.sources[-1].set_blackbody_spectrum(lam)
+#model.grid.sources(0).set_blackbody_spectrum(lam)
+model.grid.sources().set_blackbody_spectrum(lam)
 
 # Run the thermal simulation.
 

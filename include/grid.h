@@ -63,10 +63,12 @@ struct Grid {
     Kokkos::View<double****> microturbulence{"microturbulence", 0, 0, 0, 0};
 
     int nspecies;
-    Kokkos::View<Dust*> dust;
+    //Kokkos::View<Dust*> dust;
+    Dust* dust;
 
     int ngases;
-    Kokkos::View<Gas*> gas;
+    //Kokkos::View<Gas*> gas;
+    Gas* gas;
 
     Kokkos::View<int*> include_lines{"include_lines", 0};
     Kokkos::View<double****> level_populations{"level_populations", 0, 0, 0, 0};
@@ -75,7 +77,8 @@ struct Grid {
 
 
     int nsources;
-    Kokkos::View<Star*> sources;
+    //Kokkos::View<Star*> sources;
+    Star* sources;
     double total_lum;
 
     Params *Q;

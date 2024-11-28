@@ -11,7 +11,7 @@ struct Photon {
     Vector<double, 3> n;
     Vector<double, 3> invn;
     Vector<double, 3> nframe;
-    Kokkos::View<double*> current_kext{"current_kext", 0}, current_albedo{"current_albedo", 0};
+    //Kokkos::View<double*> current_kext{"current_kext", 0}, current_albedo{"current_albedo", 0};
     Vector<int, 3> l;
     int cell_index;
 
@@ -34,7 +34,7 @@ struct Photon {
 };
 
 struct Ray : public Photon {
-    Kokkos::View<double**> current_kext{"current_kext", 0, 0}, current_albedo{"current_albedo", 0, 0};
+    //Kokkos::View<double**> current_kext{"current_kext", 0, 0}, current_albedo{"current_albedo", 0, 0};
 
     int nnu;
     int ndust;

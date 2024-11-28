@@ -1,4 +1,5 @@
 #include "dust.h"
+#include "timer.c"
 
 /* Functions to set up the dust. */
 
@@ -199,25 +200,36 @@ void Dust::absorb_mrw(Photon *P, double T, bool bw) {
 /* Calculate a random frequency for a photon. */
 
 double Dust::random_nu(double T, bool bw) {
-    double freq, CPD;
+    //TCREATE(moo); TCLEAR(moo); TSTART(moo);
+    double freq, CPD, CPD_prev;
 
     int i = find_in_arr(T,temp,ntemp);
 
     double ksi = random_number(random_pool);
 
     for (int j=1; j < nlam; j++) {
-        if (bw)
+        if (false) {
             CPD = drandom_nu_CPD_bw_dT(i,j) * (T - temp(i)) + 
                 random_nu_CPD_bw(i,j);
-        else
+            CPD_prev = drandom_nu_CPD_bw_dT(i,j-1) * (T - temp(i)) + 
+                random_nu_CPD_bw(i,j-1);
+        }
+        else {
             CPD = drandom_nu_CPD_dT(i,j) * (T - temp(i)) + 
                 random_nu_CPD(i,j);
+            CPD_prev = drandom_nu_CPD_dT(i,j-1) * (T - temp(i)) + 
+                random_nu_CPD(i,j-1);
+        }
 
         if (CPD > ksi) {
-            freq = random_number(random_pool) * (nu(j) - nu(j-1)) + nu(j-1);
+            //freq = random_number(random_pool) * (nu(j) - nu(j-1)) + nu(j-1);
+            freq = (ksi - CPD) * (nu(j) - nu(j-1)) / (CPD - CPD_prev) + nu(j-1);
             break;
         }
     }
+
+    //TSTOP(moo);
+    //printf("%f\n", TGIVE(moo));
 
     return freq;
 }
