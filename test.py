@@ -216,7 +216,7 @@ class Star:
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.Bnu, self.nu, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
 
-    def emit(self, nphotons):
+    def emit(self, nphotons, wavelength="random"):
         theta = np.pi*np.random.rand(nphotons)
         phi = 2*np.pi*np.random.rand(nphotons)
 
@@ -234,9 +234,12 @@ class Star:
 
         direction = cost[:,np.newaxis]*r_hat + (sint*np.cos(phi))[:,np.newaxis]*phi_hat + (sint*np.sin(phi))[:,np.newaxis]*theta_hat
 
-        frequency = self.random_nu(nphotons)
-
-        photon_energy = np.repeat(self.luminosity / nphotons, nphotons)
+        if wavelength == "random":
+            frequency = self.random_nu(nphotons)
+            photon_energy = np.repeat(self.luminosity / nphotons, nphotons)
+        else:
+            frequency = np.repeat((const.c / (wavelength*u.micron)).to(u.Hz).value, nphotons)
+            photon_energy = np.repeat(4.*np.pi**2*self.radius**2*models.BlackBody(temperature=self.temperature*u.K)(frequency[0]*u.Hz).cgs.value / nphotons, nphotons)
 
         return wp.array(position, dtype=wp.vec3), wp.array(direction, dtype=wp.vec3), \
                 frequency, wp.array(photon_energy, dtype=float)
@@ -269,23 +272,54 @@ class Grid:
         self.n2 = _w2.size-1
         self.n3 = _w3.size-1
 
-        self.volume = np.ones((self.n1, self.n2, self.n3)) * \
-                (_w1[1] - _w1[0]) * (_w2[1] - _w2[0]) * (_w3[1] - _w3[0])
+        self.volume = (np.ones((self.n1, self.n2, self.n3)) * \
+                (_w1[1] - _w1[0]) * (_w2[1] - _w2[0]) * (_w3[1] - _w3[0]))
 
     def add_density(self, _density, dust):
-        self.density = wp.array3d(_density, dtype=float)
+        self.density = _density.astype(np.float32)
 
         self.energy = wp.zeros(_density.shape, dtype=float)
-        self.temperature = wp.array(np.ones(_density.shape)*0.1, dtype=float)
-        self.mass = self.density.numpy() * self.volume
+        self.temperature = np.ones(_density.shape, dtype=np.float32)*0.1
+        self.mass = self.density * self.volume
 
         self.dust = dust
 
     def add_star(self, star):
         self.star = star
 
-    def emit(self, nphotons):
-        position, direction, frequency, photon_energy = self.star.emit(nphotons)
+    def emit(self, nphotons, wavelength="random", scattering=False):
+        if scattering:
+            nphotons_per_source = int(nphotons / 2)
+        else:
+            nphotons_per_source = nphotons
+
+        position, direction, frequency, photon_energy = self.star.emit(nphotons_per_source, wavelength)
+
+        cell_coords = []
+        if scattering:
+            ksi = np.random.rand(nphotons_per_source)
+            cum_lum = np.cumsum(self.luminosity.flatten()).reshape(self.density.shape) / self.total_lum
+
+            for i in range(nphotons_per_source):
+                cell_coords += [np.where(cum_lum[cum_lum > ksi[i]].min() == cum_lum)]
+            cell_coords = np.array(cell_coords)[:,:,0].astype(np.int32)
+
+            new_position = wp.zeros(nphotons_per_source, dtype=wp.vec3)
+            wp.launch(kernel=self.random_location_in_cell, 
+                      dim=(nphotons_per_source,), 
+                      inputs=[new_position, cell_coords, self.w1, self.w2, self.w3], 
+                      device='cpu')
+            position = wp.array(np.concatenate((position.numpy(), new_position), axis=0), dtype=wp.vec3)
+            
+            new_direction = wp.zeros(nphotons_per_source, dtype=wp.vec3)
+            wp.launch(kernel=self.random_direction,
+                      dim=(nphotons_per_source,),
+                      inputs=[new_direction, np.arange(nphotons_per_source, dtype=np.int32)],
+                      device='cpu')
+            direction = wp.array(np.concatenate((direction.numpy(), new_direction), axis=0), dtype=wp.vec3)
+
+            frequency = np.concatenate([frequency, np.repeat((const.c / (wavelength*u.micron)).to(u.Hz).value, nphotons_per_source)])
+            photon_energy = np.concatenate([photon_energy, np.repeat(self.total_lum/nphotons_per_source, nphotons_per_source).astype(np.float32)])
 
         indices = wp.zeros((nphotons, 3), dtype=int)
         wp.launch(kernel=self.photon_loc,
@@ -294,6 +328,22 @@ class Grid:
                   device='cpu')
 
         return position, direction, indices, frequency, photon_energy
+    
+    @wp.kernel
+    def random_location_in_cell(position: wp.array(dtype=wp.vec3),
+                                coords: wp.array2d(dtype=int),
+                                w1: wp.array(dtype=float),
+                                w2: wp.array(dtype=float),
+                                w3: wp.array(dtype=float)):
+        ip = wp.tid()
+
+        ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
+
+        rng = wp.rand_init(1234, i)
+
+        position[ip][0] = w1[ix] + (w1[ix+1] - w1[ix])*wp.randf(rng)
+        position[ip][1] = w2[iy] + (w2[iy+1] - w2[iy])*wp.randf(rng)
+        position[ip][2] = w3[iz] + (w3[iz+1] - w3[iz])*wp.randf(rng)
 
     @wp.kernel
     def next_wall_distance(position: wp.array(dtype=wp.vec3),
@@ -445,6 +495,19 @@ class Grid:
 
         if absorb_photon[ip]:
             energy[ix,iy,iz] += 10.**(wp.log10(photon_energy[ip]) + wp.log10(distances[ip]) + wp.log10(kabs[ip]) + wp.log10(density[ix,iy,iz]))
+
+    @wp.kernel
+    def deposit_scattering(indices: wp.array2d(dtype=int),
+                       distances: wp.array(dtype=float),
+                       scattering: wp.array3d(dtype=float),
+                       average_energy: wp.array(dtype=float),
+                       iphotons: wp.array(dtype=int)):
+
+        ip = iphotons[wp.tid()]
+
+        ix, iy, iz = indices[ip][0], indices[ip][1], indices[ip][2]
+
+        scattering[ix,iy,iz] += average_energy[ip] * distances[ip]
     
     @wp.kernel
     def check_in_grid(indices: wp.array2d(dtype=int),
@@ -601,6 +664,17 @@ class Grid:
 
         self.temperature = wp.array3d(temperature, dtype=float)
 
+    def initialize_luminosity_array(self, wavelength):
+        nu = const.c.cgs.value / wavelength
+        self.luminosity = np.zeros(self.density.shape)
+
+        for i in range(self.temperature.shape[0]):
+            for j in range(self.temperature.shape[1]):
+                for k in range(self.temperature.shape[2]):
+                    self.luminosity[i,j,k] = 4*np.pi*self.density[i,j,k]*self.volume[i,j,k]*self.dust.interpolate_kabs(nu)*models.BlackBody(temperature=self.temperature[i,j,k]*u.K)(nu*u.Hz).cgs.value
+
+        self.total_lum = self.luminosity.sum()
+
     def propagate_photons(self, position, direction, indices, frequency, photon_energy, debug=False):
         nphotons = position.numpy().shape[0]
         iphotons = np.arange(nphotons, dtype=np.int32)
@@ -724,6 +798,130 @@ class Grid:
         print(removing_photons_time)
         print(absorb_time)
 
+    def propagate_photons_scattering(self, position, direction, indices, frequency, photon_energy, inu, debug=False):
+        nphotons = position.numpy().shape[0]
+        iphotons = np.arange(nphotons, dtype=np.int32)
+        iphotons_original = iphotons.copy()
+
+        tau = -np.log(1. - np.random.rand(nphotons)).astype(np.float32)
+
+        s1 = wp.zeros(nphotons, dtype=float)
+        s2 = wp.zeros(nphotons, dtype=float)
+        alpha_scat = wp.zeros(nphotons, dtype=float)
+        in_grid = wp.zeros(nphotons, dtype=bool)
+
+        next_wall_time = 0.
+        dust_interpolation_time = 0.
+        tau_distance_time = 0.
+        move_time = 0.
+        deposit_energy_time = 0.
+        photon_loc_time = 0.
+        in_grid_time = 0.
+        removing_photons_time = 0.
+        absorb_time = 0.
+        
+        t1 = time.time()
+        kabs = self.dust.interpolate_kabs(frequency).astype(np.float32)
+        ksca = self.dust.interpolate_ksca(frequency).astype(np.float32)
+        albedo = ksca / (kabs + ksca)
+        t2 = time.time()
+        dust_interpolation_time += t2 - t1
+
+        absorb_photon = np.repeat(False, nphotons)
+
+        total_tau_abs = np.zeros(nphotons)
+
+        count = 0
+        while nphotons > 0:
+            count += 1
+
+            t1 = time.time()
+            wp.launch(kernel=self.next_wall_distance,
+                      dim=(nphotons,),
+                      inputs=[position, indices, direction, self.w1, self.w2, self.w3, s1, iphotons],
+                      device='cpu')
+            t2 = time.time()
+            next_wall_time += t2 - t1
+        
+            t1 = time.time()
+            wp.launch(kernel=self.tau_distance,
+                      dim=(nphotons,),
+                      inputs=[tau, self.density, indices, ksca, s2, alpha_scat, iphotons],
+                      device='cpu')
+            t2 = time.time()
+            tau_distance_time += t2 - t1
+        
+            s = np.minimum(s1.numpy(), s2.numpy())
+
+            tau_abs = s * alpha_scat * kabs / ksca
+            tau_scat = s * alpha_scat 
+
+            average_energy = np.where(tau_abs < EPSILON, (1. - 0.5*tau_abs) * photon_energy, (1.0 - np.exp(-tau_abs)) / tau_abs * photon_energy)
+
+            t1 = time.time()
+            wp.launch(kernel=self.deposit_scattering,
+                      dim=(nphotons,),
+                      inputs=[indices, s, self.scattering[inu], average_energy, iphotons],
+                      device='cpu')
+            t2 = time.time()
+            deposit_energy_time += t2 - t1
+
+            photon_energy *= np.exp(-tau_abs)
+            tau -= tau_scat
+            total_tau_abs += tau_abs
+        
+            t1 = time.time()
+            wp.launch(kernel=self.move,
+                      dim=(nphotons,),
+                      inputs=[position, direction, s, iphotons],
+                      device='cpu')
+            t2 = time.time()
+            move_time += t2 - t1
+        
+            t1 = time.time()
+            wp.launch(kernel=self.photon_loc,
+                      dim=(nphotons,),
+                      inputs=[position, direction, self.w1, self.w2, self.w3, self.n1, self.n2, self.n3, indices, iphotons],
+                      device='cpu')
+            t2 = time.time()
+            photon_loc_time += t2 - t1
+        
+            t1 = time.time()
+            wp.launch(kernel=self.check_in_grid,
+                      dim=(nphotons,),
+                      inputs=[indices, self.n1, self.n2, self.n3, in_grid, iphotons],
+                      device='cpu')
+            t2 = time.time()
+            in_grid_time += t2 - t1
+        
+            t1 = time.time()
+            iphotons = iphotons_original[np.logical_and(in_grid, total_tau_abs < 30.)]
+            nphotons = iphotons.size
+            t2 = time.time()
+            removing_photons_time += t2 - t1
+
+            t1 = time.time()
+            interaction = np.logical_and(tau <= 0, in_grid)
+            interaction_indices = iphotons_original[interaction]
+            absorb = np.logical_and(interaction, absorb_photon)
+            absorb_indices = iphotons_original[absorb]
+            tmp_time = self.interact(indices, direction, frequency, absorb, absorb_indices, interaction_indices)
+            t2 = time.time()
+            absorb_time += t2 - t1
+            #absorb_time += tmp_time
+        
+            tau[interaction] = -np.log(1. - np.random.rand(interaction.sum()))
+
+        print(next_wall_time)
+        print(dust_interpolation_time)
+        print(tau_distance_time)
+        print(move_time)
+        print(deposit_energy_time)
+        print(photon_loc_time)
+        print(in_grid_time)
+        print(removing_photons_time)
+        print(absorb_time)
+
     @wp.kernel
     def add_intensity(s: wp.array(dtype=float),
                       intensity: wp.array2d(dtype=float),
@@ -733,6 +931,7 @@ class Grid:
                       albedo: wp.array(dtype=float),
                       density: wp.array3d(dtype=float),
                       temperature: wp.array3d(dtype=float),
+                      scattering: wp.array3d(dtype=float),
                       indices: wp.array2d(dtype=int),
                       irays: wp.array(dtype=int)):
 
@@ -756,6 +955,8 @@ class Grid:
 
         if alpha_ext > 0.:
             intensity_abs *= (1.0 - wp.exp(-tau_cell)) / alpha_ext
+
+        intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * scattering[ix,iy,iz]
 
         intensity_cell = intensity_abs
 
@@ -786,7 +987,7 @@ class Grid:
 
             wp.launch(kernel=self.add_intensity,
                       dim=(nrays, nnu),
-                      inputs=[s, intensity, tau, frequency, kext, albedo, self.density, self.temperature, indices, iray],
+                      inputs=[s, intensity, tau, frequency, kext, albedo, self.density, self.temperature, self.scattering, indices, iray],
                       device='cpu')
         
             wp.launch(kernel=self.move,
@@ -841,6 +1042,21 @@ class Grid:
                 print(count)
 
             count += 1
+
+    def scattering_mc(self, nphotons, wavelengths):
+        self.scattering = np.zeros((len(wavelengths),)+self.density.shape, dtype=np.float32)
+        
+        for i, wavelength in enumerate(wavelengths):
+            self.initialize_luminosity_array(wavelength=wavelength)
+
+            position, direction, indices, frequency, photon_energy = self.emit(nphotons, wavelength, scattering=True)
+
+            t1 = time.time()
+            self.propagate_photons_scattering(position, direction, indices, frequency, photon_energy, i)
+            t2 = time.time()
+            print("Time:", t2 - t1)
+
+            self.scattering[i] /= (4.*np.pi * self.volume)
 
 class Image:
     def __init__(self, nx, ny, pixel_size, lam):
@@ -993,14 +1209,22 @@ grid = Grid(w1, w2, w3)
 grid.add_density(density, d)
 grid.add_star(star)
 
-grid.thermal_mc(nphotons)
+#grid.thermal_mc(nphotons)
 
 for i in range(9):
-    plt.imshow(grid.temperature.numpy()[:,:,i])
+    plt.imshow(grid.temperature[:,:,i])
     plt.savefig(f"temperature_{i}.png")
 
-camera = Camera(grid)
-image = camera.make_image(256, 256, 0.1, np.array([1000.]), 45., 45., 1.)
+grid.scattering_mc(100000, np.array([1.0,2.0]))
 
-plt.imshow(image.intensity)
+camera = Camera(grid)
+image = camera.make_image(256, 256, 0.1, np.array([1., 1000.]), 45., 45., 1.)
+
+print(grid.scattering.max())
+
+for i in range(9):
+    plt.imshow(grid.scattering[0,:,:,i])
+    plt.savefig(f"scattering_{i}.png")
+
+plt.imshow(image.intensity[:,:,0])
 plt.savefig("image.png")
