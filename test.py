@@ -304,14 +304,14 @@ class Grid:
                 cell_coords += [np.where(cum_lum[cum_lum > ksi[i]].min() == cum_lum)]
             cell_coords = np.array(cell_coords)[:,:,0].astype(np.int32)
 
-            new_position = wp.zeros(nphotons_per_source, dtype=wp.vec3)
+            new_position = wp.array(np.zeros((nphotons_per_source,3)), dtype=wp.vec3)
             wp.launch(kernel=self.random_location_in_cell, 
                       dim=(nphotons_per_source,), 
                       inputs=[new_position, cell_coords, self.w1, self.w2, self.w3], 
                       device='cpu')
             position = wp.array(np.concatenate((position.numpy(), new_position), axis=0), dtype=wp.vec3)
             
-            new_direction = wp.zeros(nphotons_per_source, dtype=wp.vec3)
+            new_direction = wp.array(np.zeros((nphotons_per_source, 3)), dtype=wp.vec3)
             wp.launch(kernel=self.random_direction,
                       dim=(nphotons_per_source,),
                       inputs=[new_direction, np.arange(nphotons_per_source, dtype=np.int32)],
@@ -380,52 +380,52 @@ class Grid:
         distances[ip] = s
 
     @wp.kernel
-    def outer_wall_distance(position: wp.array2d(dtype=wp.vec3),
-                           direction: wp.array2d(dtype=wp.vec3),
+    def outer_wall_distance(position: wp.array(dtype=wp.vec3),
+                           direction: wp.array(dtype=wp.vec3),
                            w1: wp.array(dtype=float),
                            w2: wp.array(dtype=float),
                            w3: wp.array(dtype=float),
                            n1: int,
                            n2: int,
                            n3: int,
-                           distances: wp.array2d(dtype=float)):
+                           distances: wp.array(dtype=float)):
     
 
-        ix, iy = wp.tid()
+        ip = wp.tid()
 
         s = 0.
 
-        if direction[ix,iy][0] != 0:
-            if position[ix,iy][0] <= w1[0]:
-                sx = (w1[0] - position[ix,iy][0]) / direction[ix,iy][0]
+        if direction[ip][0] != 0:
+            if position[ip][0] <= w1[0]:
+                sx = (w1[0] - position[ip][0]) / direction[ip][0]
                 if sx > s:
                     s = sx
-            elif position[ix,iy][0] >= w1[n1]:
-                sx = (w1[n1] - position[ix,iy][0]) / direction[ix,iy][0]
+            elif position[ip][0] >= w1[n1]:
+                sx = (w1[n1] - position[ip][0]) / direction[ip][0]
                 if sx > s:
                     s = sx
     
-        if direction[ix,iy][1] != 0:
-            if position[ix,iy][1] <= w2[0]:
-                sy = (w2[0] - position[ix,iy][1]) / direction[ix,iy][1]
+        if direction[ip][1] != 0:
+            if position[ip][1] <= w2[0]:
+                sy = (w2[0] - position[ip][1]) / direction[ip][1]
                 if sy > s:
                     s = sy
-            elif position[ix,iy][1] >= w2[n2]:
-                sy = (w2[n2] - position[ix,iy][1]) / direction[ix,iy][1]
+            elif position[ip][1] >= w2[n2]:
+                sy = (w2[n2] - position[ip][1]) / direction[ip][1]
                 if sy > s:
                     s = sy
     
-        if direction[ix,iy][2] != 0:
-            if position[ix,iy][2] <= w3[0]:
-                sz = (w3[0] - position[ix,iy][2]) / direction[ix,iy][2]
+        if direction[ip][2] != 0:
+            if position[ip][2] <= w3[0]:
+                sz = (w3[0] - position[ip][2]) / direction[ip][2]
                 if sz > s:
                     s = sz
-            elif position[ix,iy][2] >= w3[n3]:
-                sz = (w3[n3] - position[ix,iy][2]) / direction[ix,iy][2]
+            elif position[ip][2] >= w3[n3]:
+                sz = (w3[n3] - position[ip][2]) / direction[ip][2]
                 if sz > s:
                     s = sz
 
-        new_position = position[ix,iy] + s*direction[ix,iy]
+        new_position = position[ip] + s*direction[ip]
 
         if equal(new_position[0],w1[0],EPSILON):
             new_position[0] = w1[0]
@@ -446,7 +446,7 @@ class Grid:
                 (new_position[1] > w2[n2]) or (new_position[2] < w3[0]) or (new_position[2] > w3[n3])):
             s = np.inf
 
-        distances[ix,iy] = s
+        distances[ip] = s
 
     def grid_size(self):
         return 2*np.sqrt(np.abs(self.w1).max()**2 + np.abs(self.w2).max()**2 + np.abs(self.w3).max()**2)
@@ -923,6 +923,20 @@ class Grid:
         print(absorb_time)
 
     @wp.kernel
+    def check_pixel_too_large(indices: wp.array2d(dtype=int),
+                              pixel_size: float,
+                              pixel_too_large: wp.array(dtype=bool),
+                              cell_size: wp.array3d(dtype=float),
+                              irays: wp.array(dtype=int)):
+        
+        iray = wp.tid()
+        ir = irays[iray]
+
+        ix, iy, iz = indices[ir][0], indices[ir][1], indices[ir][2]
+
+        pixel_too_large[ir] = pixel_size > cell_size[ix,iy,iz]
+
+    @wp.kernel
     def add_intensity(s: wp.array(dtype=float),
                       intensity: wp.array2d(dtype=float),
                       tau: wp.array2d(dtype=float),
@@ -963,7 +977,7 @@ class Grid:
         intensity[ir,inu] += intensity_cell * wp.exp(-tau[ir,inu])
         tau[ir,inu] += tau_cell
 
-    def propagate_rays(self, position, direction, indices, intensity, tau, frequency):
+    def propagate_rays(self, position, direction, indices, intensity, tau, frequency, pixel_size, pixel_too_large):
         nrays = position.numpy().shape[0]
         iray = np.arange(nrays, dtype=np.int32)
         iray_original = iray.copy()
@@ -980,6 +994,11 @@ class Grid:
         original_intensity = intensity
         
         while nrays > 0:
+            wp.launch(kernel=self.check_pixel_too_large,
+                      dim=(nrays,),
+                      inputs=[indices, pixel_size, pixel_too_large, (self.volume**(1./3)).astype(np.float32), iray],
+                      device='cpu')
+
             wp.launch(kernel=self.next_wall_distance,
                       dim=(nrays,),
                       inputs=[position, indices, direction, self.w1, self.w2, self.w3, s, iray],
@@ -1005,7 +1024,7 @@ class Grid:
                       inputs=[indices, self.n1, self.n2, self.n3, in_grid, iray],
                       device='cpu')
 
-            iray = iray_original[in_grid]
+            iray = iray_original[np.logical_and(in_grid, np.logical_not(pixel_too_large))]
             nrays = iray.size
 
     def thermal_mc(self, nphotons, Qthresh=2.0, Delthresh=1.1, p=99.):
@@ -1101,22 +1120,23 @@ class Camera:
                 -np.sin(self.incl)*np.sin(phi), \
                 -np.cos(self.incl)])
 
-    def emit_rays(self, x, y, _pixel_size, nu):
+    def emit_rays(self, x, y, nu, nx, ny, pixel_size):
         intensity = np.zeros(x.shape+(nu.size,), dtype=np.float32)
         tau = np.zeros(x.shape+(nu.size,), dtype=float)
-        image_ix, image_iy = np.meshgrid(np.arange(x.shape[0]), np.arange(x.shape[1]))
+        #image_ix, image_iy = np.meshgrid(np.arange(x.shape[0]), np.arange(x.shape[1]))
+        image_ix = (x / pixel_size + nx / 2).astype(np.int32)
+        image_iy = (y / pixel_size + ny / 2).astype(np.int32)
 
-        pixel_size = np.ones(x.shape) * _pixel_size
         pixel_too_large = np.zeros(x.shape).astype(bool)
 
-        position = np.broadcast_to(self.i, x.shape+(3,)) + x[:,:,np.newaxis]*self.ex + y[:,:,np.newaxis]*self.ey
+        position = np.broadcast_to(self.i, x.shape+(3,)) + np.expand_dims(x, axis=-1)*self.ex + np.expand_dims(y, axis=-1)*self.ey
         direction = np.broadcast_to(self.ez, x.shape+(3,))
         direction = np.where(np.abs(direction) < EPSILON, 0., direction)
 
         position = wp.array2d(position, dtype=wp.vec3)
         direction = wp.array2d(direction, dtype=wp.vec3)
 
-        return intensity, tau, pixel_size, pixel_too_large, position, direction, image_ix, image_iy
+        return intensity, tau, pixel_too_large, position, direction, image_ix, image_iy
 
     @wp.kernel
     def put_intensity_in_image(image_ix: wp.array(dtype=int),
@@ -1135,47 +1155,64 @@ class Camera:
 
         image = Image(nx, ny, (pixel_size*u.arcsecond*dpc*u.pc).cgs.value, lam)
 
-        intensity, tau, pixel_size, pixel_too_large, position, direction, image_ix, image_iy = \
-                self.emit_rays(image.x, image.y, image.pixel_size, image.nu)
+        nrays = nx*ny
+        new_x, new_y = image.x.flatten(), image.y.flatten()
+        pixel_size = image.pixel_size
 
-        s = wp.zeros((nx,ny), dtype=float)
-    
-        wp.launch(kernel=self.grid.outer_wall_distance,
-                  dim=(nx,ny),
-                  inputs=[position, direction, self.grid.w1, self.grid.w2, self.grid.w3,
-                  self.grid.n1, self.grid.n2, self.grid.n3, s],
-                  device='cpu')
+        while nrays > 0:
+            intensity, tau, pixel_too_large, position, direction, image_ix, image_iy = \
+                    self.emit_rays(new_x, new_y, image.nu, image.nx, image.ny, image.pixel_size)
 
-        s = s.numpy()
-        will_be_in_grid = s < np.inf
+            s = wp.zeros(new_x.shape, dtype=float)
+        
+            wp.launch(kernel=self.grid.outer_wall_distance,
+                    dim=new_x.shape,
+                    inputs=[position, direction, self.grid.w1, self.grid.w2, self.grid.w3,
+                    self.grid.n1, self.grid.n2, self.grid.n3, s],
+                    device='cpu')
 
-        position = position.numpy()[will_be_in_grid]
-        direction = direction.numpy()[will_be_in_grid]
-        s = s[will_be_in_grid]
+            s = s.numpy()
+            will_be_in_grid = s < np.inf
 
-        position = position + s[:,np.newaxis]*direction
+            position = position.numpy()[will_be_in_grid]
+            direction = direction.numpy()[will_be_in_grid]
+            s = s[will_be_in_grid]
 
-        position = wp.array(position, dtype=wp.vec3)
-        direction = wp.array(direction, dtype=wp.vec3)
-        intensity = intensity[will_be_in_grid]
-        tau = wp.array(tau[will_be_in_grid], dtype=float)
-        image_ix = wp.array(image_ix[will_be_in_grid], dtype=int)
-        image_iy = wp.array(image_iy[will_be_in_grid], dtype=int)
+            position = position + s[:,np.newaxis]*direction
 
-        nrays = will_be_in_grid.sum()
-        iray = np.arange(nrays, dtype=np.int32)
+            position = wp.array(position, dtype=wp.vec3)
+            direction = wp.array(direction, dtype=wp.vec3)
+            intensity = intensity[will_be_in_grid]
+            tau = wp.array(tau[will_be_in_grid], dtype=float)
+            image_ix = image_ix[will_be_in_grid]
+            image_iy = image_iy[will_be_in_grid]
+            pixel_too_large = pixel_too_large[will_be_in_grid]
 
-        indices = wp.zeros((nrays, 3), dtype=int)
-        wp.launch(kernel=self.grid.photon_loc,
-                  dim=(nrays,),
-                  inputs=[position, direction, self.grid.w1, self.grid.w2, self.grid.w3, self.grid.n1, self.grid.n2, self.grid.n3, indices, iray],
-                  device='cpu')
+            nrays = will_be_in_grid.sum()
+            iray = np.arange(nrays, dtype=np.int32)
 
-        self.grid.propagate_rays(position, direction, indices, intensity, tau, image.nu)
+            indices = wp.zeros((nrays, 3), dtype=int)
+            wp.launch(kernel=self.grid.photon_loc,
+                    dim=(nrays,),
+                    inputs=[position, direction, self.grid.w1, self.grid.w2, self.grid.w3, self.grid.n1, self.grid.n2, self.grid.n3, indices, iray],
+                    device='cpu')
 
-        wp.launch(kernel=self.put_intensity_in_image, 
-                  dim=(nrays, image.lam.size),
-                  inputs=[image_ix, image_iy, intensity, image.intensity])
+            self.grid.propagate_rays(position, direction, indices, intensity, tau, image.nu, pixel_size, pixel_too_large)
+
+            wp.launch(kernel=self.put_intensity_in_image, 
+                    dim=(nrays, image.lam.size),
+                    inputs=[image_ix, image_iy, intensity, image.intensity])
+
+            new_x, new_y = [], []
+            for i in range(nrays):
+                if pixel_too_large[i]:
+                    for j in range(4):
+                        new_x.append(image_ix[i] + (-1)**j * pixel_size/4)
+                        new_y.append(image_iy[i] + (-1)**(int(j/2)) * pixel_size/4)
+            new_x = np.array(new_x)
+            new_y = np.array(new_y)
+            pixel_size = pixel_size / 2
+            nrays = len(new_x)
 
         return image
 
@@ -1209,7 +1246,7 @@ grid = Grid(w1, w2, w3)
 grid.add_density(density, d)
 grid.add_star(star)
 
-#grid.thermal_mc(nphotons)
+grid.thermal_mc(nphotons)
 
 for i in range(9):
     plt.imshow(grid.temperature[:,:,i])
