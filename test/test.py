@@ -2,7 +2,7 @@ import sys
 sys.path.append("../")
 from pinball.dust import Dust
 from pinball.sources import Star
-from pinball.grids import Grid
+from pinball.grids import CartesianGrid
 from pinball.camera import Camera
 
 import astropy.units as u
@@ -37,7 +37,7 @@ star.set_blackbody_spectrum(d.nu)
 
 # Set up the grid.
 
-grid = Grid(w1, w2, w3)
+grid = CartesianGrid(w1, w2, w3)
 grid.add_density(density, d)
 grid.add_star(star)
 

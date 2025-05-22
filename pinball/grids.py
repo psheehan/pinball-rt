@@ -27,9 +27,6 @@ class Grid:
         self.n2 = _w2.size-1
         self.n3 = _w3.size-1
 
-        self.volume = (np.ones((self.n1, self.n2, self.n3)) * \
-                (_w1[1] - _w1[0]) * (_w2[1] - _w2[0]) * (_w3[1] - _w3[0]))
-
     def add_density(self, _density, dust):
         self.density = _density.astype(np.float32)
 
@@ -83,128 +80,6 @@ class Grid:
                   device='cpu')
 
         return position, direction, indices, frequency, photon_energy
-    
-    @wp.kernel
-    def random_location_in_cell(position: wp.array(dtype=wp.vec3),
-                                coords: wp.array2d(dtype=int),
-                                w1: wp.array(dtype=float),
-                                w2: wp.array(dtype=float),
-                                w3: wp.array(dtype=float)):
-        ip = wp.tid()
-
-        ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
-
-        rng = wp.rand_init(1234, ip)
-
-        position[ip][0] = w1[ix] + (w1[ix+1] - w1[ix])*wp.randf(rng)
-        position[ip][1] = w2[iy] + (w2[iy+1] - w2[iy])*wp.randf(rng)
-        position[ip][2] = w3[iz] + (w3[iz+1] - w3[iz])*wp.randf(rng)
-
-    @wp.kernel
-    def next_wall_distance(position: wp.array(dtype=wp.vec3),
-                           indices: wp.array2d(dtype=int),
-                           direction: wp.array(dtype=wp.vec3),
-                           w1: wp.array(dtype=float),
-                           w2: wp.array(dtype=float),
-                           w3: wp.array(dtype=float),
-                           distances: wp.array(dtype=float),
-                           irays: wp.array(dtype=int)):
-    
-        ip = irays[wp.tid()]
-        #print(ip)
-    
-        iw1, iw2, iw3 = indices[ip][0], indices[ip][1], indices[ip][2]
-    
-        s = wp.inf
-    
-        sx1 = (w1[iw1] - position[ip][0]) / direction[ip][0]
-        if sx1 > 0: s = wp.min(s, sx1)
-        sx2 = (w1[iw1+1] - position[ip][0]) / direction[ip][0]
-        if sx2 > 0: s = wp.min(s, sx2)
-    
-        sy1 = (w2[iw2] - position[ip][1]) / direction[ip][1]
-        if sy1 > 0: s = wp.min(s, sy1)
-        sy2 = (w2[iw2+1] - position[ip][1]) / direction[ip][1]
-        if sy2 > 0: s = wp.min(s, sy2)
-    
-        sz1 = (w3[iw3] - position[ip][2]) / direction[ip][2]
-        if sz1 > 0: s = wp.min(s, sz1)
-        sz2 = (w3[iw3+1] - position[ip][2]) / direction[ip][2]
-        if sz2 > 0: s = wp.min(s, sz2)
-    
-        distances[ip] = s
-
-    @wp.kernel
-    def outer_wall_distance(position: wp.array(dtype=wp.vec3),
-                           direction: wp.array(dtype=wp.vec3),
-                           w1: wp.array(dtype=float),
-                           w2: wp.array(dtype=float),
-                           w3: wp.array(dtype=float),
-                           n1: int,
-                           n2: int,
-                           n3: int,
-                           distances: wp.array(dtype=float)):
-    
-
-        ip = wp.tid()
-
-        s = 0.
-
-        if direction[ip][0] != 0:
-            if position[ip][0] <= w1[0]:
-                sx = (w1[0] - position[ip][0]) / direction[ip][0]
-                if sx > s:
-                    s = sx
-            elif position[ip][0] >= w1[n1]:
-                sx = (w1[n1] - position[ip][0]) / direction[ip][0]
-                if sx > s:
-                    s = sx
-    
-        if direction[ip][1] != 0:
-            if position[ip][1] <= w2[0]:
-                sy = (w2[0] - position[ip][1]) / direction[ip][1]
-                if sy > s:
-                    s = sy
-            elif position[ip][1] >= w2[n2]:
-                sy = (w2[n2] - position[ip][1]) / direction[ip][1]
-                if sy > s:
-                    s = sy
-    
-        if direction[ip][2] != 0:
-            if position[ip][2] <= w3[0]:
-                sz = (w3[0] - position[ip][2]) / direction[ip][2]
-                if sz > s:
-                    s = sz
-            elif position[ip][2] >= w3[n3]:
-                sz = (w3[n3] - position[ip][2]) / direction[ip][2]
-                if sz > s:
-                    s = sz
-
-        new_position = position[ip] + s*direction[ip]
-
-        if equal(new_position[0],w1[0],EPSILON):
-            new_position[0] = w1[0]
-        elif equal(new_position[0],w1[n1],EPSILON):
-            new_position[0] = w1[n1]
-
-        if equal(new_position[1],w2[0],EPSILON):
-            new_position[1] = w2[0]
-        elif equal(new_position[1],w2[n2],EPSILON):
-            new_position[1] = w2[n2]
-
-        if equal(new_position[2],w3[0],EPSILON):
-            new_position[2] = w3[0]
-        elif equal(new_position[2],w3[n3],EPSILON):
-            new_position[2] = w3[n3]
-
-        if ((new_position[0] < w1[0]) or (new_position[0] > w1[n1]) or (new_position[1] < w2[0]) or
-                (new_position[1] > w2[n2]) or (new_position[2] < w3[0]) or (new_position[2] > w3[n3])):
-            s = np.inf
-
-        distances[ip] = s
-
-    def grid_size(self):
-        return 2*np.sqrt(np.abs(self.w1).max()**2 + np.abs(self.w2).max()**2 + np.abs(self.w3).max()**2)
     
     @wp.kernel
     def tau_distance(tau: wp.array(dtype=float),
@@ -263,91 +138,6 @@ class Grid:
         ix, iy, iz = indices[ip][0], indices[ip][1], indices[ip][2]
 
         scattering[ix,iy,iz] += average_energy[ip] * distances[ip]
-    
-    @wp.kernel
-    def check_in_grid(indices: wp.array2d(dtype=int),
-                n1: int,
-                n2: int,
-                n3: int,
-                in_grid: wp.array(dtype=bool),
-                irays: wp.array(dtype=int)):
-    
-        ip = irays[wp.tid()]
-    
-        if (indices[ip,0] >= n1 or indices[ip,0] < 0 or \
-                indices[ip,1] >= n2 or indices[ip,1] < 0 or \
-                indices[ip,2] >= n3 or indices[ip,2] < 0):
-            in_grid[ip] = False
-        else:
-            in_grid[ip] = True
-    
-    @wp.kernel
-    def photon_loc(position: wp.array(dtype=wp.vec3),
-                   direction: wp.array(dtype=wp.vec3),
-                   w1: wp.array(dtype=float),
-                   w2: wp.array(dtype=float),
-                   w3: wp.array(dtype=float),
-                   n1: int,
-                   n2: int,
-                   n3: int,
-                   indices: wp.array2d(dtype=int),
-                   iray: wp.array(dtype=int)):
-
-        ip = iray[wp.tid()]
-    
-        if position[ip][0] >= w1[n1]:
-            i1 = n1-1
-        elif position[ip][0] <= w1[0]:
-            i1 = 0
-        else:
-            i1 = wp.int(wp.floor((position[ip][0] - w1[0]) / (w1[1] - w1[0])))
-
-        if equal(position[ip][0], w1[i1], EPSILON):
-            position[ip][0] = w1[i1]
-        elif equal(position[ip][0], w1[i1+1], EPSILON):
-            position[ip][0] = w1[i1+1]
-
-        if position[ip][0] == w1[i1] and direction[ip][0] < 0:
-            i1 -= 1
-        elif position[ip][0] == w1[i1+1] and direction[ip][0] > 0:
-            i1 += 1
-        indices[ip][0] = i1
-    
-        if position[ip][1] >= w2[n2]:
-            i2 = n2-1
-        elif position[ip][1] <= w2[0]:
-            i2 = 0
-        else:
-            i2 = wp.int(wp.floor((position[ip][1] - w2[0]) / (w2[1] - w2[0])))
-
-        if equal(position[ip][1], w2[i2], EPSILON):
-            position[ip][1] = w2[i2]
-        elif equal(position[ip][1], w2[i2+1], EPSILON):
-            position[ip][1] = w2[i2+1]
-
-        if position[ip][1] == w2[i2] and direction[ip][1] < 0:
-            i2 -= 1
-        elif position[ip][1] == w2[i2+1] and direction[ip][1] > 0:
-            i2 += 1
-        indices[ip][1] = i2
-    
-        if position[ip][2] >= w3[n3]:
-            i3 = n3-1
-        elif position[ip][2] <= w3[0]:
-            i3 = 0
-        else:
-            i3 = wp.int(wp.floor((position[ip][2] - w3[0]) / (w3[1] - w3[0])))
-
-        if equal(position[ip][2], w3[i3], EPSILON):
-            position[ip][2] = w3[i3]
-        elif equal(position[ip][2], w3[i3+1], EPSILON):
-            position[ip][2] = w3[i3+1]
-
-        if position[ip][2] == w3[i3] and direction[ip][2] < 0:
-            i3 -= 1
-        elif position[ip][2] == w3[i3+1] and direction[ip][2] > 0:
-            i3 += 1
-        indices[ip][2] = i3
 
     @wp.kernel
     def photon_temperature(indices: wp.array2d(dtype=int),
@@ -831,3 +621,216 @@ class Grid:
             print("Time:", t2 - t1)
 
             self.scattering[i] /= (4.*np.pi * self.volume)
+
+class CartesianGrid(Grid):
+    def __init__(self, _w1, _w2, _w3):
+        super().__init__(_w1, _w2, _w3)
+
+        self.volume = (np.ones((self.n1, self.n2, self.n3)) * \
+                (_w1[1] - _w1[0]) * (_w2[1] - _w2[0]) * (_w3[1] - _w3[0]))
+
+    @wp.kernel
+    def random_location_in_cell(position: wp.array(dtype=wp.vec3),
+                                coords: wp.array2d(dtype=int),
+                                w1: wp.array(dtype=float),
+                                w2: wp.array(dtype=float),
+                                w3: wp.array(dtype=float)):
+        ip = wp.tid()
+
+        ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
+
+        rng = wp.rand_init(1234, ip)
+
+        position[ip][0] = w1[ix] + (w1[ix+1] - w1[ix])*wp.randf(rng)
+        position[ip][1] = w2[iy] + (w2[iy+1] - w2[iy])*wp.randf(rng)
+        position[ip][2] = w3[iz] + (w3[iz+1] - w3[iz])*wp.randf(rng)
+
+    @wp.kernel
+    def next_wall_distance(position: wp.array(dtype=wp.vec3),
+                           indices: wp.array2d(dtype=int),
+                           direction: wp.array(dtype=wp.vec3),
+                           w1: wp.array(dtype=float),
+                           w2: wp.array(dtype=float),
+                           w3: wp.array(dtype=float),
+                           distances: wp.array(dtype=float),
+                           irays: wp.array(dtype=int)):
+    
+        ip = irays[wp.tid()]
+        #print(ip)
+    
+        iw1, iw2, iw3 = indices[ip][0], indices[ip][1], indices[ip][2]
+    
+        s = wp.inf
+    
+        sx1 = (w1[iw1] - position[ip][0]) / direction[ip][0]
+        if sx1 > 0: s = wp.min(s, sx1)
+        sx2 = (w1[iw1+1] - position[ip][0]) / direction[ip][0]
+        if sx2 > 0: s = wp.min(s, sx2)
+    
+        sy1 = (w2[iw2] - position[ip][1]) / direction[ip][1]
+        if sy1 > 0: s = wp.min(s, sy1)
+        sy2 = (w2[iw2+1] - position[ip][1]) / direction[ip][1]
+        if sy2 > 0: s = wp.min(s, sy2)
+    
+        sz1 = (w3[iw3] - position[ip][2]) / direction[ip][2]
+        if sz1 > 0: s = wp.min(s, sz1)
+        sz2 = (w3[iw3+1] - position[ip][2]) / direction[ip][2]
+        if sz2 > 0: s = wp.min(s, sz2)
+    
+        distances[ip] = s
+
+    @wp.kernel
+    def outer_wall_distance(position: wp.array(dtype=wp.vec3),
+                           direction: wp.array(dtype=wp.vec3),
+                           w1: wp.array(dtype=float),
+                           w2: wp.array(dtype=float),
+                           w3: wp.array(dtype=float),
+                           n1: int,
+                           n2: int,
+                           n3: int,
+                           distances: wp.array(dtype=float)):
+
+        ip = wp.tid()
+
+        s = 0.
+
+        if direction[ip][0] != 0:
+            if position[ip][0] <= w1[0]:
+                sx = (w1[0] - position[ip][0]) / direction[ip][0]
+                if sx > s:
+                    s = sx
+            elif position[ip][0] >= w1[n1]:
+                sx = (w1[n1] - position[ip][0]) / direction[ip][0]
+                if sx > s:
+                    s = sx
+    
+        if direction[ip][1] != 0:
+            if position[ip][1] <= w2[0]:
+                sy = (w2[0] - position[ip][1]) / direction[ip][1]
+                if sy > s:
+                    s = sy
+            elif position[ip][1] >= w2[n2]:
+                sy = (w2[n2] - position[ip][1]) / direction[ip][1]
+                if sy > s:
+                    s = sy
+    
+        if direction[ip][2] != 0:
+            if position[ip][2] <= w3[0]:
+                sz = (w3[0] - position[ip][2]) / direction[ip][2]
+                if sz > s:
+                    s = sz
+            elif position[ip][2] >= w3[n3]:
+                sz = (w3[n3] - position[ip][2]) / direction[ip][2]
+                if sz > s:
+                    s = sz
+
+        new_position = position[ip] + s*direction[ip]
+
+        if equal(new_position[0],w1[0],EPSILON):
+            new_position[0] = w1[0]
+        elif equal(new_position[0],w1[n1],EPSILON):
+            new_position[0] = w1[n1]
+
+        if equal(new_position[1],w2[0],EPSILON):
+            new_position[1] = w2[0]
+        elif equal(new_position[1],w2[n2],EPSILON):
+            new_position[1] = w2[n2]
+
+        if equal(new_position[2],w3[0],EPSILON):
+            new_position[2] = w3[0]
+        elif equal(new_position[2],w3[n3],EPSILON):
+            new_position[2] = w3[n3]
+
+        if ((new_position[0] < w1[0]) or (new_position[0] > w1[n1]) or (new_position[1] < w2[0]) or
+                (new_position[1] > w2[n2]) or (new_position[2] < w3[0]) or (new_position[2] > w3[n3])):
+            s = np.inf
+
+        distances[ip] = s
+
+    def grid_size(self):
+        return 2*np.sqrt(np.abs(self.w1).max()**2 + np.abs(self.w2).max()**2 + np.abs(self.w3).max()**2)
+    
+    @wp.kernel
+    def check_in_grid(indices: wp.array2d(dtype=int),
+                n1: int,
+                n2: int,
+                n3: int,
+                in_grid: wp.array(dtype=bool),
+                irays: wp.array(dtype=int)):
+    
+        ip = irays[wp.tid()]
+    
+        if (indices[ip,0] >= n1 or indices[ip,0] < 0 or \
+                indices[ip,1] >= n2 or indices[ip,1] < 0 or \
+                indices[ip,2] >= n3 or indices[ip,2] < 0):
+            in_grid[ip] = False
+        else:
+            in_grid[ip] = True
+    
+    @wp.kernel
+    def photon_loc(position: wp.array(dtype=wp.vec3),
+                   direction: wp.array(dtype=wp.vec3),
+                   w1: wp.array(dtype=float),
+                   w2: wp.array(dtype=float),
+                   w3: wp.array(dtype=float),
+                   n1: int,
+                   n2: int,
+                   n3: int,
+                   indices: wp.array2d(dtype=int),
+                   iray: wp.array(dtype=int)):
+
+        ip = iray[wp.tid()]
+    
+        if position[ip][0] >= w1[n1]:
+            i1 = n1-1
+        elif position[ip][0] <= w1[0]:
+            i1 = 0
+        else:
+            i1 = wp.int(wp.floor((position[ip][0] - w1[0]) / (w1[1] - w1[0])))
+
+        if equal(position[ip][0], w1[i1], EPSILON):
+            position[ip][0] = w1[i1]
+        elif equal(position[ip][0], w1[i1+1], EPSILON):
+            position[ip][0] = w1[i1+1]
+
+        if position[ip][0] == w1[i1] and direction[ip][0] < 0:
+            i1 -= 1
+        elif position[ip][0] == w1[i1+1] and direction[ip][0] > 0:
+            i1 += 1
+        indices[ip][0] = i1
+    
+        if position[ip][1] >= w2[n2]:
+            i2 = n2-1
+        elif position[ip][1] <= w2[0]:
+            i2 = 0
+        else:
+            i2 = wp.int(wp.floor((position[ip][1] - w2[0]) / (w2[1] - w2[0])))
+
+        if equal(position[ip][1], w2[i2], EPSILON):
+            position[ip][1] = w2[i2]
+        elif equal(position[ip][1], w2[i2+1], EPSILON):
+            position[ip][1] = w2[i2+1]
+
+        if position[ip][1] == w2[i2] and direction[ip][1] < 0:
+            i2 -= 1
+        elif position[ip][1] == w2[i2+1] and direction[ip][1] > 0:
+            i2 += 1
+        indices[ip][1] = i2
+    
+        if position[ip][2] >= w3[n3]:
+            i3 = n3-1
+        elif position[ip][2] <= w3[0]:
+            i3 = 0
+        else:
+            i3 = wp.int(wp.floor((position[ip][2] - w3[0]) / (w3[1] - w3[0])))
+
+        if equal(position[ip][2], w3[i3], EPSILON):
+            position[ip][2] = w3[i3]
+        elif equal(position[ip][2], w3[i3+1], EPSILON):
+            position[ip][2] = w3[i3+1]
+
+        if position[ip][2] == w3[i3] and direction[ip][2] < 0:
+            i3 -= 1
+        elif position[ip][2] == w3[i3+1] and direction[ip][2] > 0:
+            i3 += 1
+        indices[ip][2] = i3
