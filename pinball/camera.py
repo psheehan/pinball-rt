@@ -95,8 +95,7 @@ class Camera:
         
             wp.launch(kernel=self.grid.outer_wall_distance,
                     dim=new_x.shape,
-                    inputs=[position, direction, self.grid.w1, self.grid.w2, self.grid.w3,
-                    self.grid.n1, self.grid.n2, self.grid.n3, s],
+                    inputs=[position, direction, self.grid.grid, s],
                     device='cpu')
 
             s = s.numpy()
@@ -122,7 +121,7 @@ class Camera:
             indices = wp.zeros((nrays, 3), dtype=int)
             wp.launch(kernel=self.grid.photon_loc,
                     dim=(nrays,),
-                    inputs=[position, direction, self.grid.w1, self.grid.w2, self.grid.w3, self.grid.n1, self.grid.n2, self.grid.n3, indices, iray],
+                    inputs=[position, direction, self.grid.grid, indices, iray],
                     device='cpu')
 
             self.grid.propagate_rays(position, direction, indices, intensity, tau, image.nu, pixel_size, pixel_too_large)
