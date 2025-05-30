@@ -1,3 +1,4 @@
+from .photons import PhotonList
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -56,8 +57,13 @@ class Star:
             frequency = np.repeat((const.c / (wavelength*u.micron)).to(u.Hz).value, nphotons)
             photon_energy = np.repeat(4.*np.pi**2*self.radius**2*models.BlackBody(temperature=self.temperature*u.K)(frequency[0]*u.Hz).cgs.value / nphotons, nphotons)
 
-        return wp.array(position, dtype=wp.vec3), wp.array(direction, dtype=wp.vec3), \
-                frequency, wp.array(photon_energy, dtype=float)
+        photon_list = PhotonList()
+        photon_list.position = wp.array(position, dtype=wp.vec3)
+        photon_list.direction = wp.array(direction, dtype=wp.vec3)
+        photon_list.frequency = wp.array(frequency, dtype=float)
+        photon_list.energy = wp.array(photon_energy, dtype=float)
+
+        return photon_list
 
     def random_nu(self, nphotons):
         ksi = np.random.rand(nphotons)

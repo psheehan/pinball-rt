@@ -1,3 +1,4 @@
+from .photons import PhotonList
 import astropy.units as u
 import astropy.constants as const
 import warp as wp
@@ -49,22 +50,30 @@ class Camera:
                 -np.cos(self.incl)])
 
     def emit_rays(self, x, y, nu, nx, ny, pixel_size):
-        intensity = np.zeros(x.shape+(nu.size,), dtype=np.float32)
-        tau = np.zeros(x.shape+(nu.size,), dtype=float)
+        xflat, yflat = x.flatten(), y.flatten()
+        intensity = np.zeros(xflat.shape+(nu.size,), dtype=np.float32)
+        tau = np.zeros(xflat.shape+(nu.size,), dtype=float)
         #image_ix, image_iy = np.meshgrid(np.arange(x.shape[0]), np.arange(x.shape[1]))
-        image_ix = (x / pixel_size + nx / 2).astype(np.int32)
-        image_iy = (y / pixel_size + ny / 2).astype(np.int32)
+        image_ix = (xflat / pixel_size + nx / 2).astype(np.int32)
+        image_iy = (yflat / pixel_size + ny / 2).astype(np.int32)
 
-        pixel_too_large = np.zeros(x.shape).astype(bool)
+        pixel_too_large = np.zeros(xflat.shape).astype(bool)
 
-        position = np.broadcast_to(self.i, x.shape+(3,)) + np.expand_dims(x, axis=-1)*self.ex + np.expand_dims(y, axis=-1)*self.ey
-        direction = np.broadcast_to(self.ez, x.shape+(3,))
+        position = np.broadcast_to(self.i, xflat.shape+(3,)) + np.expand_dims(xflat, axis=-1)*self.ex + np.expand_dims(yflat, axis=-1)*self.ey
+        direction = np.broadcast_to(self.ez, xflat.shape+(3,))
         direction = np.where(np.abs(direction) < EPSILON, 0., direction)
 
-        position = wp.array2d(position, dtype=wp.vec3)
-        direction = wp.array2d(direction, dtype=wp.vec3)
+        ray_list = PhotonList()
+        ray_list.position = wp.array(position, dtype=wp.vec3)
+        ray_list.direction = wp.array(direction, dtype=wp.vec3)
+        ray_list.indices = wp.zeros(xflat.shape+(3,), dtype=int)
+        ray_list.intensity = wp.array2d(intensity, dtype=float)
+        ray_list.tau = wp.array2d(tau, dtype=float)
+        ray_list.image_ix = wp.array(image_ix, dtype=int)
+        ray_list.image_iy = wp.array(image_iy, dtype=int)
+        ray_list.pixel_too_large = wp.array(pixel_too_large, dtype=bool)
 
-        return intensity, tau, pixel_too_large, position, direction, image_ix, image_iy
+        return ray_list
 
     @wp.kernel
     def put_intensity_in_image(image_ix: wp.array(dtype=int),
@@ -88,32 +97,31 @@ class Camera:
         pixel_size = image.pixel_size
 
         while nrays > 0:
-            intensity, tau, pixel_too_large, position, direction, image_ix, image_iy = \
-                    self.emit_rays(new_x, new_y, image.nu, image.nx, image.ny, image.pixel_size)
+            ray_list = self.emit_rays(new_x, new_y, image.nu, image.nx, image.ny, image.pixel_size)
 
             s = wp.zeros(new_x.shape, dtype=float)
-        
+
             wp.launch(kernel=self.grid.outer_wall_distance,
                     dim=new_x.shape,
-                    inputs=[position, direction, self.grid.grid, s],
+                    inputs=[ray_list, self.grid.grid, s],
                     device='cpu')
 
             s = s.numpy()
             will_be_in_grid = s < np.inf
+            iwill_be_in_grid = np.arange(nrays, dtype=np.int32)[will_be_in_grid]
 
-            position = position.numpy()[will_be_in_grid]
-            direction = direction.numpy()[will_be_in_grid]
-            s = s[will_be_in_grid]
+            wp.launch(kernel=self.grid.move,
+                      dim=iwill_be_in_grid.shape,
+                      inputs=[ray_list, s, iwill_be_in_grid],
+                      device='cpu')
 
-            position = position + s[:,np.newaxis]*direction
-
-            position = wp.array(position, dtype=wp.vec3)
-            direction = wp.array(direction, dtype=wp.vec3)
-            intensity = intensity[will_be_in_grid]
-            tau = wp.array(tau[will_be_in_grid], dtype=float)
-            image_ix = image_ix[will_be_in_grid]
-            image_iy = image_iy[will_be_in_grid]
-            pixel_too_large = pixel_too_large[will_be_in_grid]
+            ray_list.position = wp.array(ray_list.position.numpy()[will_be_in_grid], dtype=wp.vec3)
+            ray_list.direction = wp.array(ray_list.direction.numpy()[will_be_in_grid], dtype=wp.vec3)
+            ray_list.intensity = wp.array(ray_list.intensity.numpy()[will_be_in_grid], dtype=float)
+            ray_list.tau = wp.array(ray_list.tau.numpy()[will_be_in_grid], dtype=float)
+            ray_list.image_ix = wp.array(ray_list.image_ix.numpy()[will_be_in_grid], dtype=int)
+            ray_list.image_iy = wp.array(ray_list.image_iy.numpy()[will_be_in_grid], dtype=int)
+            ray_list.pixel_too_large = wp.array(ray_list.pixel_too_large.numpy()[will_be_in_grid], dtype=bool)
 
             nrays = will_be_in_grid.sum()
             iray = np.arange(nrays, dtype=np.int32)
@@ -121,21 +129,21 @@ class Camera:
             indices = wp.zeros((nrays, 3), dtype=int)
             wp.launch(kernel=self.grid.photon_loc,
                     dim=(nrays,),
-                    inputs=[position, direction, self.grid.grid, indices, iray],
+                    inputs=[ray_list, self.grid.grid, iray],
                     device='cpu')
 
-            self.grid.propagate_rays(position, direction, indices, intensity, tau, image.nu, pixel_size, pixel_too_large)
+            self.grid.propagate_rays(ray_list, image.nu, pixel_size)
 
             wp.launch(kernel=self.put_intensity_in_image, 
                     dim=(nrays, image.lam.size),
-                    inputs=[image_ix, image_iy, intensity, image.intensity])
+                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, image.intensity])
 
             new_x, new_y = [], []
             for i in range(nrays):
-                if pixel_too_large[i]:
+                if ray_list.pixel_too_large.numpy()[i]:
                     for j in range(4):
-                        new_x.append(image_ix[i] + (-1)**j * pixel_size/4)
-                        new_y.append(image_iy[i] + (-1)**(int(j/2)) * pixel_size/4)
+                        new_x.append(ray_list.image_ix.numpy()[i] + (-1)**j * pixel_size/4)
+                        new_y.append(ray_list.image_iy.numpy()[i] + (-1)**(int(j/2)) * pixel_size/4)
             new_x = np.array(new_x)
             new_y = np.array(new_y)
             pixel_size = pixel_size / 2

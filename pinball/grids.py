@@ -1,3 +1,4 @@
+from .photons import PhotonList
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -48,7 +49,7 @@ class Grid:
         else:
             nphotons_per_source = nphotons
 
-        position, direction, frequency, photon_energy = self.star.emit(nphotons_per_source, wavelength)
+        photon_list = self.star.emit(nphotons_per_source, wavelength)
 
         cell_coords = []
         if scattering:
@@ -64,25 +65,25 @@ class Grid:
                       dim=(nphotons_per_source,), 
                       inputs=[new_position, cell_coords, self.grid], 
                       device='cpu')
-            position = wp.array(np.concatenate((position.numpy(), new_position), axis=0), dtype=wp.vec3)
+            photon_list.position = wp.array(np.concatenate((photon_list.position.numpy(), new_position), axis=0), dtype=wp.vec3)
             
             new_direction = wp.array(np.zeros((nphotons_per_source, 3)), dtype=wp.vec3)
             wp.launch(kernel=self.random_direction,
                       dim=(nphotons_per_source,),
                       inputs=[new_direction, np.arange(nphotons_per_source, dtype=np.int32)],
                       device='cpu')
-            direction = wp.array(np.concatenate((direction.numpy(), new_direction), axis=0), dtype=wp.vec3)
+            photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), new_direction), axis=0), dtype=wp.vec3)
 
-            frequency = np.concatenate([frequency, np.repeat((const.c / (wavelength*u.micron)).to(u.Hz).value, nphotons_per_source)])
-            photon_energy = np.concatenate([photon_energy, np.repeat(self.total_lum/nphotons_per_source, nphotons_per_source).astype(np.float32)])
+            photon_list.frequency = wp.array(np.concatenate([photon_list.frequency, np.repeat((const.c / (wavelength*u.micron)).to(u.Hz).value, nphotons_per_source)]), dtype=float)
+            photon_list.energy = wp.array(np.concatenate([photon_list.energy, np.repeat(self.total_lum/nphotons_per_source, nphotons_per_source).astype(np.float32)]), dtype=float)
 
-        indices = wp.zeros((nphotons, 3), dtype=int)
+        photon_list.indices = wp.zeros((nphotons, 3), dtype=int)
         wp.launch(kernel=self.photon_loc,
                   dim=(nphotons,),
-                  inputs=[position, direction, self.grid, indices, np.arange(nphotons, dtype=np.int32)],
+                  inputs=[photon_list, self.grid, np.arange(nphotons, dtype=np.int32)],
                   device='cpu')
 
-        return position, direction, indices, frequency, photon_energy
+        return photon_list
     
     @wp.kernel
     def tau_distance(tau: wp.array(dtype=float),
@@ -101,16 +102,15 @@ class Grid:
         distances[ip] = tau[ip] / alpha[ip]
     
     @wp.kernel
-    def move(position: wp.array(dtype=wp.vec3),
-             direction: wp.array(dtype=wp.vec3),
+    def move(photon_list: PhotonList,
              distances: wp.array(dtype=float),
              iray: wp.array(dtype=int)):
     
         ip = iray[wp.tid()]
-    
-        position[ip][0] += distances[ip] * direction[ip][0]
-        position[ip][1] += distances[ip] * direction[ip][1]
-        position[ip][2] += distances[ip] * direction[ip][2]
+
+        photon_list.position[ip][0] += distances[ip] * photon_list.direction[ip][0]
+        photon_list.position[ip][1] += distances[ip] * photon_list.direction[ip][1]
+        photon_list.position[ip][2] += distances[ip] * photon_list.direction[ip][2]
 
     @wp.kernel
     def deposit_energy(indices: wp.array2d(dtype=int),
@@ -155,6 +155,14 @@ class Grid:
         photon_temperature[itemp] = temperature[ix, iy, iz]
 
     @wp.kernel
+    def update_frequency(photon_list: PhotonList,
+                            frequency: wp.array(dtype=float),
+                            iphotons: wp.array(dtype=int)):
+        i = wp.tid()
+        ip = iphotons[i]
+        photon_list.frequency[ip] = frequency[i]
+
+    @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
                          iphotons: wp.array(dtype=int)):
         i = wp.tid()
@@ -170,12 +178,12 @@ class Grid:
         direction[ip][1] = sint*np.sin(phi)
         direction[ip][2] = cost
 
-    def interact(self, indices, direction, frequency, absorb, iabsorb, iphotons):
+    def interact(self, photon_list: PhotonList, absorb, iabsorb, iphotons):
         nphotons = iphotons.size
 
         wp.launch(kernel=self.random_direction,
                   dim=(nphotons,),
-                  inputs=[direction, iphotons],
+                  inputs=[photon_list.direction, iphotons],
                   device='cpu')
 
         t1 = time.time()
@@ -183,19 +191,22 @@ class Grid:
         photon_temperature = wp.zeros(nabsorb, dtype=float)
         wp.launch(kernel=self.photon_temperature,
                   dim=(nabsorb,),
-                  inputs=[indices, self.temperature, photon_temperature, iabsorb],
+                  inputs=[photon_list.indices, self.temperature, photon_temperature, iabsorb],
                   device='cpu')
         t2 = time.time()
 
         return_val = self.dust.random_nu(photon_temperature.numpy())
 
-        frequency[absorb] = return_val
+        wp.launch(kernel=self.update_frequency,
+                  dim=(nabsorb,),
+                  inputs=[photon_list, return_val, iabsorb],
+                  device='cpu')
 
         return t2-t1
 
     def update_grid(self):
         total_energy = self.energy.numpy()
-        temperature = self.temperature.numpy().copy()
+        temperature = self.temperature.copy()
 
         converged = False
         while not converged:
@@ -210,7 +221,7 @@ class Grid:
             if (np.abs(old_temperature - temperature) / old_temperature).max() < 1.0e-2:
                 converged = True
 
-        self.temperature = wp.array3d(temperature, dtype=float)
+        self.temperature = temperature.astype(np.float32)
 
     def initialize_luminosity_array(self, wavelength):
         nu = const.c.cgs.value / wavelength
@@ -223,8 +234,8 @@ class Grid:
 
         self.total_lum = self.luminosity.sum()
 
-    def propagate_photons(self, position, direction, indices, frequency, photon_energy, debug=False):
-        nphotons = position.numpy().shape[0]
+    def propagate_photons(self, photon_list: PhotonList, debug=False):
+        nphotons = photon_list.position.numpy().shape[0]
         iphotons = np.arange(nphotons, dtype=np.int32)
         iphotons_original = iphotons.copy()
 
@@ -233,7 +244,7 @@ class Grid:
         s1 = wp.zeros(nphotons, dtype=float)
         s2 = wp.zeros(nphotons, dtype=float)
         alpha = wp.zeros(nphotons, dtype=float)
-        in_grid = wp.zeros(nphotons, dtype=bool)
+        photon_list.in_grid = wp.zeros(nphotons, dtype=bool)
 
         next_wall_time = 0.
         dust_interpolation_time = 0.
@@ -246,8 +257,8 @@ class Grid:
         absorb_time = 0.
         
         t1 = time.time()
-        kabs = self.dust.interpolate_kabs(frequency).astype(np.float32)
-        ksca = self.dust.interpolate_ksca(frequency)
+        kabs = self.dust.interpolate_kabs(photon_list.frequency).astype(np.float32)
+        ksca = self.dust.interpolate_ksca(photon_list.frequency).astype(np.float32)
         albedo = ksca / (kabs + ksca)
         t2 = time.time()
         dust_interpolation_time += t2 - t1
@@ -261,7 +272,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.next_wall_distance,
                       dim=(nphotons,),
-                      inputs=[position, indices, direction, self.grid, s1, iphotons],
+                      inputs=[photon_list, self.grid, s1, iphotons],
                       device='cpu')
             t2 = time.time()
             next_wall_time += t2 - t1
@@ -269,7 +280,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.tau_distance,
                       dim=(nphotons,),
-                      inputs=[tau, self.density, indices, kabs, s2, alpha, iphotons],
+                      inputs=[tau, self.density, photon_list.indices, kabs, s2, alpha, iphotons],
                       device='cpu')
             t2 = time.time()
             tau_distance_time += t2 - t1
@@ -279,7 +290,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.move,
                       dim=(nphotons,),
-                      inputs=[position, direction, s, iphotons],
+                      inputs=[photon_list, s, iphotons],
                       device='cpu')
             t2 = time.time()
             move_time += t2 - t1
@@ -287,7 +298,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.deposit_energy,
                       dim=(nphotons,),
-                      inputs=[indices, s, kabs, self.density, self.energy, photon_energy, absorb_photon, iphotons],
+                      inputs=[photon_list.indices, s, kabs, self.density, self.energy, photon_list.energy, absorb_photon, iphotons],
                       device='cpu')
             t2 = time.time()
             deposit_energy_time += t2 - t1
@@ -297,7 +308,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.photon_loc,
                       dim=(nphotons,),
-                      inputs=[position, direction, self.grid, indices, iphotons],
+                      inputs=[photon_list, self.grid, iphotons],
                       device='cpu')
             t2 = time.time()
             photon_loc_time += t2 - t1
@@ -305,30 +316,30 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
-                      inputs=[indices, self.grid, in_grid, iphotons],
+                      inputs=[photon_list, self.grid, iphotons],
                       device='cpu')
             t2 = time.time()
             in_grid_time += t2 - t1
         
             t1 = time.time()
-            iphotons = iphotons_original[in_grid]
+            iphotons = iphotons_original[photon_list.in_grid]
             nphotons = iphotons.size
             t2 = time.time()
             removing_photons_time += t2 - t1
 
             t1 = time.time()
-            interaction = np.logical_and(tau <= 0, in_grid)
+            interaction = np.logical_and(tau <= 0, photon_list.in_grid)
             interaction_indices = iphotons_original[interaction]
             absorb = np.logical_and(interaction, absorb_photon)
             absorb_indices = iphotons_original[absorb]
-            tmp_time = self.interact(indices, direction, frequency, absorb, absorb_indices, interaction_indices)
+            tmp_time = self.interact(photon_list, absorb, absorb_indices, interaction_indices)
             t2 = time.time()
             absorb_time += t2 - t1
             #absorb_time += tmp_time
         
             t1 = time.time()
-            kabs[absorb] = self.dust.interpolate_kabs(frequency[absorb])
-            ksca[absorb] = self.dust.interpolate_ksca(frequency[absorb])
+            kabs[absorb] = self.dust.interpolate_kabs(photon_list.frequency.numpy()[absorb])
+            ksca[absorb] = self.dust.interpolate_ksca(photon_list.frequency.numpy()[absorb])
             albedo = ksca / (kabs + ksca)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
@@ -346,8 +357,8 @@ class Grid:
         print(removing_photons_time)
         print(absorb_time)
 
-    def propagate_photons_scattering(self, position, direction, indices, frequency, photon_energy, inu, debug=False):
-        nphotons = position.numpy().shape[0]
+    def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False):
+        nphotons = photon_list.position.numpy().shape[0]
         iphotons = np.arange(nphotons, dtype=np.int32)
         iphotons_original = iphotons.copy()
 
@@ -356,7 +367,7 @@ class Grid:
         s1 = wp.zeros(nphotons, dtype=float)
         s2 = wp.zeros(nphotons, dtype=float)
         alpha_scat = wp.zeros(nphotons, dtype=float)
-        in_grid = wp.zeros(nphotons, dtype=bool)
+        photon_list.in_grid = wp.zeros(nphotons, dtype=bool)
 
         next_wall_time = 0.
         dust_interpolation_time = 0.
@@ -369,8 +380,8 @@ class Grid:
         absorb_time = 0.
         
         t1 = time.time()
-        kabs = self.dust.interpolate_kabs(frequency).astype(np.float32)
-        ksca = self.dust.interpolate_ksca(frequency).astype(np.float32)
+        kabs = self.dust.interpolate_kabs(photon_list.frequency).astype(np.float32)
+        ksca = self.dust.interpolate_ksca(photon_list.frequency).astype(np.float32)
         albedo = ksca / (kabs + ksca)
         t2 = time.time()
         dust_interpolation_time += t2 - t1
@@ -386,7 +397,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.next_wall_distance,
                       dim=(nphotons,),
-                      inputs=[position, indices, direction, self.grid, s1, iphotons],
+                      inputs=[photon_list, self.grid, s1, iphotons],
                       device='cpu')
             t2 = time.time()
             next_wall_time += t2 - t1
@@ -394,7 +405,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.tau_distance,
                       dim=(nphotons,),
-                      inputs=[tau, self.density, indices, ksca, s2, alpha_scat, iphotons],
+                      inputs=[tau, self.density, photon_list.indices, ksca, s2, alpha_scat, iphotons],
                       device='cpu')
             t2 = time.time()
             tau_distance_time += t2 - t1
@@ -402,26 +413,26 @@ class Grid:
             s = np.minimum(s1.numpy(), s2.numpy())
 
             tau_abs = s * alpha_scat * kabs / ksca
-            tau_scat = s * alpha_scat 
+            tau_scat = s * alpha_scat
 
-            average_energy = np.where(tau_abs < EPSILON, (1. - 0.5*tau_abs) * photon_energy, (1.0 - np.exp(-tau_abs)) / tau_abs * photon_energy)
+            average_energy = np.where(tau_abs < EPSILON, (1. - 0.5*tau_abs) * photon_list.energy, (1.0 - np.exp(-tau_abs)) / tau_abs * photon_list.energy)
 
             t1 = time.time()
             wp.launch(kernel=self.deposit_scattering,
                       dim=(nphotons,),
-                      inputs=[indices, s, self.scattering[inu], average_energy, iphotons],
+                      inputs=[photon_list.indices, s, self.scattering[inu], average_energy, iphotons],
                       device='cpu')
             t2 = time.time()
             deposit_energy_time += t2 - t1
 
-            photon_energy *= np.exp(-tau_abs)
+            photon_list.energy = wp.array(photon_list.energy * np.exp(-tau_abs), dtype=float)
             tau -= tau_scat
             total_tau_abs += tau_abs
         
             t1 = time.time()
             wp.launch(kernel=self.move,
                       dim=(nphotons,),
-                      inputs=[position, direction, s, iphotons],
+                      inputs=[photon_list, s, iphotons],
                       device='cpu')
             t2 = time.time()
             move_time += t2 - t1
@@ -429,7 +440,7 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.photon_loc,
                       dim=(nphotons,),
-                      inputs=[position, direction, self.grid, indices, iphotons],
+                      inputs=[photon_list, self.grid, iphotons],
                       device='cpu')
             t2 = time.time()
             photon_loc_time += t2 - t1
@@ -437,23 +448,23 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
-                      inputs=[indices, self.grid, in_grid, iphotons],
+                      inputs=[photon_list, self.grid, iphotons],
                       device='cpu')
             t2 = time.time()
             in_grid_time += t2 - t1
         
             t1 = time.time()
-            iphotons = iphotons_original[np.logical_and(in_grid, total_tau_abs < 30.)]
+            iphotons = iphotons_original[np.logical_and(photon_list.in_grid, total_tau_abs < 30.)]
             nphotons = iphotons.size
             t2 = time.time()
             removing_photons_time += t2 - t1
 
             t1 = time.time()
-            interaction = np.logical_and(tau <= 0, in_grid)
+            interaction = np.logical_and(tau <= 0, photon_list.in_grid)
             interaction_indices = iphotons_original[interaction]
             absorb = np.logical_and(interaction, absorb_photon)
             absorb_indices = iphotons_original[absorb]
-            tmp_time = self.interact(indices, direction, frequency, absorb, absorb_indices, interaction_indices)
+            tmp_time = self.interact(photon_list, absorb, absorb_indices, interaction_indices)
             t2 = time.time()
             absorb_time += t2 - t1
             #absorb_time += tmp_time
@@ -525,12 +536,12 @@ class Grid:
         intensity[ir,inu] += intensity_cell * wp.exp(-tau[ir,inu])
         tau[ir,inu] += tau_cell
 
-    def propagate_rays(self, position, direction, indices, intensity, tau, frequency, pixel_size, pixel_too_large):
-        nrays = position.numpy().shape[0]
+    def propagate_rays(self, ray_list: PhotonList, frequency, pixel_size):
+        nrays = ray_list.position.numpy().shape[0]
         iray = np.arange(nrays, dtype=np.int32)
         iray_original = iray.copy()
         nnu = frequency.size
-        in_grid = wp.zeros(nrays, dtype=bool)
+        ray_list.in_grid = wp.zeros(nrays, dtype=bool)
 
         kext = wp.array(self.dust.interpolate_kext(frequency), dtype=float)
         albedo = wp.array(self.dust.interpolate_albedo(frequency), dtype=float)
@@ -538,63 +549,61 @@ class Grid:
         frequency = wp.array(frequency, dtype=float)
 
         s = wp.zeros(nrays, dtype=float)
-
-        original_intensity = intensity
         
         while nrays > 0:
             wp.launch(kernel=self.check_pixel_too_large,
                       dim=(nrays,),
-                      inputs=[indices, pixel_size, pixel_too_large, (self.volume**(1./3)).astype(np.float32), iray],
+                      inputs=[ray_list.indices, pixel_size, ray_list.pixel_too_large, (self.volume**(1./3)).astype(np.float32), iray],
                       device='cpu')
 
             wp.launch(kernel=self.next_wall_distance,
                       dim=(nrays,),
-                      inputs=[position, indices, direction, self.grid, s, iray],
+                      inputs=[ray_list, self.grid, s, iray],
                       device='cpu')
 
             wp.launch(kernel=self.add_intensity,
                       dim=(nrays, nnu),
-                      inputs=[s, intensity, tau, frequency, kext, albedo, self.density, self.temperature, self.scattering, indices, iray],
+                      inputs=[s, ray_list.intensity, ray_list.tau, frequency, kext, albedo, self.density, self.temperature, self.scattering, ray_list.indices, iray],
                       device='cpu')
         
             wp.launch(kernel=self.move,
                       dim=(nrays,),
-                      inputs=[position, direction, wp.array(s), iray],
+                      inputs=[ray_list, wp.array(s), iray],
                       device='cpu')
 
             wp.launch(kernel=self.photon_loc,
                       dim=(nrays,),
-                      inputs=[position, direction, self.grid, indices, iray],
-                      device='cpu')
-        
-            wp.launch(kernel=self.check_in_grid,
-                      dim=(nrays,),
-                      inputs=[indices, self.grid, in_grid, iray],
+                      inputs=[ray_list, self.grid, iray],
                       device='cpu')
 
-            iray = iray_original[np.logical_and(in_grid, np.logical_not(pixel_too_large))]
+            wp.launch(kernel=self.check_in_grid,
+                      dim=(nrays,),
+                      inputs=[ray_list, self.grid, iray],
+                      device='cpu')
+
+            iray = iray_original[np.logical_and(ray_list.in_grid, np.logical_not(ray_list.pixel_too_large))]
             nrays = iray.size
 
     def thermal_mc(self, nphotons, Qthresh=2.0, Delthresh=1.1, p=99.):
-        told = self.temperature.numpy().copy()
+        told = self.temperature.copy()
 
         count = 0
         while count < 10:
             print("Iteration", count)
             treallyold = told.copy()
-            told = self.temperature.numpy().copy()
+            told = self.temperature.copy()
 
-            position, direction, indices, frequency, photon_energy = self.emit(nphotons)
+            photon_list = self.emit(nphotons)
 
             t1 = time.time()
-            self.propagate_photons(position, direction, indices, frequency, photon_energy)
+            self.propagate_photons(photon_list)
             t2 = time.time()
             print("Time:", t2 - t1)
 
             self.update_grid()
 
             if count > 1:
-                R = np.maximum(told/self.temperature.numpy(), self.temperature.numpy()/told)
+                R = np.maximum(told/self.temperature, self.temperature/told)
                 Rold = np.maximum(told/treallyold, treallyold/told)
 
                 Q = np.percentile(R, p)
@@ -616,10 +625,10 @@ class Grid:
         for i, wavelength in enumerate(wavelengths):
             self.initialize_luminosity_array(wavelength=wavelength)
 
-            position, direction, indices, frequency, photon_energy = self.emit(nphotons, wavelength, scattering=True)
+            photon_list = self.emit(nphotons, wavelength, scattering=True)
 
             t1 = time.time()
-            self.propagate_photons_scattering(position, direction, indices, frequency, photon_energy, i)
+            self.propagate_photons_scattering(photon_list, i)
             t2 = time.time()
             print("Time:", t2 - t1)
 
@@ -647,40 +656,37 @@ class CartesianGrid(Grid):
         position[ip][2] = grid.w3[iz] + (grid.w3[iz+1] - grid.w3[iz])*wp.randf(rng)
 
     @wp.kernel
-    def next_wall_distance(position: wp.array(dtype=wp.vec3),
-                           indices: wp.array2d(dtype=int),
-                           direction: wp.array(dtype=wp.vec3),
+    def next_wall_distance(photon_list: PhotonList,
                            grid: GridStruct,
                            distances: wp.array(dtype=float),
                            irays: wp.array(dtype=int)):
     
         ip = irays[wp.tid()]
         #print(ip)
-    
-        iw1, iw2, iw3 = indices[ip][0], indices[ip][1], indices[ip][2]
-    
+
+        iw1, iw2, iw3 = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
+
         s = wp.inf
     
-        sx1 = (grid.w1[iw1] - position[ip][0]) / direction[ip][0]
+        sx1 = (grid.w1[iw1] - photon_list.position[ip][0]) / photon_list.direction[ip][0]
         if sx1 > 0: s = wp.min(s, sx1)
-        sx2 = (grid.w1[iw1+1] - position[ip][0]) / direction[ip][0]
+        sx2 = (grid.w1[iw1+1] - photon_list.position[ip][0]) / photon_list.direction[ip][0]
         if sx2 > 0: s = wp.min(s, sx2)
-    
-        sy1 = (grid.w2[iw2] - position[ip][1]) / direction[ip][1]
+
+        sy1 = (grid.w2[iw2] - photon_list.position[ip][1]) / photon_list.direction[ip][1]
         if sy1 > 0: s = wp.min(s, sy1)
-        sy2 = (grid.w2[iw2+1] - position[ip][1]) / direction[ip][1]
+        sy2 = (grid.w2[iw2+1] - photon_list.position[ip][1]) / photon_list.direction[ip][1]
         if sy2 > 0: s = wp.min(s, sy2)
-    
-        sz1 = (grid.w3[iw3] - position[ip][2]) / direction[ip][2]
+
+        sz1 = (grid.w3[iw3] - photon_list.position[ip][2]) / photon_list.direction[ip][2]
         if sz1 > 0: s = wp.min(s, sz1)
-        sz2 = (grid.w3[iw3+1] - position[ip][2]) / direction[ip][2]
+        sz2 = (grid.w3[iw3+1] - photon_list.position[ip][2]) / photon_list.direction[ip][2]
         if sz2 > 0: s = wp.min(s, sz2)
     
         distances[ip] = s
 
     @wp.kernel
-    def outer_wall_distance(position: wp.array(dtype=wp.vec3),
-                           direction: wp.array(dtype=wp.vec3),
+    def outer_wall_distance(photon_list: PhotonList,
                            grid: GridStruct,
                            distances: wp.array(dtype=float)):
 
@@ -688,37 +694,37 @@ class CartesianGrid(Grid):
 
         s = 0.
 
-        if direction[ip][0] != 0:
-            if position[ip][0] <= grid.w1[0]:
-                sx = (grid.w1[0] - position[ip][0]) / direction[ip][0]
+        if photon_list.direction[ip][0] != 0:
+            if photon_list.position[ip][0] <= grid.w1[0]:
+                sx = (grid.w1[0] - photon_list.position[ip][0]) / photon_list.direction[ip][0]
                 if sx > s:
                     s = sx
-            elif position[ip][0] >= grid.w1[grid.n1]:
-                sx = (grid.w1[grid.n1] - position[ip][0]) / direction[ip][0]
+            elif photon_list.position[ip][0] >= grid.w1[grid.n1]:
+                sx = (grid.w1[grid.n1] - photon_list.position[ip][0]) / photon_list.direction[ip][0]
                 if sx > s:
                     s = sx
-    
-        if direction[ip][1] != 0:
-            if position[ip][1] <= grid.w2[0]:
-                sy = (grid.w2[0] - position[ip][1]) / direction[ip][1]
+
+        if photon_list.direction[ip][1] != 0:
+            if photon_list.position[ip][1] <= grid.w2[0]:
+                sy = (grid.w2[0] - photon_list.position[ip][1]) / photon_list.direction[ip][1]
                 if sy > s:
                     s = sy
-            elif position[ip][1] >= grid.w2[grid.n2]:
-                sy = (grid.w2[grid.n2] - position[ip][1]) / direction[ip][1]
+            elif photon_list.position[ip][1] >= grid.w2[grid.n2]:
+                sy = (grid.w2[grid.n2] - photon_list.position[ip][1]) / photon_list.direction[ip][1]
                 if sy > s:
                     s = sy
-    
-        if direction[ip][2] != 0:
-            if position[ip][2] <= grid.w3[0]:
-                sz = (grid.w3[0] - position[ip][2]) / direction[ip][2]
+
+        if photon_list.direction[ip][2] != 0:
+            if photon_list.position[ip][2] <= grid.w3[0]:
+                sz = (grid.w3[0] - photon_list.position[ip][2]) / photon_list.direction[ip][2]
                 if sz > s:
                     s = sz
-            elif position[ip][2] >= grid.w3[grid.n3]:
-                sz = (grid.w3[grid.n3] - position[ip][2]) / direction[ip][2]
+            elif photon_list.position[ip][2] >= grid.w3[grid.n3]:
+                sz = (grid.w3[grid.n3] - photon_list.position[ip][2]) / photon_list.direction[ip][2]
                 if sz > s:
                     s = sz
 
-        new_position = position[ip] + s*direction[ip]
+        new_position = photon_list.position[ip] + s*photon_list.direction[ip]
 
         if equal(new_position[0],grid.w1[0],EPSILON):
             new_position[0] = grid.w1[0]
@@ -745,79 +751,76 @@ class CartesianGrid(Grid):
         return 2*np.sqrt(np.abs(self.grid.w1).max()**2 + np.abs(self.grid.w2).max()**2 + np.abs(self.grid.w3).max()**2)
 
     @wp.kernel
-    def check_in_grid(indices: wp.array2d(dtype=int),
+    def check_in_grid(photon_list: PhotonList,
                 grid: GridStruct,
-                in_grid: wp.array(dtype=bool),
                 irays: wp.array(dtype=int)):
     
         ip = irays[wp.tid()]
 
-        if (indices[ip,0] >= grid.n1 or indices[ip,0] < 0 or \
-                indices[ip,1] >= grid.n2 or indices[ip,1] < 0 or \
-                indices[ip,2] >= grid.n3 or indices[ip,2] < 0):
-            in_grid[ip] = False
+        if (photon_list.indices[ip,0] >= grid.n1 or photon_list.indices[ip,0] < 0 or \
+                photon_list.indices[ip,1] >= grid.n2 or photon_list.indices[ip,1] < 0 or \
+                photon_list.indices[ip,2] >= grid.n3 or photon_list.indices[ip,2] < 0):
+            photon_list.in_grid[ip] = False
         else:
-            in_grid[ip] = True
+            photon_list.in_grid[ip] = True
     
     @wp.kernel
-    def photon_loc(position: wp.array(dtype=wp.vec3),
-                   direction: wp.array(dtype=wp.vec3),
+    def photon_loc(photon_list: PhotonList,
                    grid: GridStruct,
-                   indices: wp.array2d(dtype=int),
                    iray: wp.array(dtype=int)):
 
         ip = iray[wp.tid()]
 
-        if position[ip][0] >= grid.w1[grid.n1]:
+        if photon_list.position[ip][0] >= grid.w1[grid.n1]:
             i1 = grid.n1-1
-        elif position[ip][0] <= grid.w1[0]:
+        elif photon_list.position[ip][0] <= grid.w1[0]:
             i1 = 0
         else:
-            i1 = wp.int(wp.floor((position[ip][0] - grid.w1[0]) / (grid.w1[1] - grid.w1[0])))
+            i1 = wp.int(wp.floor((photon_list.position[ip][0] - grid.w1[0]) / (grid.w1[1] - grid.w1[0])))
 
-        if equal(position[ip][0], grid.w1[i1], EPSILON):
-            position[ip][0] = grid.w1[i1]
-        elif equal(position[ip][0], grid.w1[i1+1], EPSILON):
-            position[ip][0] = grid.w1[i1+1]
+        if equal(photon_list.position[ip][0], grid.w1[i1], EPSILON):
+            photon_list.position[ip][0] = grid.w1[i1]
+        elif equal(photon_list.position[ip][0], grid.w1[i1+1], EPSILON):
+            photon_list.position[ip][0] = grid.w1[i1+1]
 
-        if position[ip][0] == grid.w1[i1] and direction[ip][0] < 0:
+        if photon_list.position[ip][0] == grid.w1[i1] and photon_list.direction[ip][0] < 0:
             i1 -= 1
-        elif position[ip][0] == grid.w1[i1+1] and direction[ip][0] > 0:
+        elif photon_list.position[ip][0] == grid.w1[i1+1] and photon_list.direction[ip][0] > 0:
             i1 += 1
-        indices[ip][0] = i1
+        photon_list.indices[ip][0] = i1
 
-        if position[ip][1] >= grid.w2[grid.n2]:
+        if photon_list.position[ip][1] >= grid.w2[grid.n2]:
             i2 = grid.n2-1
-        elif position[ip][1] <= grid.w2[0]:
+        elif photon_list.position[ip][1] <= grid.w2[0]:
             i2 = 0
         else:
-            i2 = wp.int(wp.floor((position[ip][1] - grid.w2[0]) / (grid.w2[1] - grid.w2[0])))
+            i2 = wp.int(wp.floor((photon_list.position[ip][1] - grid.w2[0]) / (grid.w2[1] - grid.w2[0])))
 
-        if equal(position[ip][1], grid.w2[i2], EPSILON):
-            position[ip][1] = grid.w2[i2]
-        elif equal(position[ip][1], grid.w2[i2+1], EPSILON):
-            position[ip][1] = grid.w2[i2+1]
+        if equal(photon_list.position[ip][1], grid.w2[i2], EPSILON):
+            photon_list.position[ip][1] = grid.w2[i2]
+        elif equal(photon_list.position[ip][1], grid.w2[i2+1], EPSILON):
+            photon_list.position[ip][1] = grid.w2[i2+1]
 
-        if position[ip][1] == grid.w2[i2] and direction[ip][1] < 0:
+        if photon_list.position[ip][1] == grid.w2[i2] and photon_list.direction[ip][1] < 0:
             i2 -= 1
-        elif position[ip][1] == grid.w2[i2+1] and direction[ip][1] > 0:
+        elif photon_list.position[ip][1] == grid.w2[i2+1] and photon_list.direction[ip][1] > 0:
             i2 += 1
-        indices[ip][1] = i2
+        photon_list.indices[ip][1] = i2
 
-        if position[ip][2] >= grid.w3[grid.n3]:
+        if photon_list.position[ip][2] >= grid.w3[grid.n3]:
             i3 = grid.n3-1
-        elif position[ip][2] <= grid.w3[0]:
+        elif photon_list.position[ip][2] <= grid.w3[0]:
             i3 = 0
         else:
-            i3 = wp.int(wp.floor((position[ip][2] - grid.w3[0]) / (grid.w3[1] - grid.w3[0])))
+            i3 = wp.int(wp.floor((photon_list.position[ip][2] - grid.w3[0]) / (grid.w3[1] - grid.w3[0])))
 
-        if equal(position[ip][2], grid.w3[i3], EPSILON):
-            position[ip][2] = grid.w3[i3]
-        elif equal(position[ip][2], grid.w3[i3+1], EPSILON):
-            position[ip][2] = grid.w3[i3+1]
+        if equal(photon_list.position[ip][2], grid.w3[i3], EPSILON):
+            photon_list.position[ip][2] = grid.w3[i3]
+        elif equal(photon_list.position[ip][2], grid.w3[i3+1], EPSILON):
+            photon_list.position[ip][2] = grid.w3[i3+1]
 
-        if position[ip][2] == grid.w3[i3] and direction[ip][2] < 0:
+        if photon_list.position[ip][2] == grid.w3[i3] and photon_list.direction[ip][2] < 0:
             i3 -= 1
-        elif position[ip][2] == grid.w3[i3+1] and direction[ip][2] > 0:
+        elif photon_list.position[ip][2] == grid.w3[i3+1] and photon_list.direction[ip][2] > 0:
             i3 += 1
-        indices[ip][2] = i3
+        photon_list.indices[ip][2] = i3
