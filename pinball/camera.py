@@ -73,6 +73,15 @@ class Camera:
         ray_list.image_iy = wp.array(image_iy, dtype=int)
         ray_list.pixel_too_large = wp.array(pixel_too_large, dtype=bool)
 
+        ray_list.radius = wp.array(np.zeros(xflat.shape), dtype=float)
+        ray_list.theta = wp.zeros(xflat.shape, dtype=float)
+        ray_list.phi = wp.zeros(xflat.shape, dtype=float)
+        ray_list.sin_theta = wp.zeros(xflat.shape, dtype=float)
+        ray_list.cos_theta = wp.zeros(xflat.shape, dtype=float)
+        ray_list.phi = wp.zeros(xflat.shape, dtype=float)
+        ray_list.sin_phi = wp.zeros(xflat.shape, dtype=float)
+        ray_list.cos_phi = wp.zeros(xflat.shape, dtype=float)
+
         return ray_list
 
     @wp.kernel
@@ -137,7 +146,7 @@ class Camera:
             wp.launch(kernel=self.put_intensity_in_image, 
                     dim=(nrays, image.lam.size),
                     inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, image.intensity])
-
+            
             new_x, new_y = [], []
             for i in range(nrays):
                 if ray_list.pixel_too_large.numpy()[i]:

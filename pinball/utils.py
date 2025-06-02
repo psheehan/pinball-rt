@@ -1,12 +1,20 @@
 import warp as wp
 
-EPSILON = 1.0e-6
+EPSILON = 1.0e-5
 
 @wp.func
 def equal(x: float,
           y: float,
           tol: float):
     if (wp.abs(x-y) < wp.abs(y)*tol):
+        return True
+    else:
+        return False
+    
+@wp.func
+def equal_zero(x: float,
+            tol: float):
+    if (wp.abs(x) < tol):
         return True
     else:
         return False

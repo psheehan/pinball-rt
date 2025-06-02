@@ -14,3 +14,11 @@ class PhotonList:
     image_ix: wp.array(dtype=int)
     image_iy: wp.array(dtype=int)
     pixel_too_large: wp.array(dtype=bool)
+
+    radius: wp.array(dtype=float)
+    theta: wp.array(dtype=float)
+    sin_theta: wp.array(dtype=float)
+    cos_theta: wp.array(dtype=float)
+    phi: wp.array(dtype=float)
+    sin_phi: wp.array(dtype=float)
+    cos_phi: wp.array(dtype=float)
