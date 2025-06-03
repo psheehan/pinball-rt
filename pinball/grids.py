@@ -272,6 +272,7 @@ class Grid:
 
         count = 0
         while nphotons > 0:
+            print(count)
             count += 1
 
             t1 = time.time()
@@ -352,6 +353,14 @@ class Grid:
             tau[interaction] = -np.log(1. - np.random.rand(interaction.sum()))
             absorb_photon[interaction] = np.random.rand(interaction.sum()) > albedo[interaction]
 
+            t1 = time.time()
+            wp.launch(kernel=self.photon_loc,
+                      dim=(interaction.sum(),),
+                      inputs=[photon_list, self.grid, interaction_indices],
+                      device='cpu')
+            t2 = time.time()
+            photon_loc_time += t2 - t1
+
         print(next_wall_time)
         print(dust_interpolation_time)
         print(tau_distance_time)
@@ -397,6 +406,7 @@ class Grid:
 
         count = 0
         while nphotons > 0:
+            print(count)
             count += 1
 
             t1 = time.time()
@@ -475,6 +485,14 @@ class Grid:
             #absorb_time += tmp_time
         
             tau[interaction] = -np.log(1. - np.random.rand(interaction.sum()))
+
+            t1 = time.time()
+            wp.launch(kernel=self.photon_loc,
+                      dim=(interaction.sum(),),
+                      inputs=[photon_list, self.grid, interaction_indices],
+                      device='cpu')
+            t2 = time.time()
+            photon_loc_time += t2 - t1
 
         print(next_wall_time)
         print(dust_interpolation_time)
@@ -606,8 +624,6 @@ class Grid:
             print("Time:", t2 - t1)
 
             self.update_grid()
-
-            print(self.temperature.min(), self.temperature.max())
 
             if count > 1:
                 R = np.maximum(told/self.temperature, self.temperature/told)
@@ -851,8 +867,8 @@ class UniformSphericalGrid(Grid):
         self.grid.cos_w2 = wp.array(np.cos(_w2), dtype=float)
         self.grid.tan_w2 = wp.array(np.tan(_w2), dtype=float)
         self.grid.neg_mu = wp.array(-self.grid.cos_w2.numpy(), dtype=float)
-        self.grid.sin_tol_w2 = wp.array(np.abs(np.sin(_w2 * (1.0 - EPSILON)) - np.sin(_w2)), dtype=float)
-        self.grid.cos_tol_w2 = wp.array(np.abs(np.cos(_w2 * (1.0 - EPSILON)) - np.cos(_w2)), dtype=float)
+        self.grid.sin_tol_w2 = wp.array(np.abs(np.sin(_w2.astype(np.float32) * (1.0 - EPSILON)) - np.sin(_w2.astype(np.float32))), dtype=float)
+        self.grid.cos_tol_w2 = wp.array(np.abs(np.cos(_w2.astype(np.float32) * (1.0 - EPSILON)) - np.cos(_w2.astype(np.float32))), dtype=float)
 
         self.grid.sin_w3 = wp.array(np.sin(_w3), dtype=float)
         self.grid.cos_w3 = wp.array(np.cos(_w3), dtype=float)
@@ -928,12 +944,14 @@ class UniformSphericalGrid(Grid):
         for i in range(iw1, iw1+2):
             if photon_list.radius[ip] == grid.w1[i]:
                 sr1 = -b + wp.abs(b)
-                if (sr1 < s) and (sr1 > 0) and not equal_zero(sr1/
-                        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
+                #if (sr1 < s) and (sr1 > 0) and not equal_zero(sr1/
+                #        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
+                if (sr1 < s) and (sr1 > 0):
                     s = sr1
                 sr2 = -b - wp.abs(b)
-                if (sr2 < s) and (sr2 > 0) and not equal_zero(sr2/
-                        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
+                #if (sr2 < s) and (sr2 > 0) and not equal_zero(sr2/
+                #        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
+                if (sr2 < s) and (sr2 > 0):
                     s = sr2
             else:
                 c = photon_list.radius[ip]*photon_list.radius[ip] - grid.w1[i]*grid.w1[i]
@@ -951,10 +969,10 @@ class UniformSphericalGrid(Grid):
 
         if grid.n2 != 2:
             for i in range(iw2, iw2+2):
-                if equal_zero(grid.cos_w2[i],1.0e-10):
+                if equal_zero(grid.cos_w2[i], EPSILON):
                     st1 = -photon_list.position[ip][2] / photon_list.direction[ip][2]
-                    if equal_zero(st1 / (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])), EPSILON):
-                        st1 = 0.
+                    #if equal_zero(st1 / (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])), EPSILON):
+                    #    st1 = 0.
                     if (st1 < s) and (st1 > 0):
                         s = st1
                 else:
@@ -1072,7 +1090,7 @@ class UniformSphericalGrid(Grid):
             if grid.n3 != 2:
                 photon_list.phi[ip] = wp.mod(photon_list.phi[ip] + np.pi, 2.*np.pi)
         else:
-            R = np.sqrt(photon_list.position[ip][0]**2. + photon_list.position[ip][1]**2.)
+            R = wp.sqrt(photon_list.position[ip][0]**2. + photon_list.position[ip][1]**2.)
             
             photon_list.cos_theta[ip] = photon_list.position[ip][2] / photon_list.radius[ip]
             photon_list.sin_theta[ip] = R / photon_list.radius[ip]
@@ -1119,7 +1137,7 @@ class UniformSphericalGrid(Grid):
         elif (photon_list.radius[ip] == grid.w1[i1+1]) and (wp.dot(photon_list.direction[ip], wp.vec3(gnx, gny, gnz)) >= 0):
             i1 += 1
 
-        if photon_list.radius[ip] > grid.w1[grid.n1] + EPSILON:
+        if photon_list.radius[ip] > grid.w1[grid.n1] * (1. + EPSILON):
             i1 = grid.n1
 
         # --- Theta index ---
