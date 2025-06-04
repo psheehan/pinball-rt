@@ -2,21 +2,12 @@ import sys
 sys.path.append("../")
 from pinball.dust import Dust
 from pinball.sources import Star
-from pinball.grids import CartesianGrid
+from pinball.grids import UniformCartesianGrid, UniformSphericalGrid
 from pinball.camera import Camera
 
 import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
-
-nphotons = 1000000
-
-n1, n2, n3 = 9, 9, 9
-w1 = (np.linspace(-4.5, 4.5, n1+1)*u.au).cgs.value
-w2 = (np.linspace(-4.5, 4.5, n2+1)*u.au).cgs.value
-w3 = (np.linspace(-4.5, 4.5, n3+1)*u.au).cgs.value
-
-density = np.ones((n1,n2,n3))*1.0e-16
 
 # Set up the dust.
 
@@ -37,11 +28,15 @@ star.set_blackbody_spectrum(d.nu)
 
 # Set up the grid.
 
-grid = CartesianGrid(w1, w2, w3)
+grid = UniformCartesianGrid(ncells=9, dx=(0.5*u.au).cgs.value)
+#grid = UniformSphericalGrid(ncells=9, dr=(0.5*u.au).cgs.value, mirror=True)
+
+density = np.ones(grid.shape)*1.0e-16
+
 grid.add_density(density, d)
 grid.add_star(star)
 
-#grid.thermal_mc(nphotons)
+grid.thermal_mc(nphotons=1000000)
 
 for i in range(9):
     plt.imshow(grid.temperature[:,:,i])

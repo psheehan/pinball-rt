@@ -42,6 +42,8 @@ class Grid:
         self.grid.n2 = _w2.size-1
         self.grid.n3 = _w3.size-1
 
+        self.shape = (self.grid.n1, self.grid.n2, self.grid.n3)
+
     def add_density(self, _density, dust):
         self.density = _density.astype(np.float32)
 
@@ -126,6 +128,14 @@ class Grid:
                        photon_energy: wp.array(dtype=float),
                        absorb_photon: wp.array(dtype=bool),
                        iphotons: wp.array(dtype=int)):
+        """
+        Deposit energy in the grid based on the absorption of photons.
+
+        Parameters
+        ----------
+        indices : wp.array2d(dtype=int)
+            Indices of the grid cells where the photons are located.
+        """
 
         ip = iphotons[wp.tid()]
 
@@ -272,7 +282,7 @@ class Grid:
 
         count = 0
         while nphotons > 0:
-            print(count)
+            print(nphotons)
             count += 1
 
             t1 = time.time()
@@ -406,7 +416,7 @@ class Grid:
 
         count = 0
         while nphotons > 0:
-            print(count)
+            print(nphotons)
             count += 1
 
             t1 = time.time()
@@ -657,13 +667,26 @@ class Grid:
 
             self.scattering[i] /= (4.*np.pi * self.volume)
 
-class CartesianGrid(Grid):
-    def __init__(self, _w1, _w2, _w3):
+class UniformCartesianGrid(Grid):
+    def __init__(self, ncells=9, dx=1.0):
+        if type(ncells) == int:
+            n1, n2, n3 = ncells, ncells, ncells
+        elif type(ncells) == tuple:
+            n1, n2, n3 = ncells
+            
+        if type(dx) == tuple:
+            dx, dy, dz = dx
+        else:
+            dx, dy, dz = dx, dx, dx
+
+        _w1 = np.linspace(-0.5*n1*dx, 0.5*n1*dx, n1+1)
+        _w2 = np.linspace(-0.5*n2*dy, 0.5*n2*dy, n2+1)
+        _w3 = np.linspace(-0.5*n3*dz, 0.5*n3*dz, n3+1)
+
         super().__init__(_w1, _w2, _w3)
 
-        self.volume = (np.ones((self.grid.n1, self.grid.n2, self.grid.n3)) * \
-                (_w1[1] - _w1[0]) * (_w2[1] - _w2[0]) * (_w3[1] - _w3[0]))
-        
+        self.volume = np.ones((self.grid.n1, self.grid.n2, self.grid.n3)) * (dx * dy * dz)
+
     def emit(self, nphotons, wavelength="random", scattering=False):
         photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering)
 
@@ -860,7 +883,20 @@ class CartesianGrid(Grid):
         photon_list.indices[ip][2] = i3
 
 class UniformSphericalGrid(Grid):
-    def __init__(self, _w1, _w2, _w3):
+    def __init__(self, ncells=9, dr=1.0, mirror=True):
+        if type(ncells) == int:
+            n1, n2, n3 = ncells, ncells, ncells
+        elif type(ncells) == tuple:
+            n1, n2, n3 = ncells
+
+        _w1 = np.linspace(0, n1*dr, n1+1)
+        if mirror:
+            _w2_max = np.pi / 2
+        else:
+            _w2_max = np.pi
+        _w2 = np.linspace(0, _w2_max, n2+1)
+        _w3 = np.linspace(0, 2*np.pi, n3+1)
+
         super().__init__(_w1, _w2, _w3)
 
         self.grid.sin_w2 = wp.array(np.sin(_w2), dtype=float)
