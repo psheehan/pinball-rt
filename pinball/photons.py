@@ -9,8 +9,18 @@ class PhotonList:
     energy: wp.array(dtype=float)
     in_grid: wp.array(dtype=bool)
 
-    intensity: wp.array2d(dtype=float)
+    alpha: wp.array(dtype=float)
+    kabs: wp.array(dtype=float)
+    ksca: wp.array(dtype=float)
+    albedo: wp.array(dtype=float)
+    kext: wp.array(dtype=float)
+    absorb: wp.array(dtype=bool)
+
     tau: wp.array(dtype=float)
+    total_tau_abs: wp.array(dtype=float)
+
+    intensity: wp.array2d(dtype=float)
+    tau_intensity: wp.array2d(dtype=float)
     image_ix: wp.array(dtype=int)
     image_iy: wp.array(dtype=int)
     pixel_too_large: wp.array(dtype=bool)

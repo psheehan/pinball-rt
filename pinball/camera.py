@@ -52,7 +52,7 @@ class Camera:
     def emit_rays(self, x, y, nu, nx, ny, pixel_size):
         xflat, yflat = x.flatten(), y.flatten()
         intensity = np.zeros(xflat.shape+(nu.size,), dtype=np.float32)
-        tau = np.zeros(xflat.shape+(nu.size,), dtype=float)
+        tau_intensity = np.zeros(xflat.shape+(nu.size,), dtype=float)
         #image_ix, image_iy = np.meshgrid(np.arange(x.shape[0]), np.arange(x.shape[1]))
         image_ix = (xflat / pixel_size + nx / 2).astype(np.int32)
         image_iy = (yflat / pixel_size + ny / 2).astype(np.int32)
@@ -68,7 +68,7 @@ class Camera:
         ray_list.direction = wp.array(direction, dtype=wp.vec3)
         ray_list.indices = wp.zeros(xflat.shape+(3,), dtype=int)
         ray_list.intensity = wp.array2d(intensity, dtype=float)
-        ray_list.tau = wp.array2d(tau, dtype=float)
+        ray_list.tau_intensity = wp.array2d(tau_intensity, dtype=float)
         ray_list.image_ix = wp.array(image_ix, dtype=int)
         ray_list.image_iy = wp.array(image_iy, dtype=int)
         ray_list.pixel_too_large = wp.array(pixel_too_large, dtype=bool)
@@ -106,6 +106,7 @@ class Camera:
         pixel_size = image.pixel_size
 
         while nrays > 0:
+            print(nrays)
             ray_list = self.emit_rays(new_x, new_y, image.nu, image.nx, image.ny, image.pixel_size)
 
             s = wp.zeros(new_x.shape, dtype=float)
@@ -127,7 +128,7 @@ class Camera:
             ray_list.position = wp.array(ray_list.position.numpy()[will_be_in_grid], dtype=wp.vec3)
             ray_list.direction = wp.array(ray_list.direction.numpy()[will_be_in_grid], dtype=wp.vec3)
             ray_list.intensity = wp.array(ray_list.intensity.numpy()[will_be_in_grid], dtype=float)
-            ray_list.tau = wp.array(ray_list.tau.numpy()[will_be_in_grid], dtype=float)
+            ray_list.tau_intensity = wp.array(ray_list.tau_intensity.numpy()[will_be_in_grid], dtype=float)
             ray_list.image_ix = wp.array(ray_list.image_ix.numpy()[will_be_in_grid], dtype=int)
             ray_list.image_iy = wp.array(ray_list.image_iy.numpy()[will_be_in_grid], dtype=int)
             ray_list.pixel_too_large = wp.array(ray_list.pixel_too_large.numpy()[will_be_in_grid], dtype=bool)
