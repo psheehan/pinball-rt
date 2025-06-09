@@ -45,15 +45,13 @@ for i in range(9):
     plt.clf()
     plt.close()
 
-grid.scattering_mc(100000, np.array([1.0,2.0])*u.micron)
+camera = Camera(grid)
+image = camera.make_image(256, 256, 0.1, np.array([1., 1000.])*u.micron, 45., 45., 1.)
 
 for i in range(9):
     plt.imshow(grid.scattering[0,:,:,i], vmin=grid.scattering[0].min(), vmax=grid.scattering[0].max())
     plt.savefig(f"scattering_{i}.png")
     plt.clf()
-
-camera = Camera(grid)
-image = camera.make_image(256, 256, 0.1, np.array([1., 1000.])*u.micron, 45., 45., 1.)
 
 plt.imshow(image.intensity[:,:,0])
 plt.savefig("image.png")

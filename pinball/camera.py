@@ -97,6 +97,12 @@ class Camera:
         image_intensity[ix, iy, inu] = ray_intensity[ir,inu]
 
     def make_image(self, nx, ny, pixel_size, lam, incl, pa, dpc):
+        # First, run a scattering simulation to get the scattering phase function
+
+        self.grid.scattering_mc(100000, lam)
+
+        # Now set up the image proper.
+
         self.set_orientation(incl, pa, dpc)
 
         image = Image(nx, ny, (pixel_size*u.arcsecond*dpc*u.pc).cgs.value, lam)
