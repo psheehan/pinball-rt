@@ -10,24 +10,28 @@ import torch
 
 class Dust:
     def __init__(self, lam, kabs, ksca):
-        f_kabs = scipy.interpolate.interp1d(np.log10(lam), np.log10(kabs), kind="cubic")
-        f_ksca = scipy.interpolate.interp1d(np.log10(lam), np.log10(ksca), kind="cubic")
+        kunit = kabs.unit
+        lam_unit = lam.unit
 
-        lam = 10.**np.linspace(np.log10(lam).min(), np.log10(lam).max(), 10000)[::-1]
+        f_kabs = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(kabs.value), kind="cubic")
+        f_ksca = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(ksca.value), kind="cubic")
+
+        lam = 10.**np.linspace(np.log10(lam.value).min(), np.log10(lam.value).max(), 10000)[::-1]
         kabs = 10.**f_kabs(np.log10(lam))
         ksca = 10.**f_ksca(np.log10(lam))
 
-        self.nu = const.c.cgs.value / lam
-        self.lam = lam
-        self.kabs = kabs
-        self.ksca = ksca
-        self.kext = kabs + ksca
+        self.nu = (const.c / (lam * lam_unit)).decompose().to(u.GHz)
+        self.kmean = np.mean(kabs) * kunit
+        self.lam = lam * lam_unit
+        self.kabs = kabs / self.kmean.value
+        self.ksca = ksca / self.kmean.value
+        self.kext = (kabs + ksca) / self.kmean.value
         self.albedo = ksca / (kabs + ksca)
 
         self.temperature = np.logspace(-1.,4.,1000)
         self.log_temperature = np.log10(self.temperature)
 
-        random_nu_PDF = np.array([kabs * models.BlackBody(temperature=T*u.K)(self.nu*u.Hz) for T in self.temperature])
+        random_nu_PDF = np.array([kabs * models.BlackBody(temperature=T*u.K)(self.nu) for T in self.temperature])
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(random_nu_PDF, self.nu, axis=1, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[:,-1:]
         self.drandom_nu_CPD_dT = np.gradient(self.random_nu_CPD, self.temperature, axis=0)
@@ -87,7 +91,7 @@ class Dust:
             plt.show()
         
         train_x = torch.tensor(np.vstack((ksi, np.log10(T))).T, dtype=torch.float32)
-        train_y = torch.tensor(np.log10(samples), dtype=torch.float32).reshape((ksi.size,1))
+        train_y = torch.tensor(np.log10(samples.value), dtype=torch.float32).reshape((ksi.size,1))
 
         class Sampler(torch.nn.Module):
             def __init__(self):
@@ -161,7 +165,7 @@ class Dust:
         return nu
 
     def planck_mean_opacity(self, temperature):
-        vectorized_bb = np.vectorize(lambda T: scipy.integrate.trapezoid(self.kabs * \
-                models.BlackBody(temperature=T*u.K)(self.nu*u.Hz).cgs.value, self.nu))
+        vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
+                models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
 
         return np.pi / (const.sigma_T.cgs.value * temperature**4) * vectorized_bb(temperature)

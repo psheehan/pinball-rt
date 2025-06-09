@@ -18,8 +18,8 @@ class Image:
 
         self.pixel_size = pixel_size
 
-        self.lam = lam.copy()
-        self.nu = const.c.cgs.value / lam
+        self.lam = lam
+        self.nu = (const.c / lam).to(u.GHz)
 
         self.intensity = wp.array3d(np.zeros((nx, ny, lam.size), dtype=float), dtype=float)
 
@@ -142,7 +142,7 @@ class Camera:
                     inputs=[ray_list, self.grid.grid, iray],
                     device='cpu')
 
-            self.grid.propagate_rays(ray_list, image.nu, pixel_size)
+            self.grid.propagate_rays(ray_list, image.nu.value, pixel_size)
 
             wp.launch(kernel=self.put_intensity_in_image, 
                     dim=(nrays, image.lam.size),

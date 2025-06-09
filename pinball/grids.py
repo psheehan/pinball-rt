@@ -45,11 +45,11 @@ class Grid:
         self.shape = (self.grid.n1, self.grid.n2, self.grid.n3)
 
     def add_density(self, _density, dust):
-        self.grid.density = wp.array3d(_density, dtype=float)
+        self.grid.density = wp.array3d((_density*dust.kmean).to(1./self.distance_unit).value, dtype=float)
 
         self.grid.energy = wp.zeros(_density.shape, dtype=float)
         self.grid.temperature = wp.array3d(np.ones(_density.shape)*0.1, dtype=float)
-        self.mass = self.grid.density.numpy() * self.volume
+        self.mass = (_density * self.volume * self.distance_unit**3).decompose()
 
         self.dust = dust
 
@@ -62,7 +62,7 @@ class Grid:
         else:
             nphotons_per_source = nphotons
 
-        photon_list = self.star.emit(nphotons_per_source, wavelength)
+        photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength)
 
         cell_coords = []
         if scattering:
@@ -88,7 +88,7 @@ class Grid:
                       device='cpu')
             photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), new_direction), axis=0), dtype=wp.vec3)
 
-            photon_list.frequency = wp.array(np.concatenate([photon_list.frequency, np.repeat((const.c / (wavelength*u.micron)).to(u.Hz).value, nphotons_per_source)]), dtype=float)
+            photon_list.frequency = wp.array(np.concatenate([photon_list.frequency, np.repeat((const.c / wavelength).to(u.GHz).value, nphotons_per_source)]), dtype=float)
             photon_list.energy = wp.array(np.concatenate([photon_list.energy, np.repeat(self.total_lum/nphotons_per_source, nphotons_per_source).astype(np.float32)]), dtype=float)
 
         return photon_list
@@ -275,7 +275,7 @@ class Grid:
         if not scattering:
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
-                      inputs=[photon_list, new_frequency, self.dust.interpolate_kabs(new_frequency).astype(np.float32), self.dust.interpolate_ksca(new_frequency).astype(np.float32), iabsorb],
+                      inputs=[photon_list, new_frequency, self.dust.interpolate_kabs(new_frequency*u.GHz).astype(np.float32), self.dust.interpolate_ksca(new_frequency*u.GHz).astype(np.float32), iabsorb],
                       device='cpu')
         t2 = time.time()
         dust_interpolation_time = t2 - t1
@@ -302,9 +302,9 @@ class Grid:
         while not converged:
             old_temperature = temperature.copy()
 
-            temperature = (total_energy / (4*const.sigma_T.cgs.value*\
+            temperature = ((total_energy*u.L_sun).cgs.value / (4*const.sigma_T.cgs.value*\
                     self.dust.planck_mean_opacity(old_temperature)*\
-                    self.mass))**0.25
+                    self.mass.cgs.value))**0.25
 
             temperature[temperature < 0.1] = 0.1
 
@@ -314,13 +314,13 @@ class Grid:
         self.grid.temperature = wp.array3d(temperature, dtype=float)
 
     def initialize_luminosity_array(self, wavelength):
-        nu = const.c.cgs.value / wavelength
+        nu = (const.c / wavelength).to(u.GHz)
         self.luminosity = np.zeros(self.shape)
 
         for i in range(self.shape[0]):
             for j in range(self.shape[1]):
                 for k in range(self.shape[2]):
-                    self.luminosity[i,j,k] = 4*np.pi*self.grid.density.numpy()[i,j,k]*self.volume[i,j,k]*self.dust.interpolate_kabs(nu)*models.BlackBody(temperature=self.grid.temperature.numpy()[i,j,k]*u.K)(nu*u.Hz).cgs.value
+                    self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.density.numpy()[i,j,k]*self.volume[i,j,k]*self.dust.interpolate_kabs(nu)*self.distance_unit**2*models.BlackBody(temperature=self.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
 
         self.total_lum = self.luminosity.sum()
 
@@ -347,8 +347,8 @@ class Grid:
         absorb_time = 0.
         
         t1 = time.time()
-        photon_list.kabs = wp.array(self.dust.interpolate_kabs(photon_list.frequency), dtype=float)
-        photon_list.ksca = wp.array(self.dust.interpolate_ksca(photon_list.frequency), dtype=float)
+        photon_list.kabs = wp.array(self.dust.interpolate_kabs(photon_list.frequency*u.GHz), dtype=float)
+        photon_list.ksca = wp.array(self.dust.interpolate_ksca(photon_list.frequency*u.GHz), dtype=float)
         photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
         t2 = time.time()
         dust_interpolation_time += t2 - t1
@@ -422,7 +422,7 @@ class Grid:
             removing_photons_time += t2 - t1
 
             t1 = time.time()
-            interaction = np.logical_and(photon_list.tau.numpy() <= 0, photon_list.in_grid)
+            interaction = np.logical_and(photon_list.tau.numpy() <= 1e-10, photon_list.in_grid)
             interaction_indices = iphotons_original[interaction]
             absorb = np.logical_and(interaction, photon_list.absorb.numpy())
             absorb_indices = iphotons_original[absorb]
@@ -466,8 +466,8 @@ class Grid:
         absorb_time = 0.
         
         t1 = time.time()
-        photon_list.kabs = wp.array(self.dust.interpolate_kabs(photon_list.frequency), dtype=float)
-        photon_list.ksca = wp.array(self.dust.interpolate_ksca(photon_list.frequency), dtype=float)
+        photon_list.kabs = wp.array(self.dust.interpolate_kabs(photon_list.frequency*u.GHz), dtype=float)
+        photon_list.ksca = wp.array(self.dust.interpolate_ksca(photon_list.frequency*u.GHz), dtype=float)
         photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
         t2 = time.time()
         dust_interpolation_time += t2 - t1
@@ -538,7 +538,7 @@ class Grid:
             removing_photons_time += t2 - t1
 
             t1 = time.time()
-            interaction = np.logical_and(photon_list.tau.numpy() <= 0, photon_list.in_grid)
+            interaction = np.logical_and(photon_list.tau.numpy() <= 1e-10, photon_list.in_grid)
             interaction_indices = iphotons_original[interaction]
             absorb = np.logical_and(interaction, photon_list.absorb)
             absorb_indices = iphotons_original[absorb]
@@ -591,7 +591,7 @@ class Grid:
         alpha_ext += ray_list.kext[inu]*grid.density[ix,iy,iz]
         alpha_sca += ray_list.kext[inu]*ray_list.albedo[inu]*grid.density[ix,iy,iz]
         intensity_abs += ray_list.kext[inu] * (1. - ray_list.albedo[inu]) * \
-                grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
+                grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu] / 1e9, grid.temperature[ix,iy,iz])
 
         albedo_total = alpha_sca / alpha_ext
 
@@ -612,8 +612,8 @@ class Grid:
         nnu = frequency.size
         ray_list.in_grid = wp.zeros(nrays, dtype=bool)
 
-        ray_list.kext = wp.array(self.dust.interpolate_kext(frequency), dtype=float)
-        ray_list.albedo = wp.array(self.dust.interpolate_albedo(frequency), dtype=float)
+        ray_list.kext = wp.array(self.dust.interpolate_kext(frequency*u.GHz), dtype=float)
+        ray_list.albedo = wp.array(self.dust.interpolate_albedo(frequency*u.GHz), dtype=float)
 
         ray_list.frequency = wp.array(frequency, dtype=float)
 
@@ -715,13 +715,15 @@ class UniformCartesianGrid(Grid):
         else:
             dx, dy, dz = dx, dx, dx
 
-        _w1 = np.linspace(-0.5*n1*dx, 0.5*n1*dx, n1+1)
-        _w2 = np.linspace(-0.5*n2*dy, 0.5*n2*dy, n2+1)
-        _w3 = np.linspace(-0.5*n3*dz, 0.5*n3*dz, n3+1)
+        self.distance_unit = dx.unit
+
+        _w1 = np.linspace(-0.5*n1*dx.value, 0.5*n1*dx.value, n1+1)
+        _w2 = np.linspace(-0.5*n2*dy.value, 0.5*n2*dy.value, n2+1)
+        _w3 = np.linspace(-0.5*n3*dz.value, 0.5*n3*dz.value, n3+1)
 
         super().__init__(_w1, _w2, _w3)
 
-        self.volume = np.ones((self.grid.n1, self.grid.n2, self.grid.n3)) * (dx * dy * dz)
+        self.volume = np.ones((self.grid.n1, self.grid.n2, self.grid.n3)) * (dx.value * dy.value * dz.value)
 
     def emit(self, nphotons, wavelength="random", scattering=False):
         photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering)
@@ -925,7 +927,9 @@ class UniformSphericalGrid(Grid):
         elif type(ncells) == tuple:
             n1, n2, n3 = ncells
 
-        _w1 = np.linspace(0, n1*dr, n1+1)
+        self.distance_unit = dr.unit
+
+        _w1 = np.linspace(0, n1*dr.value, n1+1)
         if mirror:
             _w2_max = np.pi / 2
         else:

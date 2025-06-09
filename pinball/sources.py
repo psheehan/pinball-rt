@@ -14,10 +14,10 @@ class Star:
     luminosity: float
     radius: float
 
-    def __init__(self, temperature=4000., luminosity=1.0*const.L_sun, radius=1.0*const.R_sun, x=0., y=0., z=0.):
+    def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, radius=1.0*const.R_sun, x=0., y=0., z=0.):
         self.temperature = temperature
-        self.luminosity = luminosity.cgs.value
-        self.radius = radius.cgs.value
+        self.luminosity = luminosity
+        self.radius = radius
         self.x = x
         self.y = y
         self.z = z
@@ -25,20 +25,20 @@ class Star:
     def set_blackbody_spectrum(self, nu):
         self.nu = nu
 
-        bb = models.BlackBody(temperature=self.temperature*u.K)
+        bb = models.BlackBody(temperature=self.temperature)
         
-        self.Bnu = bb(self.nu*u.Hz).cgs.value
+        self.Bnu = bb(self.nu)
 
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.Bnu, self.nu, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
 
-    def emit(self, nphotons, wavelength="random"):
+    def emit(self, nphotons, distance_unit, wavelength="random"):
         theta = np.pi*np.random.rand(nphotons)
         phi = 2*np.pi*np.random.rand(nphotons)
 
-        position = np.hstack(((self.radius*np.sin(theta)*np.cos(phi))[:,np.newaxis],
-                             (self.radius*np.sin(theta)*np.sin(phi))[:,np.newaxis],
-                             (self.radius*np.cos(theta))[:,np.newaxis]))
+        position = np.hstack(((self.radius.to(distance_unit).value*np.sin(theta)*np.cos(phi))[:,np.newaxis],
+                             (self.radius.to(distance_unit).value*np.sin(theta)*np.sin(phi))[:,np.newaxis],
+                             (self.radius.to(distance_unit).value*np.cos(theta))[:,np.newaxis]))
 
         r_hat = np.array([np.sin(theta)*np.cos(phi), np.sin(theta)*np.sin(phi), np.cos(theta)]).T
         theta_hat = np.array([np.cos(theta)*np.cos(phi), np.cos(theta)*np.sin(phi), -np.sin(theta)]).T
@@ -52,15 +52,15 @@ class Star:
 
         if wavelength == "random":
             frequency = self.random_nu(nphotons)
-            photon_energy = np.repeat(self.luminosity / nphotons, nphotons)
+            photon_energy = np.repeat(self.luminosity.to(u.L_sun).value / nphotons, nphotons)
         else:
-            frequency = np.repeat((const.c / (wavelength*u.micron)).to(u.Hz).value, nphotons)
-            photon_energy = np.repeat(4.*np.pi**2*self.radius**2*models.BlackBody(temperature=self.temperature*u.K)(frequency[0]*u.Hz).cgs.value / nphotons, nphotons)
+            frequency = np.repeat((const.c / wavelength).to(u.GHz), nphotons)
+            photon_energy = np.repeat((4.*np.pi**2*u.steradian*self.radius**2*models.BlackBody(temperature=self.temperature)(frequency[0])).to(distance_unit**2 * u.Jy).value / nphotons, nphotons)
 
         photon_list = PhotonList()
         photon_list.position = wp.array(position, dtype=wp.vec3)
         photon_list.direction = wp.array(direction, dtype=wp.vec3)
-        photon_list.frequency = wp.array(frequency, dtype=float)
+        photon_list.frequency = wp.array(frequency.value, dtype=float)
         photon_list.energy = wp.array(photon_energy, dtype=float)
 
         return photon_list
