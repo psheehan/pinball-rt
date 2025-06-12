@@ -62,7 +62,7 @@ class Grid:
         else:
             nphotons_per_source = nphotons
 
-        photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength)
+        photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal")
 
         cell_coords = []
         if scattering:
@@ -126,9 +126,9 @@ class Grid:
     
         ip = iray[wp.tid()]
 
-        photon_list.position[ip][0] += distances[ip] * photon_list.direction[ip][0]
-        photon_list.position[ip][1] += distances[ip] * photon_list.direction[ip][1]
-        photon_list.position[ip][2] += distances[ip] * photon_list.direction[ip][2]
+        photon_list.position[ip][0] = photon_list.position[ip][0] + distances[ip] * photon_list.direction[ip][0]
+        photon_list.position[ip][1] = photon_list.position[ip][1] + distances[ip] * photon_list.direction[ip][1]
+        photon_list.position[ip][2] = photon_list.position[ip][2] + distances[ip] * photon_list.direction[ip][2]
 
     @wp.kernel
     def deposit_energy(photon_list: PhotonList,
@@ -259,7 +259,7 @@ class Grid:
 
         t1 = time.time()
         nabsorb = iabsorb.size
-        if not scattering:
+        if not scattering and nabsorb > 0:
             photon_temperature = wp.zeros(nabsorb, dtype=float)
             wp.launch(kernel=self.photon_temperature,
                       dim=(nabsorb,),
@@ -268,11 +268,11 @@ class Grid:
         t2 = time.time()
         photon_temperature_time = t2 - t1
 
-        if not scattering:
+        if not scattering and nabsorb > 0:
             new_frequency = self.dust.random_nu(photon_temperature.numpy())
 
         t1 = time.time()
-        if not scattering:
+        if not scattering and nabsorb > 0:
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
                       inputs=[photon_list, new_frequency, self.dust.interpolate_kabs(new_frequency*u.GHz).astype(np.float32), self.dust.interpolate_ksca(new_frequency*u.GHz).astype(np.float32), iabsorb],
@@ -587,23 +587,23 @@ class Grid:
         alpha_ext = 0.
         alpha_sca = 0.
 
-        tau_cell += s[ir]*ray_list.kext[inu]*grid.density[ix,iy,iz]
-        alpha_ext += ray_list.kext[inu]*grid.density[ix,iy,iz]
-        alpha_sca += ray_list.kext[inu]*ray_list.albedo[inu]*grid.density[ix,iy,iz]
-        intensity_abs += ray_list.kext[inu] * (1. - ray_list.albedo[inu]) * \
+        tau_cell = tau_cell + s[ir]*ray_list.kext[inu]*grid.density[ix,iy,iz]
+        alpha_ext = alpha_ext + ray_list.kext[inu]*grid.density[ix,iy,iz]
+        alpha_sca = alpha_sca + ray_list.kext[inu]*ray_list.albedo[inu]*grid.density[ix,iy,iz]
+        intensity_abs = intensity_abs + ray_list.kext[inu] * (1. - ray_list.albedo[inu]) * \
                 grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu] / 1e9, grid.temperature[ix,iy,iz])
 
         albedo_total = alpha_sca / alpha_ext
 
         if alpha_ext > 0.:
-            intensity_abs *= (1.0 - wp.exp(-tau_cell)) / alpha_ext
+            intensity_abs = intensity_abs * (1.0 - wp.exp(-tau_cell)) / alpha_ext
 
         intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * scattering[inu,ix,iy,iz]
 
         intensity_cell = intensity_abs
 
-        ray_list.intensity[ir,inu] += intensity_cell * wp.exp(-ray_list.tau_intensity[ir,inu])
-        ray_list.tau_intensity[ir,inu] += tau_cell
+        ray_list.intensity[ir,inu] = ray_list.intensity[ir,inu] + intensity_cell * wp.exp(-ray_list.tau_intensity[ir,inu])
+        ray_list.tau_intensity[ir,inu] = ray_list.tau_intensity[ir,inu] + tau_cell
 
     def propagate_rays(self, ray_list: PhotonList, frequency, pixel_size):
         nrays = ray_list.position.numpy().shape[0]

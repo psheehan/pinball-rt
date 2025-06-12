@@ -32,7 +32,7 @@ class Star:
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.Bnu, self.nu, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
 
-    def emit(self, nphotons, distance_unit, wavelength="random"):
+    def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal"):
         theta = np.pi*np.random.rand(nphotons)
         phi = 2*np.pi*np.random.rand(nphotons)
 
@@ -52,9 +52,12 @@ class Star:
 
         if wavelength == "random":
             frequency = self.random_nu(nphotons)
-            photon_energy = np.repeat(self.luminosity.to(u.L_sun).value / nphotons, nphotons)
         else:
             frequency = np.repeat((const.c / wavelength).to(u.GHz), nphotons)
+
+        if simulation == "thermal":
+            photon_energy = np.repeat(self.luminosity.to(u.L_sun).value / nphotons, nphotons)
+        elif simulation == "scattering":
             photon_energy = np.repeat((4.*np.pi**2*u.steradian*self.radius**2*models.BlackBody(temperature=self.temperature)(frequency[0])).to(distance_unit**2 * u.Jy).value / nphotons, nphotons)
 
         photon_list = PhotonList()
