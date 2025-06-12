@@ -6,6 +6,16 @@ import matplotlib.pyplot as plt
 import scipy.integrate
 import warp as wp
 import numpy as np
+import torch.nn as nn
+
+from skorch import NeuralNetRegressor
+from skorch.dataset import Dataset
+from sklearn.preprocessing import MinMaxScaler, FunctionTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
+from sklearn.model_selection import train_test_split
+
+from torch.utils.data import DataLoader
 import torch
 
 class Dust:
@@ -78,94 +88,89 @@ class Dust:
 
         return frequency
 
-    def learn_random_nu(self, plot=False):
+    def learn_random_nu(self, nsamples=200000, max_epochs=10, plot=False):
         sampler = scipy.stats.qmc.LatinHypercube(d=2)
-        samples = sampler.random(5000)
+        X = sampler.random(nsamples).astype(np.float32)
+        X[:,0] = 10.**(5*X[:,0] - 1.)
 
-        T = 10.**(samples[:,0]*5 - 1.)
-        ksi = samples[:,1]
-        samples = self.random_nu_manual(T, ksi)
-
-        if plot:
-            plt.hist(np.log10(samples), 100)
-            plt.show()
-        
-        train_x = torch.tensor(np.vstack((ksi, np.log10(T))).T, dtype=torch.float32)
-        train_y = torch.tensor(np.log10(samples.value), dtype=torch.float32).reshape((ksi.size,1))
-
-        class Sampler(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-        
-                self.hidden1 = torch.nn.Linear(2, 24)
-                #self.act1 = torch.nn.ReLU()
-                self.act1 = torch.nn.Sigmoid()
-                self.hidden2 = torch.nn.Linear(24, 24)
-                self.act2 = torch.nn.Sigmoid()
-                #self.hidden3 = torch.nn.Linear(48, 48)
-                #self.act3 = torch.nn.Sigmoid()
-                self.output = torch.nn.Linear(24, 1)
-        
-            def forward(self, x):
-                x = self.act1(self.hidden1(x))
-                x = self.act2(self.hidden2(x))
-                #x = self.act3(self.hidden3(x))
-                x = self.output(x)
-        
-                return x
-        
-        model = Sampler()
-        
-        loss_fn = torch.nn.MSELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        
-        n_epochs = 1000
-        batch_size = 1000
-        
-        for epoch in range(n_epochs):
-            for i in range(0, len(train_x), batch_size):
-                Xbatch = train_x[i:i+batch_size]
-                y_pred = model(Xbatch)
-                Ybatch = train_y[i:i+batch_size]
-        
-                loss = loss_fn(y_pred, Ybatch)
-        
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-        
-            print(f'Finished epoch {epoch}, latest loss {loss}')
-
-        """
-        T = 10.**np.random.uniform(-1.,4.,100000)
-        ksi = np.random.uniform(0.,1.,100000)
-        samples = self.random_nu_manual(T, ksi)
-
-        test_x = torch.tensor(np.vstack((ksi, np.log10(T))).T, dtype=torch.float32)
-        test_y = torch.tensor(np.log10(samples), dtype=torch.float32).reshape((ksi.size,1))
-
-        predict_y = model(test_x)
+        y = np.concatenate([self.random_nu_manual(X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch, _ in DataLoader(Dataset(X), batch_size=1000)]).astype(np.float32)
 
         if plot:
-            count, bins, patches = plt.hist(test_y[:,0], 100, histtype='step')
-            plt.hist(predict_y[:,0].detach().numpy(), bins, histtype='step')
-            plt.show()
-        """
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        else:
+            X_train, y_train = X, y
 
-        self.model = model
+        net = NeuralNetRegressor(
+                MultiLayerPerceptron,
+                max_epochs=max_epochs,
+                criterion=nn.MSELoss,
+                optimizer=torch.optim.Adam,
+                lr=0.01,
+                # Shuffle training data on each epoch
+                iterator_train__shuffle=True)
+        
+        pipe = TransformedTargetRegressor(
+            regressor=Pipeline([
+                ('LogT', ColumnTransformer([
+                    ('T', FunctionTransformer(func=np.log10, inverse_func=ten_to_the_x, check_inverse=False), [0]),
+                    ('ksi', 'passthrough', [1])])),
+                ('Normalize', MinMaxScaler()),
+                ('MLP', net)]),
+            transformer=Pipeline([
+                ('log10', FunctionTransformer(func=np.log10, inverse_func=ten_to_the_x, check_inverse=False)),
+                ('Normalize', MinMaxScaler())]))
+                
+        pipe.fit(X_train, y_train)
+
+        if plot:
+            count, bins, patches = plt.hist(np.log10(y_test.value), 100, histtype='step')
+            plt.hist(np.log10(pipe.predict(X_test)), bins, histtype='step')
+            plt.savefig("predicted_vs_actual.png")
+            plt.clf()
+            plt.close()
+
+        self.model = pipe
 
     def random_nu(self, temperature):
         nphotons = temperature.size
         ksi = np.random.rand(int(nphotons))
 
-        test_x = torch.tensor(np.vstack((ksi, np.log10(temperature))).T, dtype=torch.float32)
-        
-        nu = 10.**self.model(test_x).detach().numpy().flatten()
+        X_pred = np.vstack((temperature, ksi)).T.astype(np.float32)
 
-        return nu
+        return self.model.predict(X_pred)
 
     def planck_mean_opacity(self, temperature):
         vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
                 models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
 
         return np.pi / (const.sigma_T.cgs.value * temperature**4) * vectorized_bb(temperature)
+    
+    def write(self, filename):
+        import pickle
+        pickle.dump(self, open(filename, "wb"))
+
+def load(filename):
+    import pickle
+    return pickle.load(open(filename, "rb")) 
+
+def ten_to_the_x(x):
+    return 10.**x
+
+class MultiLayerPerceptron(nn.Module):
+    def __init__(self, input_size=2, nunits=48, nlayers=3):
+        super().__init__()
+
+        all_layers = []
+        for hidden_unit in [nunits]*nlayers:
+            layer = nn.Linear(input_size, hidden_unit)
+            all_layers.append(layer)
+            all_layers.append(nn.Sigmoid())
+            input_size = hidden_unit
+
+        all_layers.append(nn.Linear(nunits, 1))
+
+        self.model = nn.Sequential(*all_layers)
+
+    def forward(self, x):
+        x = self.model(x)[:,0]
+        return x

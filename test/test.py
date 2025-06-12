@@ -1,6 +1,6 @@
 import sys
 sys.path.append("../")
-from pinball.dust import Dust
+from pinball.dust import load
 from pinball.sources import Star
 from pinball.grids import UniformCartesianGrid, UniformSphericalGrid
 from pinball.camera import Camera
@@ -11,15 +11,7 @@ import numpy as np
 
 # Set up the dust.
 
-data = np.loadtxt('dustkappa_yso.inp', skiprows=2)
-
-lam = data[::-1,0].copy() * u.micron
-kabs = data[::-1,1].copy() * u.cm**2 / u.g
-ksca = data[::-1,2].copy() * u.cm**2 / u.g
-
-d = Dust(lam, kabs, ksca)
-
-d.learn_random_nu()
+d = load("dust.pkl")
 
 # Set up the star.
 
