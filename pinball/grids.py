@@ -1043,7 +1043,7 @@ class UniformSphericalGrid(Grid):
 
         # Calculate the distance to the intersection with the next theta wall.
 
-        if grid.n2 != 2:
+        if grid.n2 != 1:
             for i in range(iw2, iw2+2):
                 if equal_zero(grid.cos_w2[i], EPSILON):
                     st1 = -photon_list.position[ip][2] / photon_list.direction[ip][2]
@@ -1076,7 +1076,7 @@ class UniformSphericalGrid(Grid):
 
         # Calculate the distance to intersection with the nearest phi wall.
 
-        if grid.n3 != 2:
+        if grid.n3 != 1:
             for i in range(iw3, iw3+3):
                 if photon_list.phi[ip] != grid.w3[i]:
                     c = photon_list.position[ip][0]*grid.sin_w3[i]-photon_list.position[ip][1]*grid.cos_w3[i]
@@ -1253,7 +1253,7 @@ class UniformSphericalGrid(Grid):
             if i2 == grid.n2: i2 = grid.n2-1
 
         # --- Phi index ---
-        if grid.n3 == 2:
+        if grid.n3 == 1:
             i3 = 0
         else:
             i3 = wp.int(wp.floor((photon_list.phi[ip] - grid.w3[0]) / (grid.w3[1] - grid.w3[0])))
