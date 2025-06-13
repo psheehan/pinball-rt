@@ -11,7 +11,7 @@ import numpy as np
 
 # Set up the dust.
 
-d = load("dust.pkl")
+d = load("yso.dst")
 
 # Set up the star.
 

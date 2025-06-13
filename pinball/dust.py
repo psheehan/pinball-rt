@@ -1,3 +1,4 @@
+from torch.utils.data import DataLoader, TensorDataset, random_split
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -7,28 +8,26 @@ import scipy.integrate
 import warp as wp
 import numpy as np
 import torch.nn as nn
-
-from skorch import NeuralNetRegressor
-from skorch.dataset import Dataset
-from sklearn.preprocessing import MinMaxScaler, FunctionTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
-from sklearn.model_selection import train_test_split
-
-from torch.utils.data import DataLoader
+import pytorch_lightning as pl
 import torch
 
-class Dust:
-    def __init__(self, lam, kabs, ksca):
+class Dust(pl.LightningDataModule):
+    def __init__(self, lam, kabs, ksca, interpolate=10000):
+        super().__init__()
         kunit = kabs.unit
         lam_unit = lam.unit
 
-        f_kabs = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(kabs.value), kind="cubic")
-        f_ksca = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(ksca.value), kind="cubic")
+        if interpolate > 0:
+            f_kabs = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(kabs.value), kind="cubic")
+            f_ksca = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(ksca.value), kind="cubic")
 
-        lam = 10.**np.linspace(np.log10(lam.value).min(), np.log10(lam.value).max(), 10000)[::-1]
-        kabs = 10.**f_kabs(np.log10(lam))
-        ksca = 10.**f_ksca(np.log10(lam))
+            lam = 10.**np.linspace(np.log10(lam.value).min(), np.log10(lam.value).max(), interpolate)[::-1]
+            kabs = 10.**f_kabs(np.log10(lam))
+            ksca = 10.**f_ksca(np.log10(lam))
+        else:
+            lam = lam.value
+            kabs = kabs.value
+            ksca = ksca.value
 
         self.nu = (const.c / (lam * lam_unit)).decompose().to(u.GHz)
         self.kmean = np.mean(kabs) * kunit
@@ -88,89 +87,165 @@ class Dust:
 
         return frequency
 
-    def learn_random_nu(self, nsamples=200000, max_epochs=10, plot=False):
-        sampler = scipy.stats.qmc.LatinHypercube(d=2)
-        X = sampler.random(nsamples).astype(np.float32)
-        X[:,0] = 10.**(5*X[:,0] - 1.)
+    def initialize_model(self, hidden_units=(48, 48, 48)):
+        all_layers = [nn.Flatten()]
 
-        y = np.concatenate([self.random_nu_manual(X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch, _ in DataLoader(Dataset(X), batch_size=1000)]).astype(np.float32)
+        input_size = 2
+
+        for hidden_unit in hidden_units:
+            layer = nn.Linear(input_size, hidden_unit)
+            all_layers.append(layer)
+            all_layers.append(nn.Sigmoid())
+            input_size = hidden_unit
+
+        all_layers.append(nn.Linear(hidden_units[-1], 1))
+
+        self.model = nn.Sequential(*all_layers)
+
+    def learn_random_nu(self, nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False):
+
+        self.nsamples = nsamples
+        self.test_split = test_split
+        self.valid_split = valid_split
+
+        # Set up the NN
+
+        self.initialize_model(hidden_units=hidden_units)
+
+        # Wrap the model in lightning
+
+        dustLM = DustLightningModule(self.model)
+
+        trainer = pl.Trainer(max_epochs=10)
+        trainer.fit(model=dustLM, datamodule=self)
+
+        # Test the model.
+
+        trainer.test(model=dustLM, datamodule=self)
+
+        # Plot the result
 
         if plot:
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-        else:
-            X_train, y_train = X, y
-
-        net = NeuralNetRegressor(
-                MultiLayerPerceptron,
-                max_epochs=max_epochs,
-                criterion=nn.MSELoss,
-                optimizer=torch.optim.Adam,
-                lr=0.01,
-                # Shuffle training data on each epoch
-                iterator_train__shuffle=True)
-        
-        pipe = TransformedTargetRegressor(
-            regressor=Pipeline([
-                ('LogT', ColumnTransformer([
-                    ('T', FunctionTransformer(func=np.log10, inverse_func=ten_to_the_x, check_inverse=False), [0]),
-                    ('ksi', 'passthrough', [1])])),
-                ('Normalize', MinMaxScaler()),
-                ('MLP', net)]),
-            transformer=Pipeline([
-                ('log10', FunctionTransformer(func=np.log10, inverse_func=ten_to_the_x, check_inverse=False)),
-                ('Normalize', MinMaxScaler())]))
-                
-        pipe.fit(X_train, y_train)
-
-        if plot:
-            count, bins, patches = plt.hist(np.log10(y_test.value), 100, histtype='step')
-            plt.hist(np.log10(pipe.predict(X_test)), bins, histtype='step')
-            plt.savefig("predicted_vs_actual.png")
-            plt.clf()
-            plt.close()
-
-        self.model = pipe
+            y_pred = trainer.predict(dustLM, datamodule=self)
+            y_pred = torch.cat(y_pred)
+            y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
+            
+            with torch.no_grad():
+                count, bins, patches = plt.hist(y_true, 100, histtype='step')
+                plt.hist(y_pred, bins, histtype='step')
+                plt.savefig("predicted_vs_actual.png")
 
     def random_nu(self, temperature):
         nphotons = temperature.size
         ksi = np.random.rand(int(nphotons))
 
-        X_pred = np.vstack((temperature, ksi)).T.astype(np.float32)
+        test_x = torch.tensor(np.vstack((np.log10(temperature), ksi)).T, dtype=torch.float32)
 
-        return self.model.predict(X_pred)
+        nu = 10.**self.model(test_x).detach().numpy().flatten()
+
+        return nu
 
     def planck_mean_opacity(self, temperature):
         vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
                 models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
 
         return np.pi / (const.sigma_T.cgs.value * temperature**4) * vectorized_bb(temperature)
-    
-    def write(self, filename):
-        import pickle
-        pickle.dump(self, open(filename, "wb"))
+
+    # DataModule functions
+
+    def prepare_data(self):
+        sampler = scipy.stats.qmc.LatinHypercube(d=2)
+        samples = sampler.random(self.nsamples)
+
+        logT = 5*samples[:,0] - 1.
+        ksi = samples[:,1]
+        X = torch.tensor(np.vstack((logT, ksi)).T, dtype=torch.float32)
+        
+        y = np.concatenate([self.random_nu_manual(10.**X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch in DataLoader(X, batch_size=1000)])
+        y = torch.tensor(np.log10(y.value), dtype=torch.float32)
+
+        self.dataset = TensorDataset(X, y)
+
+    def setup(self, stage=None):
+        test_size = int(self.test_split * self.nsamples)
+        valid_size = int((self.nsamples - test_size)*self.valid_split)
+        train_size = self.nsamples - test_size - valid_size
+        train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
+        self.train, self.val = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
+
+    def train_dataloader(self):
+        return DataLoader(self.train, batch_size=100, num_workers=2)
+
+    def val_dataloader(self):
+        return DataLoader(self.val, batch_size=100, num_workers=2)
+
+    def test_dataloader(self):
+        return DataLoader(self.test, batch_size=100, num_workers=2)
+
+    def predict_dataloader(self):
+        return DataLoader(self.test, batch_size=100, num_workers=2)
+
+    def save(self, filename):
+        state_dict = {
+            "dust_properties":{
+                "lam": self.lam,
+                "kabs": self.kabs*self.kmean,
+                "ksca": self.ksca*self.kmean,
+            },
+        }
+        
+        if hasattr(self, "model"):
+            state_dict["model_state_dict"] = self.model.state_dict()
+
+        torch.save(state_dict, filename)
+
+
 
 def load(filename):
-    import pickle
-    return pickle.load(open(filename, "rb")) 
+    state_dict = torch.load(filename, weights_only=False)
 
-def ten_to_the_x(x):
-    return 10.**x
+    d = Dust(**state_dict["dust_properties"], interpolate=-1 )
 
-class MultiLayerPerceptron(nn.Module):
-    def __init__(self, input_size=2, nunits=48, nlayers=3):
+    if "model_state_dict" in state_dict:
+        hidden_units = [state_dict['model_state_dict'][key].shape[0] for key in state_dict['model_state_dict'] if 'bias' in key][0:-1]
+        d.initialize_model(hidden_units=hidden_units)
+
+        d.model.load_state_dict(state_dict['model_state_dict'])
+
+    return d
+
+
+class DustLightningModule(pl.LightningModule):
+    def __init__(self, model):
         super().__init__()
-
-        all_layers = []
-        for hidden_unit in [nunits]*nlayers:
-            layer = nn.Linear(input_size, hidden_unit)
-            all_layers.append(layer)
-            all_layers.append(nn.Sigmoid())
-            input_size = hidden_unit
-
-        all_layers.append(nn.Linear(nunits, 1))
-
-        self.model = nn.Sequential(*all_layers)
+        self.model = model
 
     def forward(self, x):
-        x = self.model(x)[:,0]
+        x = self.model(x)
         return x
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        loss = nn.functional.mse_loss(self(x), y.reshape(-1,1))
+        self.log('train_loss', loss, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch
+        loss = nn.functional.mse_loss(self(x), y.reshape(-1,1))
+        self.log('valid_loss', loss, prog_bar=True)
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        loss = nn.functional.mse_loss(self(x), y.reshape(-1,1))
+        self.log('test_loss', loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
+        return optimizer
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        x, y = batch
+        return self(x)

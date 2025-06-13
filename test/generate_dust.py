@@ -12,6 +12,6 @@ ksca = data[::-1,2].copy() * u.cm**2 / u.g
 
 d = Dust(lam, kabs, ksca)
 
-d.learn_random_nu(plot=True)
+d.learn_random_nu(plot=True, max_epochs=10)
 
-d.write("dust.pkl")
+d.save("yso.dst")
