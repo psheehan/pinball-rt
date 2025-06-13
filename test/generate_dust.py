@@ -1,5 +1,3 @@
-import sys
-sys.path.append("../")
 from pinball.dust import Dust
 import numpy as np
 import astropy.units as u

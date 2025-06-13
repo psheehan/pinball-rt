@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pinball-rt"
+version = "0.0.1"
+authors = [
+  { name="Patrick Sheehan", email="psheehan@nrao.edu" },
+]
+description = "GPU and ML supported Monte Carlo radiative transfer"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+  "astropy",
+  "numpy",
+  "warp-lang",
+  "torch",
+  "pytorch-lightning",
+  "scipy",
+]

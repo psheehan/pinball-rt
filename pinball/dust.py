@@ -3,7 +3,6 @@ from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
 import scipy.stats.qmc
-import matplotlib.pyplot as plt
 import scipy.integrate
 import warp as wp
 import numpy as np
@@ -126,6 +125,8 @@ class Dust(pl.LightningDataModule):
         # Plot the result
 
         if plot:
+            import matplotlib.pyplot as plt
+
             y_pred = trainer.predict(dustLM, datamodule=self)
             y_pred = torch.cat(y_pred)
             y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])

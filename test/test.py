@@ -1,5 +1,3 @@
-import sys
-sys.path.append("../")
 from pinball.dust import load
 from pinball.sources import Star
 from pinball.grids import UniformCartesianGrid, UniformSphericalGrid
