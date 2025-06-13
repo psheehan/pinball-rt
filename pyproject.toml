@@ -21,4 +21,5 @@ dependencies = [
   "torch",
   "pytorch-lightning",
   "scipy",
+  "tqdm",
 ]

@@ -5,6 +5,7 @@ import astropy.constants as const
 import warp as wp
 import numpy as np
 import time
+import tqdm
 
 from .utils import EPSILON, equal, equal_zero, planck_function
 
@@ -356,8 +357,10 @@ class Grid:
         photon_list.absorb = wp.array(np.random.rand(nphotons) > photon_list.albedo.numpy(), dtype=bool)
 
         count = 0
+        nphotons_done = 0
+        progress_bar = tqdm.tqdm(total=nphotons)
         while nphotons > 0:
-            print(nphotons)
+            #print(nphotons)
             count += 1
 
             t1 = time.time()
@@ -417,6 +420,8 @@ class Grid:
         
             t1 = time.time()
             iphotons = iphotons_original[photon_list.in_grid]
+            progress_bar.update(iphotons_original.size - iphotons.size - nphotons_done)
+            nphotons_done = iphotons_original.size - iphotons.size
             nphotons = iphotons.size
             t2 = time.time()
             removing_photons_time += t2 - t1
@@ -432,6 +437,8 @@ class Grid:
             #absorb_time += tmp_time
             dust_interpolation_time += tmp_dust_interpolation_time
             photon_loc_time += tmp_photon_loc_time
+
+        progress_bar.close()
 
         print(next_wall_time)
         print(dust_interpolation_time)
@@ -477,8 +484,9 @@ class Grid:
         photon_list.total_tau_abs = wp.zeros(nphotons, dtype=float)
 
         count = 0
+        nphotons_done = 0
+        progress_bar = tqdm.tqdm(total=nphotons)
         while nphotons > 0:
-            print(nphotons)
             count += 1
 
             t1 = time.time()
@@ -533,6 +541,8 @@ class Grid:
         
             t1 = time.time()
             iphotons = iphotons_original[np.logical_and(photon_list.in_grid, photon_list.total_tau_abs.numpy() < 30.)]
+            progress_bar.update(iphotons_original.size - iphotons.size - nphotons_done)
+            nphotons_done = iphotons_original.size - iphotons.size
             nphotons = iphotons.size
             t2 = time.time()
             removing_photons_time += t2 - t1
@@ -546,6 +556,8 @@ class Grid:
             t2 = time.time()
             absorb_time += t2 - t1 - tmp_photon_loc_time
             #absorb_time += tmp_time
+
+        progress_bar.close()
 
         print(next_wall_time)
         print(dust_interpolation_time)
