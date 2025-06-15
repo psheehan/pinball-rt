@@ -150,7 +150,7 @@ class Dust(pl.LightningDataModule):
         vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
                 models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
 
-        return np.pi / (const.sigma_T.cgs.value * temperature**4) * vectorized_bb(temperature)
+        return np.pi / (const.sigma_sb.cgs.value * temperature**4) * vectorized_bb(temperature)
 
     # DataModule functions
 
