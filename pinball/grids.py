@@ -104,7 +104,7 @@ class Grid:
 
         ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
 
-        photon_list.alpha[ip] = grid.density[ix,iy,iz] * photon_list.kabs[ip]
+        photon_list.alpha[ip] = photon_list.density[ip] * photon_list.kabs[ip]
         distances[ip] = photon_list.tau[ip] / photon_list.alpha[ip]
 
     @wp.kernel
@@ -153,6 +153,27 @@ class Grid:
             grid.energy[ix,iy,iz] += 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(grid.density[ix,iy,iz]))
 
     @wp.kernel
+    def track_deposited_energy(photon_list: PhotonList,
+                               grid: GridStruct,
+                               distances: wp.array(dtype=float),
+                               iphotons: wp.array(dtype=int)):
+        """
+        Deposit energy in the grid based on the absorption of photons.
+
+        Parameters
+        ----------
+        indices : wp.array2d(dtype=int)
+            Indices of the grid cells where the photons are located.
+        """
+
+        ip = iphotons[wp.tid()]
+
+        ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
+
+        if photon_list.absorb[ip]:
+            photon_list.deposited_energy[ip] += 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip]))
+
+    @wp.kernel
     def reduce_tau(photon_list: PhotonList,
                    distances: wp.array(dtype=float),
                    iphotons: wp.array(dtype=int)):
@@ -188,16 +209,17 @@ class Grid:
         photon_list.total_tau_abs[ip] += tau_abs
 
     @wp.kernel
-    def photon_temperature(photon_list: PhotonList,
+    def photon_cell_properties(photon_list: PhotonList,
                            temperature: wp.array3d(dtype=float),
-                           photon_temperature: wp.array(dtype=float),
+                           density: wp.array3d(dtype=float),
                            iphotons: wp.array(dtype=int)):
         itemp = wp.tid()
         ip = iphotons[itemp]
 
         ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
 
-        photon_temperature[itemp] = temperature[ix, iy, iz]
+        photon_list.temperature[ip] = temperature[ix, iy, iz]
+        photon_list.density[ip] = density[ix, iy, iz]
 
     @wp.kernel
     def update_frequency(photon_list: PhotonList,
@@ -260,17 +282,17 @@ class Grid:
 
         t1 = time.time()
         nabsorb = iabsorb.size
-        if not scattering and nabsorb > 0:
-            photon_temperature = wp.zeros(nabsorb, dtype=float)
-            wp.launch(kernel=self.photon_temperature,
-                      dim=(nabsorb,),
-                      inputs=[photon_list, self.grid.temperature, photon_temperature, iabsorb],
-                      device='cpu')
+        #if not scattering and nabsorb > 0:
+        #    photon_temperature = wp.zeros(nabsorb, dtype=float)
+        #    wp.launch(kernel=self.photon_temperature,
+        #              dim=(nabsorb,),
+        #              inputs=[photon_list, self.grid.temperature, photon_temperature, iabsorb],
+        #              device='cpu')
         t2 = time.time()
         photon_temperature_time = t2 - t1
 
         if not scattering and nabsorb > 0:
-            new_frequency = self.dust.random_nu(photon_temperature.numpy())
+            new_frequency = self.dust.random_nu(photon_list.temperature.numpy()[absorb])
 
         t1 = time.time()
         if not scattering and nabsorb > 0:
@@ -293,6 +315,11 @@ class Grid:
         t2 = time.time()
         photon_loc_time = t2 - t1
 
+        wp.launch(kernel=self.photon_cell_properties,
+                  dim=(interact.sum(),),
+                  inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons],
+                  device='cpu')
+
         return photon_temperature_time, dust_interpolation_time, photon_loc_time
 
     def update_grid(self):
@@ -303,7 +330,7 @@ class Grid:
         while not converged:
             old_temperature = temperature.copy()
 
-            temperature = ((total_energy*u.L_sun).cgs.value / (4*const.sigma_T.cgs.value*\
+            temperature = ((total_energy*u.L_sun).cgs.value / (4*const.sigma_sb.cgs.value*\
                     self.dust.planck_mean_opacity(old_temperature)*\
                     self.mass.cgs.value))**0.25
 
@@ -325,7 +352,7 @@ class Grid:
 
         self.total_lum = self.luminosity.sum()
 
-    def propagate_photons(self, photon_list: PhotonList, debug=False):
+    def propagate_photons(self, photon_list: PhotonList, track_deposited_energy=False, debug=False):
         nphotons = photon_list.position.numpy().shape[0]
         iphotons = np.arange(nphotons, dtype=np.int32)
         iphotons_original = iphotons.copy()
@@ -336,6 +363,9 @@ class Grid:
         s2 = wp.zeros(nphotons, dtype=float)
         photon_list.alpha = wp.zeros(nphotons, dtype=float)
         photon_list.in_grid = wp.zeros(nphotons, dtype=bool)
+
+        if track_deposited_energy:
+            photon_list.deposited_energy = wp.zeros(nphotons, dtype=float)
 
         next_wall_time = 0.
         dust_interpolation_time = 0.
@@ -397,6 +427,12 @@ class Grid:
             t2 = time.time()
             deposit_energy_time += t2 - t1
 
+            if track_deposited_energy:
+                wp.launch(kernel=self.track_deposited_energy,
+                      dim=(nphotons,),
+                      inputs=[photon_list, self.grid, s, iphotons],
+                      device='cpu')
+
             wp.launch(kernel=self.reduce_tau,
                        dim=(nphotons,),
                        inputs=[photon_list, s, iphotons],
@@ -410,6 +446,11 @@ class Grid:
             t2 = time.time()
             photon_loc_time += t2 - t1
 
+            wp.launch(kernel=self.photon_cell_properties,
+                  dim=(nphotons,),
+                  inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons],
+                  device='cpu')
+            
             t1 = time.time()
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
@@ -530,6 +571,11 @@ class Grid:
                       device='cpu')
             t2 = time.time()
             photon_loc_time += t2 - t1
+
+            wp.launch(kernel=self.photon_cell_properties,
+                  dim=(nphotons,),
+                  inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons],
+                  device='cpu')
         
             t1 = time.time()
             wp.launch(kernel=self.check_in_grid,
@@ -744,6 +790,14 @@ class UniformCartesianGrid(Grid):
         wp.launch(kernel=self.photon_loc,
                   dim=(nphotons,),
                   inputs=[photon_list, self.grid, np.arange(nphotons, dtype=np.int32)],
+                  device='cpu')
+
+        photon_list.density = wp.array(np.zeros(nphotons), dtype=float)
+        photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
+
+        wp.launch(kernel=self.photon_cell_properties,
+                  dim=(nphotons,),
+                  inputs=[photon_list, self.grid.temperature, self.grid.density, np.arange(nphotons, dtype=np.int32)],
                   device='cpu')
 
         return photon_list
@@ -988,6 +1042,14 @@ class UniformSphericalGrid(Grid):
         wp.launch(kernel=self.photon_loc,
                   dim=(nphotons,),
                   inputs=[photon_list, self.grid, np.arange(nphotons, dtype=np.int32)],
+                  device='cpu')
+
+        photon_list.density = wp.array(np.zeros(nphotons), dtype=float)
+        photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
+
+        wp.launch(kernel=self.photon_cell_properties,
+                  dim=(nphotons,),
+                  inputs=[photon_list, self.grid.temperature, self.grid.density, np.arange(nphotons, dtype=np.int32)],
                   device='cpu')
 
         return photon_list

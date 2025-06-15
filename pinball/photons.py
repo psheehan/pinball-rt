@@ -8,7 +8,11 @@ class PhotonList:
     frequency: wp.array(dtype=float)
     energy: wp.array(dtype=float)
     in_grid: wp.array(dtype=bool)
+    
+    deposited_energy: wp.array(dtype=float)
 
+    density: wp.array(dtype=float)
+    temperature: wp.array(dtype=float)
     alpha: wp.array(dtype=float)
     kabs: wp.array(dtype=float)
     ksca: wp.array(dtype=float)
