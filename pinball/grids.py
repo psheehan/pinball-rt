@@ -272,7 +272,7 @@ class Grid:
 
         photon_list.absorb[ip] = wp.randf(rng) < photon_list.albedo[ip]
 
-    def interact(self, photon_list: PhotonList, absorb, iabsorb, interact, iphotons, scattering=False):
+    def interact(self, photon_list: PhotonList, absorb, iabsorb, interact, iphotons, scattering=False, learning=False):
         nphotons = iphotons.size
 
         wp.launch(kernel=self.random_direction,
@@ -315,10 +315,11 @@ class Grid:
         t2 = time.time()
         photon_loc_time = t2 - t1
 
-        wp.launch(kernel=self.photon_cell_properties,
-                  dim=(interact.sum(),),
-                  inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons],
-                  device='cpu')
+        if not learning:
+            wp.launch(kernel=self.photon_cell_properties,
+                      dim=(interact.sum(),),
+                      inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons],
+                      device='cpu')
 
         return photon_temperature_time, dust_interpolation_time, photon_loc_time
 
@@ -352,7 +353,7 @@ class Grid:
 
         self.total_lum = self.luminosity.sum()
 
-    def propagate_photons(self, photon_list: PhotonList, track_deposited_energy=False, debug=False):
+    def propagate_photons(self, photon_list: PhotonList, learning=False, debug=False):
         nphotons = photon_list.position.numpy().shape[0]
         iphotons = np.arange(nphotons, dtype=np.int32)
         iphotons_original = iphotons.copy()
@@ -364,7 +365,7 @@ class Grid:
         photon_list.alpha = wp.zeros(nphotons, dtype=float)
         photon_list.in_grid = wp.zeros(nphotons, dtype=bool)
 
-        if track_deposited_energy:
+        if learning:
             photon_list.deposited_energy = wp.zeros(nphotons, dtype=float)
 
         next_wall_time = 0.
@@ -427,7 +428,7 @@ class Grid:
             t2 = time.time()
             deposit_energy_time += t2 - t1
 
-            if track_deposited_energy:
+            if learning:
                 wp.launch(kernel=self.track_deposited_energy,
                       dim=(nphotons,),
                       inputs=[photon_list, self.grid, s, iphotons],
@@ -446,10 +447,11 @@ class Grid:
             t2 = time.time()
             photon_loc_time += t2 - t1
 
-            wp.launch(kernel=self.photon_cell_properties,
-                  dim=(nphotons,),
-                  inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons],
-                  device='cpu')
+            if not learning:
+                wp.launch(kernel=self.photon_cell_properties,
+                          dim=(nphotons,),
+                          inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons],
+                          device='cpu')
             
             t1 = time.time()
             wp.launch(kernel=self.check_in_grid,
@@ -472,7 +474,7 @@ class Grid:
             interaction_indices = iphotons_original[interaction]
             absorb = np.logical_and(interaction, photon_list.absorb.numpy())
             absorb_indices = iphotons_original[absorb]
-            tmp_photon_temp_time, tmp_dust_interpolation_time, tmp_photon_loc_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices)
+            tmp_photon_temp_time, tmp_dust_interpolation_time, tmp_photon_loc_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, learning=learning)
             t2 = time.time()
             absorb_time += t2 - t1 - tmp_dust_interpolation_time - tmp_photon_loc_time
             #absorb_time += tmp_time
@@ -783,7 +785,7 @@ class UniformCartesianGrid(Grid):
 
         self.volume = np.ones((self.grid.n1, self.grid.n2, self.grid.n3)) * (dx.value * dy.value * dz.value)
 
-    def emit(self, nphotons, wavelength="random", scattering=False):
+    def emit(self, nphotons, wavelength="random", scattering=False, learning=False):
         photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering)
 
         photon_list.indices = wp.zeros((nphotons, 3), dtype=int)
@@ -795,10 +797,11 @@ class UniformCartesianGrid(Grid):
         photon_list.density = wp.array(np.zeros(nphotons), dtype=float)
         photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
 
-        wp.launch(kernel=self.photon_cell_properties,
-                  dim=(nphotons,),
-                  inputs=[photon_list, self.grid.temperature, self.grid.density, np.arange(nphotons, dtype=np.int32)],
-                  device='cpu')
+        if not learning:
+            wp.launch(kernel=self.photon_cell_properties,
+                      dim=(nphotons,),
+                      inputs=[photon_list, self.grid.temperature, self.grid.density, np.arange(nphotons, dtype=np.int32)],
+                      device='cpu')
 
         return photon_list
 
@@ -1026,7 +1029,7 @@ class UniformSphericalGrid(Grid):
                 (self.grid.cos_w2.numpy().astype(np.float64)[0:-1] - self.grid.cos_w2.numpy().astype(np.float64)[1:])[np.newaxis,:,np.newaxis] * \
                 (self.grid.w3.numpy().astype(np.float64)[1:] - self.grid.w3.numpy().astype(np.float64)[0:-1]) / 3 * self.volume_scale
 
-    def emit(self, nphotons, wavelength="random", scattering=False):
+    def emit(self, nphotons, wavelength="random", scattering=False, learning=False):
         photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering)
         
         photon_list.radius = wp.array(np.zeros(nphotons), dtype=float)
@@ -1047,10 +1050,11 @@ class UniformSphericalGrid(Grid):
         photon_list.density = wp.array(np.zeros(nphotons), dtype=float)
         photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
 
-        wp.launch(kernel=self.photon_cell_properties,
-                  dim=(nphotons,),
-                  inputs=[photon_list, self.grid.temperature, self.grid.density, np.arange(nphotons, dtype=np.int32)],
-                  device='cpu')
+        if not learning:
+            wp.launch(kernel=self.photon_cell_properties,
+                      dim=(nphotons,),
+                      inputs=[photon_list, self.grid.temperature, self.grid.density, np.arange(nphotons, dtype=np.int32)],
+                      device='cpu')
 
         return photon_list
 
