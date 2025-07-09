@@ -249,7 +249,7 @@ class Dust(pl.LightningDataModule):
         tau = 10.**np.random.uniform(0.5, 1., nphotons)
         photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.frequency.numpy()*u.GHz) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
-        grid.propagate_photons(photon_list, learning=True)
+        grid.propagate_photons(photon_list, learning=True, use_ml_step=False)
 
         # Calculate roll, pitch, and yaw for the position relative to where it started.
 
