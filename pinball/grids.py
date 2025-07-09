@@ -68,7 +68,8 @@ class Grid:
         cell_coords = []
         if scattering:
             ksi = np.random.rand(nphotons_per_source)
-            cum_lum = np.cumsum(self.luminosity.flatten()).reshape(self.shape) / self.total_lum
+            multiplier = 1. / (nphotons_per_source * 100)
+            cum_lum = np.cumsum(np.maximum(self.luminosity, self.luminosity.max()*multiplier).flatten()).reshape(self.shape) / np.maximum(self.luminosity, self.luminosity.max()*multiplier).sum()
 
             for i in range(nphotons_per_source):
                 cell_coords += [np.where(cum_lum[cum_lum > ksi[i]].min() == cum_lum)]
