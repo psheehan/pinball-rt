@@ -134,7 +134,6 @@ class Grid:
     @wp.kernel
     def deposit_energy(photon_list: PhotonList,
                        grid: GridStruct,
-                       distances: wp.array(dtype=float),
                        iphotons: wp.array(dtype=int)):
         """
         Deposit energy in the grid based on the absorption of photons.
@@ -149,14 +148,14 @@ class Grid:
 
         ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
 
-        if photon_list.absorb[ip]:
-            grid.energy[ix,iy,iz] += 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(grid.density[ix,iy,iz]))
+        grid.energy[ix,iy,iz] += photon_list.deposited_energy[ip]
 
     @wp.kernel
-    def track_deposited_energy(photon_list: PhotonList,
+    def calculate_deposited_energy(photon_list: PhotonList,
                                grid: GridStruct,
                                distances: wp.array(dtype=float),
-                               iphotons: wp.array(dtype=int)):
+                               iphotons: wp.array(dtype=int),
+                               track: bool):
         """
         Deposit energy in the grid based on the absorption of photons.
 
@@ -168,10 +167,17 @@ class Grid:
 
         ip = iphotons[wp.tid()]
 
-        ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
-
         if photon_list.absorb[ip]:
-            photon_list.deposited_energy[ip] += 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip]))
+            deposited_energy = 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip]))
+            if track:
+                photon_list.deposited_energy[ip] += deposited_energy
+            else:
+                photon_list.deposited_energy[ip] = deposited_energy
+        else:
+            if track:
+                photon_list.deposited_energy[ip] += 0.
+            else:
+                photon_list.deposited_energy[ip] = 0.
 
     @wp.kernel
     def reduce_tau(photon_list: PhotonList,
@@ -353,7 +359,88 @@ class Grid:
 
         self.total_lum = self.luminosity.sum()
 
-    def propagate_photons(self, photon_list: PhotonList, learning=False, debug=False):
+    @wp.kernel
+    def check_do_ml_step(photon_list: PhotonList,
+                          s1: wp.array(dtype=float),
+                          s2: wp.array(dtype=float),
+                          s3: wp.array(dtype=float),
+                          iphotons: wp.array(dtype=int)):
+        """
+        Check if the photon should do a modified random walk step.
+        """
+        ip = iphotons[wp.tid()]
+
+        photon_list.do_ml_step[ip] = photon_list.in_grid[ip] and \
+                                        s3[ip] * photon_list.kabs[ip] * photon_list.density[ip] > 10.**0.5 and \
+                                        s2[ip] < s1[ip] and \
+                                        s3[ip] > s2[ip]
+
+    @wp.kernel
+    def ml_deposited_energy(photon_list: PhotonList,
+                             deposited_energy: wp.array(dtype=float),
+                             iphotons: wp.array(dtype=int)):
+        """
+        Calculate the deposited energy for the modified random walk step.
+        """
+        i = wp.tid()
+        ip = iphotons[i]
+        photon_list.deposited_energy[ip] = deposited_energy[i] * photon_list.energy[ip]
+
+    @wp.kernel
+    def ml_rotate_direction(photon_list: PhotonList,
+                             yaw: wp.array(dtype=float),
+                             pitch: wp.array(dtype=float),
+                             roll: wp.array(dtype=float),
+                             iphotons: wp.array(dtype=int)):
+        """
+        Rotate the direction of the photons based on the yaw, pitch, and roll angles.
+        """
+        i = wp.tid()
+        ip = iphotons[i]
+
+        rpy_quat = wp.quat_rpy(roll[i], pitch[i], yaw[i])
+
+        photon_list.direction[ip] = wp.quat_rotate(rpy_quat, photon_list.direction[ip])
+
+    @wp.kernel
+    def ml_new_tau(photon_list: PhotonList,
+                    tau: wp.array(dtype=float),
+                    s: wp.array(dtype=float),
+                    iphotons: wp.array(dtype=int)):
+        i = wp.tid()
+        ip = iphotons[i]
+
+        photon_list.tau[ip] = tau[i] + s[ip] * photon_list.alpha[ip]
+
+    def ml_step(self, photon_list, s, iphotons):
+        """
+        Perform the "modified" random walk step for the photons.
+        """
+        frequency, deposited_energy, tau, yaw, pitch, roll, direction_yaw, direction_pitch, direction_roll = self.dust.ml_step(photon_list, s, iphotons)
+
+        wp.launch(kernel=self.ml_deposited_energy,
+                  dim=(iphotons.size,),
+                  inputs=[photon_list, deposited_energy, iphotons],
+                  device='cpu')
+
+        wp.launch(kernel=self.update_frequency,
+                  dim=(iphotons.size,),
+                  inputs=[photon_list, frequency, self.dust.interpolate_kabs(frequency*u.GHz).astype(np.float32), self.dust.interpolate_ksca(frequency*u.GHz).astype(np.float32), iphotons],
+                  device='cpu')
+        
+        wp.launch(kernel=self.ml_rotate_direction,
+                  dim=(iphotons.size,),
+                  inputs=[photon_list, yaw, pitch, roll, iphotons],
+                  device='cpu')
+
+        wp.launch(kernel=self.ml_new_tau,
+                  dim=(iphotons.size,),
+                  inputs=[photon_list, tau, s, iphotons],
+                  device='cpu')
+        
+        return direction_yaw, direction_pitch, direction_roll
+
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=True, learning=False, debug=False):
         nphotons = photon_list.position.numpy().shape[0]
         iphotons = np.arange(nphotons, dtype=np.int32)
         iphotons_original = iphotons.copy()
@@ -362,21 +449,25 @@ class Grid:
 
         s1 = wp.zeros(nphotons, dtype=float)
         s2 = wp.zeros(nphotons, dtype=float)
+        s3 = wp.zeros(nphotons, dtype=float)
         photon_list.alpha = wp.zeros(nphotons, dtype=float)
         photon_list.in_grid = wp.zeros(nphotons, dtype=bool)
+        if use_ml_step:
+            photon_list.do_ml_step = wp.zeros(nphotons, dtype=bool)
 
-        if learning:
-            photon_list.deposited_energy = wp.zeros(nphotons, dtype=float)
+        photon_list.deposited_energy = wp.zeros(nphotons, dtype=float)
 
         next_wall_time = 0.
         dust_interpolation_time = 0.
         tau_distance_time = 0.
+        minimum_wall_distance_time = 0.
         move_time = 0.
         deposit_energy_time = 0.
         photon_loc_time = 0.
         in_grid_time = 0.
         removing_photons_time = 0.
         absorb_time = 0.
+        ml_step_time = 0.
         
         t1 = time.time()
         photon_list.kabs = wp.array(self.dust.interpolate_kabs(photon_list.frequency*u.GHz), dtype=float)
@@ -409,8 +500,42 @@ class Grid:
                       device='cpu')
             t2 = time.time()
             tau_distance_time += t2 - t1
+
+            if not learning and use_ml_step:
+                t1 = time.time()
+                wp.launch(kernel=self.minimum_wall_distance,
+                          dim=(nphotons,),
+                          inputs=[photon_list, self.grid, s3, iphotons],
+                          device='cpu')
+                t2 = time.time()
+                minimum_wall_distance_time += t2 - t1
         
             s = np.minimum(s1.numpy(), s2.numpy())
+            if not learning and use_ml_step:
+                t1 = time.time()
+                wp.launch(kernel=self.check_do_ml_step,
+                          dim=(nphotons,),
+                          inputs=[photon_list, s1, s2, s3, iphotons],
+                          device='cpu')
+                s[photon_list.do_ml_step] = s3.numpy()[photon_list.do_ml_step]
+                iml_photons = iphotons_original[photon_list.do_ml_step]
+                t2 = time.time()
+                ml_step_time += t2 - t1
+
+            wp.launch(kernel=self.calculate_deposited_energy,
+                      dim=(nphotons,),
+                      inputs=[photon_list, self.grid, s, iphotons, learning],
+                      device='cpu')
+                        
+            # Do the ml step here
+
+            if not learning and use_ml_step and iml_photons.size > 0:
+                t1 = time.time()
+                yaw, pitch, roll = self.ml_step(photon_list, s, iml_photons)
+                t2 = time.time()
+                ml_step_time += t2 - t1
+
+            # Now back to your regularly scheduled programming
 
             t1 = time.time()
             wp.launch(kernel=self.move,
@@ -423,21 +548,28 @@ class Grid:
             t1 = time.time()
             wp.launch(kernel=self.deposit_energy,
                       dim=(nphotons,),
-                      inputs=[photon_list, self.grid, s, iphotons],
+                      inputs=[photon_list, self.grid, iphotons],
                       device='cpu')
             t2 = time.time()
             deposit_energy_time += t2 - t1
-
-            if learning:
-                wp.launch(kernel=self.track_deposited_energy,
-                      dim=(nphotons,),
-                      inputs=[photon_list, self.grid, s, iphotons],
-                      device='cpu')
 
             wp.launch(kernel=self.reduce_tau,
                        dim=(nphotons,),
                        inputs=[photon_list, s, iphotons],
                        device='cpu')
+
+            # Before we update the locations, we should rotate the direction vector of the ml photons to the new direction after the ml
+
+            if not learning and use_ml_step and iml_photons.size > 0:
+                t1 = time.time()
+                wp.launch(kernel=self.ml_rotate_direction,
+                          dim=(iml_photons.size,),
+                          inputs=[photon_list, yaw, pitch, roll, iml_photons],
+                          device='cpu')
+                t2 = time.time()
+                ml_step_time += t2 - t1
+
+            # Now back to your regularly scheduled programming
             
             t1 = time.time()
             wp.launch(kernel=self.photon_loc,
@@ -483,15 +615,17 @@ class Grid:
 
         progress_bar.close()
 
-        print(next_wall_time)
-        print(dust_interpolation_time)
-        print(tau_distance_time)
-        print(move_time)
-        print(deposit_energy_time)
-        print(photon_loc_time)
-        print(in_grid_time)
-        print(removing_photons_time)
-        print(absorb_time)
+        print("next_wall_time = ", next_wall_time)
+        print("dust_interpolation_time = ", dust_interpolation_time)
+        print("tau_distance_time = ", tau_distance_time)
+        print("minimum_wall_distance_time = ", minimum_wall_distance_time)
+        print("move_time = ", move_time)
+        print("deposit_energy_time = ", deposit_energy_time)
+        print("photon_loc_time = ", photon_loc_time)
+        print("in_grid_time = ", in_grid_time)
+        print("removing_photons_time = ", removing_photons_time)
+        print("absorb_time = ", absorb_time)
+        print("ml_step_time = ", ml_step_time)
 
     def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False):
         nphotons = photon_list.position.numpy().shape[0]
@@ -847,6 +981,47 @@ class UniformCartesianGrid(Grid):
         sz2 = (grid.w3[iw3+1] - photon_list.position[ip][2]) / photon_list.direction[ip][2]
         if sz2 > 0: s = wp.min(s, sz2)
     
+        distances[ip] = s
+
+    @wp.kernel
+    def minimum_wall_distance(photon_list: PhotonList,
+                              grid: GridStruct,
+                              distances: wp.array(dtype=float),
+                              iphotons: wp.array(dtype=int)):
+        """
+        Calculate the distance to the nearest wall in the grid for each photon.
+        This is used to determine how far a photon can travel before hitting a wall.
+        """
+
+        ip = iphotons[wp.tid()]
+        
+        ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
+
+        s = wp.inf
+        sx1 = wp.abs(grid.w1[ix] - photon_list.position[ip][0])
+        if sx1 < s:
+            s = sx1
+        sx2 = wp.abs(grid.w1[ix+1] - photon_list.position[ip][0])
+        if sx2 < s:
+            s = sx2
+
+        sy1 = wp.abs(grid.w2[iy] - photon_list.position[ip][1])
+        if sy1 < s:
+            s = sy1
+        sy2 = wp.abs(grid.w2[iy+1] - photon_list.position[ip][1])
+        if sy2 < s:
+            s = sy2
+
+        sz1 = wp.abs(grid.w3[iz] - photon_list.position[ip][2])
+        if sz1 < s:
+            s = sz1
+        sz2 = wp.abs(grid.w3[iz+1] - photon_list.position[ip][2])
+        if sz2 < s:
+            s = sz2
+
+        if s * photon_list.kabs[ip] * grid.density[ix, iy, iz] < 3.0:
+            s = 0.
+
         distances[ip] = s
 
     @wp.kernel

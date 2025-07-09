@@ -8,6 +8,7 @@ class PhotonList:
     frequency: wp.array(dtype=float)
     energy: wp.array(dtype=float)
     in_grid: wp.array(dtype=bool)
+    do_ml_step: wp.array(dtype=bool)
     
     deposited_energy: wp.array(dtype=float)
 
