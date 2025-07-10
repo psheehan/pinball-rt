@@ -244,9 +244,9 @@ class Dust(pl.LightningDataModule):
         photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(self.nu.value).min(), np.log10(self.nu.value).max(), nphotons), dtype=float)
         original_frequency = photon_list.frequency.numpy().copy()
 
-        photon_list.temperature = wp.array(10.**np.random.uniform(-1., 2., nphotons), dtype=float)
+        photon_list.temperature = wp.array(10.**np.random.uniform(-1., 4., nphotons), dtype=float)
 
-        tau = 10.**np.random.uniform(0.5, 1., nphotons)
+        tau = 10.**np.random.uniform(0.5, 4., nphotons)
         photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.frequency.numpy()*u.GHz) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
         grid.propagate_photons(photon_list, learning=True, use_ml_step=False)
