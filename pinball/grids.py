@@ -1344,6 +1344,55 @@ class UniformSphericalGrid(Grid):
         distances[ip] = s
 
     @wp.kernel
+    def minimum_wall_distance(photon_list: PhotonList,
+                              grid: GridStruct,
+                              distances: wp.array(dtype=float),
+                              iphotons: wp.array(dtype=int)):
+        """
+        Calculate the distance to the nearest wall in the grid for each photon.
+        """
+        ip = iphotons[wp.tid()]
+
+        iw1, iw2, iw3 = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
+        
+        s = float(wp.inf)
+
+        # Calculate the distance to the nearest radial wall.
+    
+        for i in range(iw1, iw1+2):
+            sr = abs(photon_list.position[ip][2] - grid.w1[i])
+            if sr < s:
+                s = sr
+
+        # Calculate the distance to the nearest theta wall.
+
+        if grid.n2 != 1:
+            for i in range(iw2, iw2+2):
+                r_hat = wp.vec3(grid.sin_w2[i]*photon_list.cos_phi[ip], 
+                        grid.sin_w2[i]*photon_list.sin_phi[ip], grid.cos_w2[i])
+
+                rho = wp.dot(photon_list.position[ip], r_hat)
+
+                st = wp.length(rho*r_hat - photon_list.position[ip])
+                if st < s:
+                    s = st
+
+        # Calculate the distance to the nearest phi wall.
+
+        if grid.n3 != 1:
+            for i in range(iw3, iw3+3):
+                r_hat = wp.vec3(grid.cos_w3[i], grid.sin_w3[i], 0.)
+                z_hat = wp.vec3(0., 0., 1.)
+
+                rho = wp.dot(photon_list.position[ip], r_hat)
+
+                sp = wp.length(rho*r_hat + photon_list.position[ip][2]*z_hat - photon_list.position[ip])
+                if sp < s:
+                    s = sp
+
+        distances[ip] = s
+
+    @wp.kernel
     def outer_wall_distance(photon_list: PhotonList,
                            grid: GridStruct,
                            distances: wp.array(dtype=float)):
