@@ -800,6 +800,18 @@ class Grid:
         ray_list.intensity[ir,inu] = ray_list.intensity[ir,inu] + intensity_cell * wp.exp(-ray_list.tau_intensity[ir,inu])
         ray_list.tau_intensity[ir,inu] = ray_list.tau_intensity[ir,inu] + tau_cell
 
+    @wp.kernel
+    def reduce_source_intensity(ray_list: PhotonList,
+                                grid: GridStruct,
+                                s: wp.array(dtype=float),
+                                irays: wp.array(dtype=int)):
+        iray, inu = wp.tid()
+        ir = irays[iray]
+
+        ix, iy, iz = ray_list.indices[ir][0], ray_list.indices[ir][1], ray_list.indices[ir][2]
+
+        ray_list.intensity[ir, inu] = ray_list.intensity[ir, inu] * wp.exp(-s[ir] * ray_list.kext[inu] * grid.density[ix, iy, iz])
+
     def propagate_rays(self, ray_list: PhotonList, frequency, pixel_size):
         nrays = ray_list.position.numpy().shape[0]
         iray = np.arange(nrays, dtype=np.int32)
@@ -828,6 +840,49 @@ class Grid:
             wp.launch(kernel=self.add_intensity,
                       dim=(nrays, nnu),
                       inputs=[ray_list, s, self.grid, self.scattering, iray],
+                      device='cpu')
+        
+            wp.launch(kernel=self.move,
+                      dim=(nrays,),
+                      inputs=[ray_list, wp.array(s), iray],
+                      device='cpu')
+
+            wp.launch(kernel=self.photon_loc,
+                      dim=(nrays,),
+                      inputs=[ray_list, self.grid, iray],
+                      device='cpu')
+
+            wp.launch(kernel=self.check_in_grid,
+                      dim=(nrays,),
+                      inputs=[ray_list, self.grid, iray],
+                      device='cpu')
+
+            iray = iray_original[np.logical_and(ray_list.in_grid, np.logical_not(ray_list.pixel_too_large))]
+            nrays = iray.size
+
+    def propagate_rays_from_source(self, ray_list: PhotonList, frequency):
+        nrays = ray_list.position.numpy().shape[0]
+        iray = np.arange(nrays, dtype=np.int32)
+        iray_original = iray.copy()
+        nnu = frequency.size
+        ray_list.in_grid = wp.zeros(nrays, dtype=bool)
+
+        ray_list.kext = wp.array(self.dust.interpolate_kext(frequency*u.GHz), dtype=float)
+        ray_list.albedo = wp.array(self.dust.interpolate_albedo(frequency*u.GHz), dtype=float)
+
+        ray_list.frequency = wp.array(frequency, dtype=float)
+
+        s = wp.zeros(nrays, dtype=float)
+        
+        while nrays > 0:
+            wp.launch(kernel=self.next_wall_distance,
+                      dim=(nrays,),
+                      inputs=[ray_list, self.grid, s, iray],
+                      device='cpu')
+            
+            wp.launch(kernel=self.reduce_source_intensity,
+                      dim=(nrays, nnu),
+                      inputs=[ray_list, self.grid, s, iray],
                       device='cpu')
         
             wp.launch(kernel=self.move,

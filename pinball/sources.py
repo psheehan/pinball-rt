@@ -25,9 +25,9 @@ class Star:
     def set_blackbody_spectrum(self, nu):
         self.nu = nu
 
-        bb = models.BlackBody(temperature=self.temperature)
+        self.flux = models.BlackBody(temperature=self.temperature)
         
-        self.Bnu = bb(self.nu)
+        self.Bnu = self.flux(self.nu)
 
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.Bnu, self.nu, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
@@ -67,6 +67,38 @@ class Star:
         photon_list.energy = wp.array(photon_energy, dtype=float)
 
         return photon_list
+    
+    def emit_rays(self, nu, distance_unit, ez, nrays, dpc):
+        theta = np.pi*np.random.rand(nrays)
+        phi = 2*np.pi*np.random.rand(nrays)
+
+        position = np.hstack(((self.radius.to(distance_unit).value*np.sin(theta)*np.cos(phi))[:,np.newaxis],
+                             (self.radius.to(distance_unit).value*np.sin(theta)*np.sin(phi))[:,np.newaxis],
+                             (self.radius.to(distance_unit).value*np.cos(theta))[:,np.newaxis]))
+        
+        direction = np.tile(ez, (nrays, 1))
+
+        intensity = (np.tile(self.flux(nu), (nrays, 1)) * np.pi * ((self.radius.to(u.cm).value / (dpc*u.pc).to(u.cm).value) * u.radian)**2 / nrays).to(u.Jy).value
+        tau_intensity = np.zeros((nrays, nu.size), dtype=float)
+
+        ray_list = PhotonList()
+        ray_list.position = wp.array(position, dtype=wp.vec3)
+        ray_list.direction = wp.array(direction, dtype=wp.vec3)
+        ray_list.indices = wp.zeros(position.shape, dtype=int)
+        ray_list.intensity = wp.array2d(intensity, dtype=float)
+        ray_list.tau_intensity = wp.array2d(tau_intensity, dtype=float)
+        ray_list.pixel_too_large = wp.zeros(nrays, dtype=bool)
+
+        ray_list.radius = wp.array(np.zeros(nrays), dtype=float)
+        ray_list.theta = wp.zeros(nrays, dtype=float)
+        ray_list.phi = wp.zeros(nrays, dtype=float)
+        ray_list.sin_theta = wp.zeros(nrays, dtype=float)
+        ray_list.cos_theta = wp.zeros(nrays, dtype=float)
+        ray_list.phi = wp.zeros(nrays, dtype=float)
+        ray_list.sin_phi = wp.zeros(nrays, dtype=float)
+        ray_list.cos_phi = wp.zeros(nrays, dtype=float)
+
+        return ray_list
 
     def random_nu(self, nphotons):
         ksi = np.random.rand(nphotons)

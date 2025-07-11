@@ -94,7 +94,7 @@ class Camera:
 
         ix, iy = image_ix[ir], image_iy[ir]
 
-        image_intensity[ix, iy, inu] = ray_intensity[ir,inu]
+        image_intensity[ix, iy, inu] += ray_intensity[ir,inu]
 
     def make_image(self, nx, ny, pixel_size, lam, incl, pa, dpc):
         # First, run a scattering simulation to get the scattering phase function
@@ -164,5 +164,33 @@ class Camera:
             new_y = np.array(new_y)
             pixel_size = pixel_size / 2
             nrays = len(new_x)
+
+        # Also propagate rays from any sources in the grid.
+
+        nrays = 1000
+
+        ray_list = self.grid.star.emit_rays(image.nu, self.grid.distance_unit, self.ez, nrays, dpc)
+        iray = np.arange(nrays, dtype=np.int32)
+
+        wp.launch(kernel=self.grid.photon_loc,
+                    dim=(nrays,),
+                    inputs=[ray_list, self.grid.grid, iray],
+                    device='cpu')
+        
+        self.grid.propagate_rays_from_source(ray_list, image.nu.value)
+
+        ximage = np.dot(ray_list.position.numpy(), self.ey)
+        yimage = np.dot(ray_list.position.numpy(), self.ex)
+
+        image_ix = (nx * (ximage + image.x.max()) / (2 * image.x.max()) + 0.5).astype(int)
+        image_iy = (ny * (yimage + image.y.max()) / (2 * image.y.max()) + 0.5).astype(int)
+
+        ray_list.image_ix = wp.array(image_ix, dtype=int)
+        ray_list.image_iy = wp.array(image_iy, dtype=int)
+
+        wp.launch(kernel=self.put_intensity_in_image,
+                    dim=(nrays, image.lam.size),
+                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, image.intensity])
+        
 
         return image
