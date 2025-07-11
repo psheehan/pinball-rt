@@ -22,4 +22,5 @@ dependencies = [
   "pytorch-lightning",
   "scipy",
   "tqdm",
+  "xarray",
 ]

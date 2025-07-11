@@ -3,25 +3,9 @@ import astropy.units as u
 import astropy.constants as const
 import warp as wp
 import numpy as np
+import xarray as xr
 
 from .utils import EPSILON
-
-class Image:
-    def __init__(self, nx, ny, pixel_size, lam):
-        self.nx = nx
-        self.ny = ny
-
-        x = (np.arange(nx) - nx / 2)*pixel_size
-        y = (np.arange(ny) - ny / 2)*pixel_size
-
-        self.x, self.y = np.meshgrid(x, y)
-
-        self.pixel_size = pixel_size
-
-        self.lam = lam
-        self.nu = (const.c / lam).to(u.GHz)
-
-        self.intensity = wp.array3d(np.zeros((nx, ny, lam.size), dtype=float), dtype=float)
 
 class Camera:
     def __init__(self, grid):
@@ -105,15 +89,29 @@ class Camera:
 
         self.set_orientation(incl, pa, dpc)
 
-        image = Image(nx, ny, (pixel_size*u.arcsecond*dpc*u.pc).cgs.value, lam)
+        pixel_size = (pixel_size*u.arcsecond*dpc*u.pc).cgs.value
+
+        image = xr.Dataset(
+            #data_vars={
+            #    "intensity": (["x", "y", "lam"], np.zeros((nx, ny, lam.size))),},
+            coords={
+                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size),
+                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size),
+                "lam": ("lam", lam),
+                "nu": ("lam", (const.c / lam).to(u.GHz)),},
+            attrs={
+                "pixel_size": pixel_size,})
+
+        intensity = wp.array3d(np.zeros((nx, ny, lam.size), dtype=np.float32), dtype=float)
 
         nrays = nx*ny
-        new_x, new_y = image.x.flatten(), image.y.flatten()
+        new_x, new_y = xr.broadcast(image.x, image.y)
+        new_x, new_y = new_x.values.flatten(), new_y.values.flatten()
         pixel_size = image.pixel_size
 
         while nrays > 0:
             print(nrays)
-            ray_list = self.emit_rays(new_x, new_y, image.nu, image.nx, image.ny, image.pixel_size)
+            ray_list = self.emit_rays(new_x, new_y, image.nu, nx, ny, image.pixel_size)
 
             s = wp.zeros(new_x.shape, dtype=float)
 
@@ -148,11 +146,11 @@ class Camera:
                     inputs=[ray_list, self.grid.grid, iray],
                     device='cpu')
 
-            self.grid.propagate_rays(ray_list, image.nu.value, pixel_size)
+            self.grid.propagate_rays(ray_list, image.nu.values, pixel_size)
 
             wp.launch(kernel=self.put_intensity_in_image, 
                     dim=(nrays, image.lam.size),
-                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, image.intensity])
+                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
             
             new_x, new_y = [], []
             for i in range(nrays):
@@ -177,20 +175,21 @@ class Camera:
                     inputs=[ray_list, self.grid.grid, iray],
                     device='cpu')
         
-        self.grid.propagate_rays_from_source(ray_list, image.nu.value)
+        self.grid.propagate_rays_from_source(ray_list, image.nu.values)
 
         ximage = np.dot(ray_list.position.numpy(), self.ey)
         yimage = np.dot(ray_list.position.numpy(), self.ex)
 
-        image_ix = (nx * (ximage + image.x.max()) / (2 * image.x.max()) + 0.5).astype(int)
-        image_iy = (ny * (yimage + image.y.max()) / (2 * image.y.max()) + 0.5).astype(int)
+        image_ix = (nx * (ximage + image.x.values.max()) / (2 * image.x.values.max()) + 0.5).astype(int)
+        image_iy = (ny * (yimage + image.y.values.max()) / (2 * image.y.values.max()) + 0.5).astype(int)
 
         ray_list.image_ix = wp.array(image_ix, dtype=int)
         ray_list.image_iy = wp.array(image_iy, dtype=int)
 
         wp.launch(kernel=self.put_intensity_in_image,
                     dim=(nrays, image.lam.size),
-                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, image.intensity])
+                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
         
+        image = image.assign(intensity=(("x","y","lam"), intensity.numpy()))
 
         return image
