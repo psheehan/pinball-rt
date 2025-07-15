@@ -69,6 +69,8 @@ class Grid:
         if scattering:
             ksi = np.random.rand(nphotons_per_source)
             multiplier = 1. / (nphotons_per_source * 100)
+            if self.luminosity.sum() == 0:
+                self.luminosity += EPSILON
             cum_lum = np.cumsum(np.maximum(self.luminosity, self.luminosity.max()*multiplier).flatten()).reshape(self.shape) / np.maximum(self.luminosity, self.luminosity.max()*multiplier).sum()
 
             for i in range(nphotons_per_source):
@@ -1078,7 +1080,9 @@ class UniformCartesianGrid(Grid):
         if s * photon_list.kabs[ip] * grid.density[ix, iy, iz] < 3.0:
             s = 0.
 
-        distances[ip] = s
+        max_tau_distance = 10. / photon_list.alpha[ip]
+
+        distances[ip] = wp.min(s, max_tau_distance)
 
     @wp.kernel
     def outer_wall_distance(photon_list: PhotonList,
@@ -1445,7 +1449,12 @@ class UniformSphericalGrid(Grid):
                 if sp < s:
                     s = sp
 
-        distances[ip] = s
+        if s * photon_list.kabs[ip] * grid.density[iw1, iw2, iw3] < 3.0:
+            s = 0.
+
+        max_tau_distance = 10. / photon_list.alpha[ip]
+
+        distances[ip] = wp.min(s, max_tau_distance)
 
     @wp.kernel
     def outer_wall_distance(photon_list: PhotonList,
