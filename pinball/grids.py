@@ -454,7 +454,7 @@ class Grid:
         s2 = wp.zeros(nphotons, dtype=float)
         s3 = wp.zeros(nphotons, dtype=float)
         photon_list.alpha = wp.zeros(nphotons, dtype=float)
-        photon_list.in_grid = wp.zeros(nphotons, dtype=bool)
+        photon_list.in_grid = wp.ones(nphotons, dtype=bool)
         if use_ml_step:
             photon_list.do_ml_step = wp.zeros(nphotons, dtype=bool)
 
