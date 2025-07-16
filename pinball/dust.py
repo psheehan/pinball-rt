@@ -9,6 +9,7 @@ import numpy as np
 import torch.nn as nn
 import pytorch_lightning as pl
 import torch
+import os
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam, kabs, ksca, interpolate=10000):
