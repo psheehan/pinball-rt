@@ -219,7 +219,10 @@ class Dust(pl.LightningDataModule):
 
         return 10.**vals[:,0], 10.**vals[:,1], vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
-    def run_dust_simulation(self, nphotons=1000):
+    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None):
+        if nu_range is None:
+            nu_range = (self.nu.value.min(), self.nu.value.max())
+
         # Set up the star.
 
         star = Star()
@@ -242,12 +245,12 @@ class Dust(pl.LightningDataModule):
         initial_direction[:,0] = 1.
         photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
 
-        photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(self.nu.value).min(), np.log10(self.nu.value).max(), nphotons), dtype=float)
+        photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0]), np.log10(nu_range[1]), nphotons), dtype=float)
         original_frequency = photon_list.frequency.numpy().copy()
 
-        photon_list.temperature = wp.array(10.**np.random.uniform(-1., 4., nphotons), dtype=float)
+        photon_list.temperature = wp.array(10.**np.random.uniform(temperature_range[0], temperature_range[1], nphotons), dtype=float)
 
-        tau = 10.**np.random.uniform(0.5, 4., nphotons)
+        tau = 10.**np.random.uniform(tau_range[0], tau_range[1], nphotons)
         photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.frequency.numpy()*u.GHz) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
         grid.propagate_photons(photon_list, learning=True, use_ml_step=False)
