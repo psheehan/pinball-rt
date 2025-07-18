@@ -905,56 +905,6 @@ class Grid:
             iray = iray_original[np.logical_and(ray_list.in_grid, np.logical_not(ray_list.pixel_too_large))]
             nrays = iray.size
 
-    def thermal_mc(self, nphotons, Qthresh=2.0, Delthresh=1.1, p=99.):
-        told = self.grid.temperature.numpy().copy()
-
-        count = 0
-        while count < 10:
-            print("Iteration", count)
-            treallyold = told.copy()
-            told = self.grid.temperature.numpy().copy()
-
-            photon_list = self.emit(nphotons)
-
-            t1 = time.time()
-            self.propagate_photons(photon_list)
-            t2 = time.time()
-            print("Time:", t2 - t1)
-
-            self.update_grid()
-
-            if count > 1:
-                R = np.maximum(told/self.grid.temperature.numpy(), self.grid.temperature.numpy()/told)
-                Rold = np.maximum(told/treallyold, treallyold/told)
-
-                Q = np.percentile(R, p)
-                Qold = np.percentile(Rold, p)
-
-                Del = max(Q/Qold, Qold/Q)
-
-                print(count, Q, Del)
-                if Q < Qthresh and Del < Delthresh:
-                    break
-            else:
-                print(count)
-
-            count += 1
-
-    def scattering_mc(self, nphotons, wavelengths):
-        self.scattering = np.zeros((len(wavelengths),)+self.shape, dtype=np.float32)
-        
-        for i, wavelength in enumerate(wavelengths):
-            self.initialize_luminosity_array(wavelength=wavelength)
-
-            photon_list = self.emit(nphotons, wavelength, scattering=True)
-
-            t1 = time.time()
-            self.propagate_photons_scattering(photon_list, i)
-            t2 = time.time()
-            print("Time:", t2 - t1)
-
-            self.scattering[i] /= (4.*np.pi * self.volume)
-
 class UniformCartesianGrid(Grid):
     def __init__(self, ncells=9, dx=1.0):
         if type(ncells) == int:

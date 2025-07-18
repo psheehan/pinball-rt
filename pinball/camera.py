@@ -80,38 +80,15 @@ class Camera:
 
         image_intensity[ix, iy, inu] += ray_intensity[ir,inu]
 
-    def make_image(self, nx, ny, pixel_size, lam, incl, pa, dpc):
-        # First, run a scattering simulation to get the scattering phase function
+    def raytrace(self, new_x, new_y, nx, ny, image_pixel_size, nu):
+        nrays = new_x.size
+        pixel_size = image_pixel_size
 
-        self.grid.scattering_mc(100000, lam)
-
-        # Now set up the image proper.
-
-        self.set_orientation(incl, pa, dpc)
-
-        pixel_size = (pixel_size*u.arcsecond*dpc*u.pc).cgs.value
-
-        image = xr.Dataset(
-            #data_vars={
-            #    "intensity": (["x", "y", "lam"], np.zeros((nx, ny, lam.size))),},
-            coords={
-                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size),
-                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size),
-                "lam": ("lam", lam),
-                "nu": ("lam", (const.c / lam).to(u.GHz)),},
-            attrs={
-                "pixel_size": pixel_size,})
-
-        intensity = wp.array3d(np.zeros((nx, ny, lam.size), dtype=np.float32), dtype=float)
-
-        nrays = nx*ny
-        new_x, new_y = xr.broadcast(image.x, image.y)
-        new_x, new_y = new_x.values.flatten(), new_y.values.flatten()
-        pixel_size = image.pixel_size
+        intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
 
         while nrays > 0:
             print(nrays)
-            ray_list = self.emit_rays(new_x, new_y, image.nu, nx, ny, image.pixel_size)
+            ray_list = self.emit_rays(new_x, new_y, nu, nx, ny, image_pixel_size)
 
             s = wp.zeros(new_x.shape, dtype=float)
 
@@ -146,10 +123,10 @@ class Camera:
                     inputs=[ray_list, self.grid.grid, iray],
                     device='cpu')
 
-            self.grid.propagate_rays(ray_list, image.nu.values, pixel_size)
+            self.grid.propagate_rays(ray_list, nu.values, pixel_size)
 
             wp.launch(kernel=self.put_intensity_in_image, 
-                    dim=(nrays, image.lam.size),
+                    dim=(nrays, nu.size),
                     inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
             
             new_x, new_y = [], []
@@ -163,11 +140,14 @@ class Camera:
             pixel_size = pixel_size / 2
             nrays = len(new_x)
 
+        return intensity
+
+    def raytrace_sources(self, x, y, nx, ny, nu, dpc, nrays=1000):
+        intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
+
         # Also propagate rays from any sources in the grid.
 
-        nrays = 1000
-
-        ray_list = self.grid.star.emit_rays(image.nu, self.grid.distance_unit, self.ez, nrays, dpc)
+        ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, dpc)
         iray = np.arange(nrays, dtype=np.int32)
 
         wp.launch(kernel=self.grid.photon_loc,
@@ -175,21 +155,19 @@ class Camera:
                     inputs=[ray_list, self.grid.grid, iray],
                     device='cpu')
         
-        self.grid.propagate_rays_from_source(ray_list, image.nu.values)
+        self.grid.propagate_rays_from_source(ray_list, nu.values)
 
         ximage = np.dot(ray_list.position.numpy(), self.ey)
         yimage = np.dot(ray_list.position.numpy(), self.ex)
 
-        image_ix = (nx * (ximage + image.x.values.max()) / (2 * image.x.values.max()) + 0.5).astype(int)
-        image_iy = (ny * (yimage + image.y.values.max()) / (2 * image.y.values.max()) + 0.5).astype(int)
+        image_ix = (nx * (ximage + x.values.max()) / (2 * x.values.max()) + 0.5).astype(int)
+        image_iy = (ny * (yimage + y.values.max()) / (2 * y.values.max()) + 0.5).astype(int)
 
         ray_list.image_ix = wp.array(image_ix, dtype=int)
         ray_list.image_iy = wp.array(image_iy, dtype=int)
 
         wp.launch(kernel=self.put_intensity_in_image,
-                    dim=(nrays, image.lam.size),
+                    dim=(nrays, nu.size),
                     inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
-        
-        image = image.assign(intensity=(("x","y","lam"), intensity.numpy()))
 
-        return image
+        return intensity
