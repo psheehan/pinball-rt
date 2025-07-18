@@ -247,7 +247,7 @@ class Dust(pl.LightningDataModule):
         initial_direction[:,0] = 1.
         photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
 
-        photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0]), np.log10(nu_range[1]), nphotons), dtype=float)
+        photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0].value), np.log10(nu_range[1].value), nphotons), dtype=float)
         original_frequency = photon_list.frequency.numpy().copy()
 
         photon_list.temperature = wp.array(10.**np.random.uniform(temperature_range[0], temperature_range[1], nphotons), dtype=float)
