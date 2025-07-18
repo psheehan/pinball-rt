@@ -1,3 +1,5 @@
+from .sources import Star
+from .grids import UniformSphericalGrid
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from astropy.modeling import models
 import astropy.units as u
