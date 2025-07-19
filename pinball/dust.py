@@ -1,6 +1,11 @@
 from .sources import Star
 from .grids import UniformSphericalGrid
 from torch.utils.data import DataLoader, TensorDataset, random_split
+from scipy.spatial.transform import Rotation
+import pandas as pd
+import scipy.interpolate
+from scipy.stats import gaussian_kde
+from tqdm import trange
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -62,7 +67,7 @@ class Dust(pl.LightningDataModule):
     def absorb(self, temperature):
         nphotons = frequency.numpy().size
 
-        cost = -1. + 2*numpy.random.rand(nphotons)
+        cost = -1. + 2*np.random.rand(nphotons)
         sint = np.sqrt(1. - cost**2)
         phi = 2*np.pi*np.random.rand(nphotons)
 
