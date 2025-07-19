@@ -46,7 +46,10 @@ class Model:
             total_energy = np.mean(np.array([grid.grid.energy.numpy() for grid in self.grid_list]), axis=0)
             self.grid.grid.energy = wp.array3d(total_energy, dtype=float)
 
+            t1 = time.time()
             self.grid.update_grid()
+            t2 = time.time()
+            print("Update grid temperature time:", t2 - t1)
 
             for grid in self.grid_list:
                 grid.grid.temperature = self.grid.grid.temperature

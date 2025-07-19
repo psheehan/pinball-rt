@@ -5,6 +5,7 @@ import astropy.constants as const
 import scipy.integrate
 import warp as wp
 import numpy as np
+import time
         
 class Star:
     x: float
@@ -23,7 +24,7 @@ class Star:
         self.z = z
 
     def set_blackbody_spectrum(self, nu):
-        self.nu = nu
+        self.nu = np.logspace(np.log10(nu.value.min()), np.log10(nu.value.max()), 1000) * nu.unit
 
         self.flux = models.BlackBody(temperature=self.temperature)
         
@@ -51,7 +52,10 @@ class Star:
         direction = cost[:,np.newaxis]*r_hat + (sint*np.cos(phi))[:,np.newaxis]*phi_hat + (sint*np.sin(phi))[:,np.newaxis]*theta_hat
 
         if wavelength == "random":
+            t1 = time.time()
             frequency = self.random_nu(nphotons)
+            t2 = time.time()
+            print(f"Random frequency generation took {t2-t1:.3f} seconds")
         else:
             frequency = np.repeat((const.c / wavelength).to(u.GHz), nphotons)
 
@@ -103,7 +107,28 @@ class Star:
     def random_nu(self, nphotons):
         ksi = np.random.rand(nphotons)
 
-        i = np.array([np.where(k < self.random_nu_CPD)[0].min() for k in ksi])
+        random_nu = wp.zeros(nphotons, dtype=float)
+        wp.launch(self.random_nu_kernel,
+                  dim=(nphotons,),
+                  inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int)],
+                  device='cpu')
 
-        return (ksi - self.random_nu_CPD[i-1]) * (self.nu[i] - self.nu[i-1]) / \
-                (self.random_nu_CPD[i] - self.random_nu_CPD[i-1]) + self.nu[i-1]
+        return random_nu*self.nu.unit
+    
+    @wp.kernel
+    def random_nu_kernel(ksi: wp.array(dtype=float),
+                         random_nu_CPD: wp.array(dtype=float),
+                         nu: wp.array(dtype=float),
+                         random_nu: wp.array(dtype=float),
+                         iCPD: wp.array(dtype=int)):
+        ip = wp.tid()
+        
+        index = len(random_nu_CPD) - 1
+        # Find the index where ksi[ip] is less than random_nu_CPD[index]
+        for i in range(len(random_nu_CPD)):
+            if ksi[ip] < random_nu_CPD[i]:
+                index = i
+                break
+
+        random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
+                (random_nu_CPD[index] - random_nu_CPD[index-1]) + nu[index-1]

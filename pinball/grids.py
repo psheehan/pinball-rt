@@ -63,7 +63,10 @@ class Grid:
         else:
             nphotons_per_source = nphotons
 
+        t1 = time.time()
         photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal")
+        t2 = time.time()
+        print("Star emission time: ", t2 - t1)
 
         cell_coords = []
         if scattering:
@@ -336,19 +339,27 @@ class Grid:
         total_energy = self.grid.energy.numpy()
         temperature = self.grid.temperature.numpy().copy()
 
+        pmo_time = 0
+
         converged = False
         while not converged:
             old_temperature = temperature.copy()
 
+            t1 = time.time()
+            planck_mean_opacity = self.dust.planck_mean_opacity(old_temperature)
+            t2 = time.time()
+            pmo_time += t2 - t1
+
             temperature = ((total_energy*u.L_sun).cgs.value / (4*const.sigma_sb.cgs.value*\
-                    self.dust.planck_mean_opacity(old_temperature)*\
+                    planck_mean_opacity*\
                     self.mass.cgs.value))**0.25
 
             temperature[temperature < 0.1] = 0.1
 
             if (np.abs(old_temperature - temperature) / old_temperature).max() < 1.0e-2:
                 converged = True
-
+        print(f"PMO time: {pmo_time:.3f} seconds")
+        
         self.grid.temperature = wp.array3d(temperature, dtype=float)
 
     def initialize_luminosity_array(self, wavelength):
@@ -928,7 +939,10 @@ class UniformCartesianGrid(Grid):
         self.volume = np.ones((self.grid.n1, self.grid.n2, self.grid.n3)) * (dx.value * dy.value * dz.value)
 
     def emit(self, nphotons, wavelength="random", scattering=False, learning=False):
+        t1 = time.time()
         photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering)
+        t2 = time.time()
+        print("Photon emission time: ", t2 - t1)
 
         photon_list.indices = wp.zeros((nphotons, 3), dtype=int)
         wp.launch(kernel=self.photon_loc,

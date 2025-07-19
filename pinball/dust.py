@@ -52,6 +52,11 @@ class Dust(pl.LightningDataModule):
         self.random_nu_CPD /= self.random_nu_CPD[:,-1:]
         self.drandom_nu_CPD_dT = np.gradient(self.random_nu_CPD, self.temperature, axis=0)
 
+        vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
+                models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
+
+        self.pmo = np.pi / (const.sigma_sb.cgs.value * self.temperature**4) * vectorized_bb(self.temperature)
+
     def interpolate_kabs(self, nu):
         return np.interp(nu, self.nu, self.kabs)
 
@@ -201,10 +206,13 @@ class Dust(pl.LightningDataModule):
         return nu
 
     def planck_mean_opacity(self, temperature):
+        """
         vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
                 models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
 
         return np.pi / (const.sigma_sb.cgs.value * temperature**4) * vectorized_bb(temperature)
+        """
+        return np.interp(temperature, self.temperature, self.pmo)
 
     def ml_step(self, photon_list, s, iphotons):
         nphotons = iphotons.size
