@@ -57,7 +57,7 @@ class Star:
             t2 = time.time()
             print(f"Random frequency generation took {t2-t1:.3f} seconds")
         else:
-            frequency = np.repeat((const.c / wavelength).to(u.GHz), nphotons)
+            frequency = np.repeat((const.c / wavelength).to(u.GHz), nphotons).value
 
         if simulation == "thermal":
             photon_energy = np.repeat(self.luminosity.to(u.L_sun).value / nphotons, nphotons)
@@ -67,7 +67,7 @@ class Star:
         photon_list = PhotonList()
         photon_list.position = wp.array(position, dtype=wp.vec3)
         photon_list.direction = wp.array(direction, dtype=wp.vec3)
-        photon_list.frequency = wp.array(frequency.value, dtype=float)
+        photon_list.frequency = wp.array(frequency, dtype=float)
         photon_list.energy = wp.array(photon_energy, dtype=float)
 
         return photon_list
@@ -112,7 +112,7 @@ class Star:
                   dim=(nphotons,),
                   inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int)])
 
-        return random_nu*self.nu.unit
+        return random_nu
     
     @wp.kernel
     def random_nu_kernel(ksi: wp.array(dtype=float),
