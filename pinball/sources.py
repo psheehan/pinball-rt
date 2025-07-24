@@ -110,8 +110,7 @@ class Star:
         random_nu = wp.zeros(nphotons, dtype=float)
         wp.launch(self.random_nu_kernel,
                   dim=(nphotons,),
-                  inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int)],
-                  device='cpu')
+                  inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int)])
 
         return random_nu*self.nu.unit
     

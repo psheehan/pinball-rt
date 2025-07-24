@@ -94,8 +94,7 @@ class Camera:
 
             wp.launch(kernel=self.grid.outer_wall_distance,
                     dim=new_x.shape,
-                    inputs=[ray_list, self.grid.grid, s],
-                    device='cpu')
+                    inputs=[ray_list, self.grid.grid, s])
 
             s = s.numpy()
             will_be_in_grid = s < np.inf
@@ -103,8 +102,7 @@ class Camera:
 
             wp.launch(kernel=self.grid.move,
                       dim=iwill_be_in_grid.shape,
-                      inputs=[ray_list, s, iwill_be_in_grid],
-                      device='cpu')
+                      inputs=[ray_list, s, iwill_be_in_grid])
 
             ray_list.position = wp.array(ray_list.position.numpy()[will_be_in_grid], dtype=wp.vec3)
             ray_list.direction = wp.array(ray_list.direction.numpy()[will_be_in_grid], dtype=wp.vec3)
@@ -120,8 +118,7 @@ class Camera:
             indices = wp.zeros((nrays, 3), dtype=int)
             wp.launch(kernel=self.grid.photon_loc,
                     dim=(nrays,),
-                    inputs=[ray_list, self.grid.grid, iray],
-                    device='cpu')
+                    inputs=[ray_list, self.grid.grid, iray])
 
             self.grid.propagate_rays(ray_list, nu.values, pixel_size)
 
@@ -152,8 +149,7 @@ class Camera:
 
         wp.launch(kernel=self.grid.photon_loc,
                     dim=(nrays,),
-                    inputs=[ray_list, self.grid.grid, iray],
-                    device='cpu')
+                    inputs=[ray_list, self.grid.grid, iray])
         
         self.grid.propagate_rays_from_source(ray_list, nu.values)
 
