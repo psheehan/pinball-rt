@@ -55,6 +55,8 @@ class Grid:
 
         self.dust = dust
 
+        self.dust.to_device(wp.device_to_torch(wp.get_device()))
+
     def add_star(self, star):
         self.star = star
 

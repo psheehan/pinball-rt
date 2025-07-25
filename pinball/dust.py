@@ -64,6 +64,12 @@ class Dust(pl.LightningDataModule):
 
         self.pmo = np.pi / (const.sigma_sb.cgs.value * self.temperature**4) * vectorized_bb(self.temperature)
 
+    def to_device(self, device):
+        if hasattr(self, "random_nu_model"):
+            self.random_nu_model.to(device)
+        if hasattr(self, "ml_step_model"):
+            self.ml_step_model.to(device)
+
     def interpolate_kabs(self, nu):
         return np.interp(nu, self.nu, self.kabs)
 
