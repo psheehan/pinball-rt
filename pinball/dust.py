@@ -1,5 +1,6 @@
 from .sources import Star
 from .grids import UniformSphericalGrid
+from .utils import log_uniform_interp
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
@@ -44,6 +45,12 @@ class Dust(pl.LightningDataModule):
         self.kext = (kabs + ksca) / self.kmean.value
         self.albedo = ksca / (kabs + ksca)
 
+        self.nu_wp = wp.array(self.nu.value, dtype=float)
+        self.kabs_wp = wp.array(self.kabs, dtype=float)
+        self.ksca_wp = wp.array(self.ksca, dtype=float)
+        self.kext_wp = wp.array(self.kext, dtype=float)
+        self.albedo_wp = wp.array(self.albedo, dtype=float)
+
         self.temperature = np.logspace(-1.,4.,1000)
         self.log_temperature = np.log10(self.temperature)
 
@@ -62,6 +69,16 @@ class Dust(pl.LightningDataModule):
 
     def interpolate_ksca(self, nu):
         return np.interp(nu, self.nu, self.ksca)
+
+    def interpolate_kabs_wp(self, nu):
+        kabs = wp.zeros(len(nu), dtype=float)
+        wp.launch(log_uniform_interp, dim=len(nu,), inputs=[nu, self.nu_wp, self.kabs_wp, kabs])
+        return kabs
+    
+    def interpolate_ksca_wp(self, nu):
+        ksca = wp.zeros(len(nu), dtype=float)
+        wp.launch(log_uniform_interp, dim=len(nu,), inputs=[nu, self.nu_wp, self.ksca_wp, ksca])
+        return ksca
 
     def interpolate_kext(self, nu):
         return np.interp(nu, self.nu, self.kext)
@@ -196,12 +213,12 @@ class Dust(pl.LightningDataModule):
                 plt.show()
 
     def random_nu(self, temperature):
-        nphotons = temperature.size
-        ksi = np.random.rand(int(nphotons))
+        nphotons = temperature.size(0)
+        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
 
-        test_x = torch.tensor(np.vstack((np.log10(temperature), ksi)).T, dtype=torch.float32)
+        test_x = torch.transpose(torch.vstack((torch.log10(temperature), ksi)), 0, 1)
 
-        nu = 10.**self.random_nu_model(test_x).detach().numpy().flatten()
+        nu = wp.from_torch(10.**torch.flatten(self.random_nu_model(test_x).detach()))
 
         return nu
 
