@@ -4,6 +4,7 @@ import astropy.constants as const
 import warp as wp
 import numpy as np
 import xarray as xr
+import torch
 
 from .utils import EPSILON
 
@@ -96,24 +97,24 @@ class Camera:
                     dim=new_x.shape,
                     inputs=[ray_list, self.grid.grid, s])
 
-            s = s.numpy()
-            will_be_in_grid = s < np.inf
-            iwill_be_in_grid = np.arange(nrays, dtype=np.int32)[will_be_in_grid]
+            s = wp.to_torch(s)
+            will_be_in_grid = s < torch.inf
+            iwill_be_in_grid = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))[will_be_in_grid]
 
             wp.launch(kernel=self.grid.move,
                       dim=iwill_be_in_grid.shape,
                       inputs=[ray_list, s, iwill_be_in_grid])
 
-            ray_list.position = wp.array(ray_list.position.numpy()[will_be_in_grid], dtype=wp.vec3)
-            ray_list.direction = wp.array(ray_list.direction.numpy()[will_be_in_grid], dtype=wp.vec3)
-            ray_list.intensity = wp.array(ray_list.intensity.numpy()[will_be_in_grid], dtype=float)
-            ray_list.tau_intensity = wp.array(ray_list.tau_intensity.numpy()[will_be_in_grid], dtype=float)
-            ray_list.image_ix = wp.array(ray_list.image_ix.numpy()[will_be_in_grid], dtype=int)
-            ray_list.image_iy = wp.array(ray_list.image_iy.numpy()[will_be_in_grid], dtype=int)
-            ray_list.pixel_too_large = wp.array(ray_list.pixel_too_large.numpy()[will_be_in_grid], dtype=bool)
+            ray_list.position = wp.array(wp.to_torch(ray_list.position)[will_be_in_grid], dtype=wp.vec3)
+            ray_list.direction = wp.array(wp.to_torch(ray_list.direction)[will_be_in_grid], dtype=wp.vec3)
+            ray_list.intensity = wp.array(wp.to_torch(ray_list.intensity)[will_be_in_grid], dtype=float)
+            ray_list.tau_intensity = wp.array(wp.to_torch(ray_list.tau_intensity)[will_be_in_grid], dtype=float)
+            ray_list.image_ix = wp.array(wp.to_torch(ray_list.image_ix)[will_be_in_grid], dtype=int)
+            ray_list.image_iy = wp.array(wp.to_torch(ray_list.image_iy)[will_be_in_grid], dtype=int)
+            ray_list.pixel_too_large = wp.array(wp.to_torch(ray_list.pixel_too_large)[will_be_in_grid], dtype=bool)
 
             nrays = will_be_in_grid.sum()
-            iray = np.arange(nrays, dtype=np.int32)
+            iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
             indices = wp.zeros((nrays, 3), dtype=int)
             wp.launch(kernel=self.grid.photon_loc,
@@ -145,7 +146,7 @@ class Camera:
         # Also propagate rays from any sources in the grid.
 
         ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, dpc)
-        iray = np.arange(nrays, dtype=np.int32)
+        iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
         wp.launch(kernel=self.grid.photon_loc,
                     dim=(nrays,),

@@ -6,6 +6,7 @@ from schwimmbad import SerialPool
 import xarray as xr
 import numpy as np
 import warp as wp
+import torch
 import time
 
 class Model:
@@ -74,7 +75,7 @@ class Model:
 
     def scattering_mc(self, nphotons, wavelengths):
         for grid in self.grid_list:
-            grid.scattering = np.zeros((len(wavelengths),)+grid.shape, dtype=np.float32)
+            grid.scattering = torch.zeros((len(wavelengths),)+grid.shape, dtype=torch.float32, device=wp.device_to_torch(wp.get_device()))
 
         for i, wavelength in enumerate(wavelengths):
             for grid in self.grid_list:
@@ -86,7 +87,7 @@ class Model:
             t2 = time.time()
             print("Time:", t2 - t1)
 
-            total_scattering = np.mean(np.array([grid.scattering for grid in self.grid_list]), axis=0) / (4.*np.pi * self.grid.volume)
+            total_scattering = torch.mean(torch.cat([torch.unsqueeze(grid.scattering, 0) for grid in self.grid_list]), axis=0) / (4.*np.pi * self.grid.volume)
             for grid in self.grid_list:
                 grid.scattering[i] = total_scattering[i]
 
