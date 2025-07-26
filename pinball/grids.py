@@ -102,7 +102,7 @@ class Grid:
         return photon_list
     
     @wp.kernel
-    def tau_distance_absorption(grid: GridStruct,
+    def tau_distance_extinction(grid: GridStruct,
                      photon_list: PhotonList, 
                      distances: wp.array(dtype=float),
                      iphotons: wp.array(dtype=int)):
@@ -111,7 +111,7 @@ class Grid:
 
         ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
 
-        photon_list.alpha[ip] = photon_list.density[ip] * photon_list.kabs[ip]
+        photon_list.alpha[ip] = photon_list.density[ip] * (photon_list.kabs[ip] + photon_list.ksca[ip])
         distances[ip] = photon_list.tau[ip] / photon_list.alpha[ip]
 
     @wp.kernel
@@ -499,7 +499,7 @@ class Grid:
             next_wall_time += t2 - t1
         
             t1 = time.time()
-            wp.launch(kernel=self.tau_distance_absorption,
+            wp.launch(kernel=self.tau_distance_extinction,
                       dim=(nphotons,),
                       inputs=[self.grid, photon_list, s2, iphotons])
             t2 = time.time()

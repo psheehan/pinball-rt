@@ -54,7 +54,7 @@ class Model:
 
             for grid in self.grid_list:
                 grid.grid.temperature = self.grid.grid.temperature
-                grid.grid.energy = self.grid.grid.energy
+                grid.grid.energy = wp.zeros(self.grid.shape, dtype=float)
 
             if count > 1:
                 R = np.maximum(told/self.grid.grid.temperature.numpy(), self.grid.grid.temperature.numpy()/told)
