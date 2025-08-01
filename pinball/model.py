@@ -72,7 +72,7 @@ class Model:
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:
                     with wp.ScopedDevice(grid.device):
-                        grid.grid.temperature = wp.array3d(self.grid.grid.temperature)
+                        grid.grid.temperature = wp.array3d(self.grid.grid.temperature.numpy(), dtype=float)
                         grid.grid.energy = wp.zeros(self.grid.shape, dtype=float)
 
             if count > 1:
