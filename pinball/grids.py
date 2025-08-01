@@ -71,7 +71,7 @@ class Grid:
                 nphotons_per_source = nphotons
 
             t1 = time.time()
-            photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal")
+            photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device)
             t2 = time.time()
             print("Star emission time: ", t2 - t1)
 
@@ -925,8 +925,8 @@ class UniformCartesianGrid(Grid):
                       dim=(nphotons,),
                       inputs=[photon_list, self.grid, iphotons])
 
-            photon_list.density = wp.array(np.zeros(nphotons), dtype=float)
-            photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.density = wp.zeros(nphotons, dtype=float)
+            photon_list.temperature = wp.zeros(nphotons, dtype=float)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,

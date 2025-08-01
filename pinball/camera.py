@@ -147,7 +147,7 @@ class Camera:
     
             # Also propagate rays from any sources in the grid.
     
-            ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, dpc)
+            ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, dpc, device=self.grid.device)
             iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
     
             wp.launch(kernel=self.grid.photon_loc,
