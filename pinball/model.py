@@ -15,7 +15,7 @@ class Model:
         """Initialize the Model with a grid and optional parameters."""
         self.grid_list = {"cpu":[grid(ncells=ncells, dx=dx, device='cpu') for _ in range(ncores)]}
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = [grid(ncells=ncells, dx=dx, mirror=mirror, device=d) for d in wp.get_cuda_devices()]
+            self.grid_list["cuda"] = [grid(ncells=ncells, dx=dx, device=d) for d in wp.get_cuda_devices()]
             self.grid = self.grid_list["cuda"][0]
         else:
             self.grid = self.grid_list["cpu"][0]
