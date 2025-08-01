@@ -108,7 +108,7 @@ class Model:
             t2 = time.time()
             print("Time:", t2 - t1)
 
-            total_scattering = torch.mean(torch.cat([torch.unsqueeze(grid.scattering, 0) for grid in self.grid_list[device]]), axis=0) / (4.*np.pi * self.grid.volume)
+            total_scattering = torch.mean(torch.cat([torch.unsqueeze(grid.scattering, 0) for grid in self.grid_list[device]]), axis=0) / (4.*np.pi * self.grid.volume.to(device))
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:
                     grid.scattering[i] = total_scattering[i].clone().to(wp.device_to_torch(grid.device))
