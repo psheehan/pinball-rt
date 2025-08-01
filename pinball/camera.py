@@ -82,89 +82,91 @@ class Camera:
         image_intensity[ix, iy, inu] += ray_intensity[ir,inu]
 
     def raytrace(self, new_x, new_y, nx, ny, image_pixel_size, nu):
-        nrays = new_x.size
-        pixel_size = image_pixel_size
+        with wp.ScopedDevice(self.grid.device):
+            nrays = new_x.size
+            pixel_size = image_pixel_size
 
-        intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
+            intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
 
-        while nrays > 0:
-            print(nrays)
-            ray_list = self.emit_rays(new_x, new_y, nu, nx, ny, image_pixel_size)
+            while nrays > 0:
+                print(nrays)
+                ray_list = self.emit_rays(new_x, new_y, nu, nx, ny, image_pixel_size)
 
-            s = wp.zeros(new_x.shape, dtype=float)
+                s = wp.zeros(new_x.shape, dtype=float)
 
-            wp.launch(kernel=self.grid.outer_wall_distance,
-                    dim=new_x.shape,
-                    inputs=[ray_list, self.grid.grid, s])
+                wp.launch(kernel=self.grid.outer_wall_distance,
+                        dim=new_x.shape,
+                        inputs=[ray_list, self.grid.grid, s])
 
-            s = wp.to_torch(s)
-            will_be_in_grid = s < torch.inf
-            iwill_be_in_grid = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))[will_be_in_grid]
+                s = wp.to_torch(s)
+                will_be_in_grid = s < torch.inf
+                iwill_be_in_grid = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))[will_be_in_grid]
 
-            wp.launch(kernel=self.grid.move,
-                      dim=iwill_be_in_grid.shape,
-                      inputs=[ray_list, s, iwill_be_in_grid])
+                wp.launch(kernel=self.grid.move,
+                          dim=iwill_be_in_grid.shape,
+                          inputs=[ray_list, s, iwill_be_in_grid])
 
-            ray_list.position = wp.array(wp.to_torch(ray_list.position)[will_be_in_grid], dtype=wp.vec3)
-            ray_list.direction = wp.array(wp.to_torch(ray_list.direction)[will_be_in_grid], dtype=wp.vec3)
-            ray_list.intensity = wp.array(wp.to_torch(ray_list.intensity)[will_be_in_grid], dtype=float)
-            ray_list.tau_intensity = wp.array(wp.to_torch(ray_list.tau_intensity)[will_be_in_grid], dtype=float)
-            ray_list.image_ix = wp.array(wp.to_torch(ray_list.image_ix)[will_be_in_grid], dtype=int)
-            ray_list.image_iy = wp.array(wp.to_torch(ray_list.image_iy)[will_be_in_grid], dtype=int)
-            ray_list.pixel_too_large = wp.array(wp.to_torch(ray_list.pixel_too_large)[will_be_in_grid], dtype=bool)
+                ray_list.position = wp.array(wp.to_torch(ray_list.position)[will_be_in_grid], dtype=wp.vec3)
+                ray_list.direction = wp.array(wp.to_torch(ray_list.direction)[will_be_in_grid], dtype=wp.vec3)
+                ray_list.intensity = wp.array(wp.to_torch(ray_list.intensity)[will_be_in_grid], dtype=float)
+                ray_list.tau_intensity = wp.array(wp.to_torch(ray_list.tau_intensity)[will_be_in_grid], dtype=float)
+                ray_list.image_ix = wp.array(wp.to_torch(ray_list.image_ix)[will_be_in_grid], dtype=int)
+                ray_list.image_iy = wp.array(wp.to_torch(ray_list.image_iy)[will_be_in_grid], dtype=int)
+                ray_list.pixel_too_large = wp.array(wp.to_torch(ray_list.pixel_too_large)[will_be_in_grid], dtype=bool)
 
-            nrays = will_be_in_grid.sum()
-            iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
+                nrays = will_be_in_grid.sum()
+                iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
-            indices = wp.zeros((nrays, 3), dtype=int)
-            wp.launch(kernel=self.grid.photon_loc,
-                    dim=(nrays,),
-                    inputs=[ray_list, self.grid.grid, iray])
+                indices = wp.zeros((nrays, 3), dtype=int)
+                wp.launch(kernel=self.grid.photon_loc,
+                        dim=(nrays,),
+                        inputs=[ray_list, self.grid.grid, iray])
 
-            self.grid.propagate_rays(ray_list, nu.values, pixel_size)
+                self.grid.propagate_rays(ray_list, nu.values, pixel_size)
 
-            wp.launch(kernel=self.put_intensity_in_image, 
-                    dim=(nrays, nu.size),
-                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
-            
-            new_x, new_y = [], []
-            for i in range(nrays):
-                if ray_list.pixel_too_large.numpy()[i]:
-                    for j in range(4):
-                        new_x.append(ray_list.image_ix.numpy()[i] + (-1)**j * pixel_size/4)
-                        new_y.append(ray_list.image_iy.numpy()[i] + (-1)**(int(j/2)) * pixel_size/4)
-            new_x = np.array(new_x)
-            new_y = np.array(new_y)
-            pixel_size = pixel_size / 2
-            nrays = len(new_x)
+                wp.launch(kernel=self.put_intensity_in_image, 
+                        dim=(nrays, nu.size),
+                        inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
+
+                new_x, new_y = [], []
+                for i in range(nrays):
+                    if ray_list.pixel_too_large.numpy()[i]:
+                        for j in range(4):
+                            new_x.append(ray_list.image_ix.numpy()[i] + (-1)**j * pixel_size/4)
+                            new_y.append(ray_list.image_iy.numpy()[i] + (-1)**(int(j/2)) * pixel_size/4)
+                new_x = np.array(new_x)
+                new_y = np.array(new_y)
+                pixel_size = pixel_size / 2
+                nrays = len(new_x)
 
         return intensity
 
     def raytrace_sources(self, x, y, nx, ny, nu, dpc, nrays=1000):
-        intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
-
-        # Also propagate rays from any sources in the grid.
-
-        ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, dpc)
-        iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
-
-        wp.launch(kernel=self.grid.photon_loc,
-                    dim=(nrays,),
-                    inputs=[ray_list, self.grid.grid, iray])
-        
-        self.grid.propagate_rays_from_source(ray_list, nu.values)
-
-        ximage = np.dot(ray_list.position.numpy(), self.ey)
-        yimage = np.dot(ray_list.position.numpy(), self.ex)
-
-        image_ix = (nx * (ximage + x.values.max()) / (2 * x.values.max()) + 0.5).astype(int)
-        image_iy = (ny * (yimage + y.values.max()) / (2 * y.values.max()) + 0.5).astype(int)
-
-        ray_list.image_ix = wp.array(image_ix, dtype=int)
-        ray_list.image_iy = wp.array(image_iy, dtype=int)
-
-        wp.launch(kernel=self.put_intensity_in_image,
-                    dim=(nrays, nu.size),
-                    inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
+        with wp.ScopedDevice(self.grid.device):
+            intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
+    
+            # Also propagate rays from any sources in the grid.
+    
+            ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, dpc)
+            iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
+    
+            wp.launch(kernel=self.grid.photon_loc,
+                        dim=(nrays,),
+                        inputs=[ray_list, self.grid.grid, iray])
+            
+            self.grid.propagate_rays_from_source(ray_list, nu.values)
+    
+            ximage = np.dot(ray_list.position.numpy(), self.ey)
+            yimage = np.dot(ray_list.position.numpy(), self.ex)
+    
+            image_ix = (nx * (ximage + x.values.max()) / (2 * x.values.max()) + 0.5).astype(int)
+            image_iy = (ny * (yimage + y.values.max()) / (2 * y.values.max()) + 0.5).astype(int)
+    
+            ray_list.image_ix = wp.array(image_ix, dtype=int)
+            ray_list.image_iy = wp.array(image_iy, dtype=int)
+    
+            wp.launch(kernel=self.put_intensity_in_image,
+                        dim=(nrays, nu.size),
+                        inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
 
         return intensity

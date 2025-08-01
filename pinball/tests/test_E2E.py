@@ -15,12 +15,12 @@ def test_UniformCartesian_E2E(return_vals=False):
     """
     # Set up the dust.
 
-    d = load(os.path.join(os.path.dirname(__file__), "data/yso.dst"))
+    d = os.path.join(os.path.dirname(__file__), "data/yso.dst")
 
     # Set up the star.
 
     star = Star()
-    star.set_blackbody_spectrum(d.nu)
+    star.set_blackbody_spectrum()
 
     # Set up the grid.
     model = Model(grid=UniformCartesianGrid, ncells=9, dx=2.0*u.au)
