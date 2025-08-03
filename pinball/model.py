@@ -1,7 +1,7 @@
 import astropy.constants as const
 import astropy.units as u
 from .grids import Grid
-from .dust import load
+from .dust import load, Dust
 from .camera import Camera
 from schwimmbad import SerialPool
 import xarray as xr
@@ -35,9 +35,7 @@ class Model:
         """Add density to the grid."""
         for device in self.grid_list:
             for grid in self.grid_list[device]:
-                with wp.ScopedDevice(grid.device):
-                    d = load(dust)
-                grid.add_density(density, d)
+                grid.add_density(density, load(dust) if isinstance(dust, str) else dust)
 
     def add_star(self, star):
         """Add a star to the grid."""

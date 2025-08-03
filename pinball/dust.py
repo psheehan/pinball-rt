@@ -20,7 +20,7 @@ import torch
 import os
 
 class Dust(pl.LightningDataModule):
-    def __init__(self, lam, kabs, ksca, interpolate=10000):
+    def __init__(self, lam, kabs, ksca, interpolate=10000, device="cpu"):
         super().__init__()
         kunit = kabs.unit
         lam_unit = lam.unit
@@ -45,11 +45,12 @@ class Dust(pl.LightningDataModule):
         self.kext = (kabs + ksca) / self.kmean.value
         self.albedo = ksca / (kabs + ksca)
 
-        self.nu_wp = wp.array(self.nu.value, dtype=float)
-        self.kabs_wp = wp.array(self.kabs, dtype=float)
-        self.ksca_wp = wp.array(self.ksca, dtype=float)
-        self.kext_wp = wp.array(self.kext, dtype=float)
-        self.albedo_wp = wp.array(self.albedo, dtype=float)
+        with wp.ScopedDevice(device):
+            self.nu_wp = wp.array(self.nu.value, dtype=float)
+            self.kabs_wp = wp.array(self.kabs, dtype=float)
+            self.ksca_wp = wp.array(self.ksca, dtype=float)
+            self.kext_wp = wp.array(self.kext, dtype=float)
+            self.albedo_wp = wp.array(self.albedo, dtype=float)
 
         self.temperature = np.logspace(-1.,4.,1000)
         self.log_temperature = np.log10(self.temperature)
@@ -65,6 +66,13 @@ class Dust(pl.LightningDataModule):
         self.pmo = np.pi / (const.sigma_sb.cgs.value * self.temperature**4) * vectorized_bb(self.temperature)
 
     def to_device(self, device):
+        with wp.ScopedDevice(device):
+            self.nu_wp = wp.array(self.nu.value, dtype=float)
+            self.kabs_wp = wp.array(self.kabs, dtype=float)
+            self.ksca_wp = wp.array(self.ksca, dtype=float)
+            self.kext_wp = wp.array(self.kext, dtype=float)
+            self.albedo_wp = wp.array(self.albedo, dtype=float)
+
         if hasattr(self, "random_nu_model"):
             self.random_nu_model.to(device)
         if hasattr(self, "ml_step_model"):
@@ -419,7 +427,7 @@ class Dust(pl.LightningDataModule):
     def predict_dataloader(self):
         return DataLoader(self.test, batch_size=100, num_workers=2)
 
-    def save(self, filename):
+    def state_dict(self):
         state_dict = {
             "dust_properties":{
                 "lam": self.lam,
@@ -434,13 +442,22 @@ class Dust(pl.LightningDataModule):
         if hasattr(self, "ml_step_model"):
             state_dict["ml_step_state_dict"] = self.ml_step_model.state_dict()
 
-        torch.save(state_dict, filename)
+    def save(self, filename):
+        torch.save(self.state_dict(), filename)
+
+    def copy(self, device="cpu"):
+        return load(self.state_dict(), device=device)
 
 
-def load(filename):
-    state_dict = torch.load(filename, weights_only=False)
+def load(filename, device="cpu"):
+    if isinstance(filename, str):
+        state_dict = torch.load(filename, weights_only=False)
+    elif isinstance(filename, dict):
+        state_dict = filename
+    elif isinstance(filename, Dust):
+        state_dict = filename.state_dict()
 
-    d = Dust(**state_dict["dust_properties"], interpolate=-1 )
+    d = Dust(**state_dict["dust_properties"], interpolate=-1, device=device)
 
     if "random_nu_state_dict" in state_dict:
         hidden_units = [state_dict['random_nu_state_dict'][key].shape[0] for key in state_dict['random_nu_state_dict'] if 'bias' in key][0:-1]
