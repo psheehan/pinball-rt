@@ -18,9 +18,26 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torch
 import os
+from torchkde import KernelDensity
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam, kabs, ksca, interpolate=10000, device="cpu"):
+        """
+        Initialize the Dust module with wavelength, absorption, and scattering coefficients.
+
+        Parameters
+        ----------
+        lam : astropy.units.Quantity
+            Wavelengths at which the dust opacities are defined.
+        kabs : astropy.units.Quantity
+            Absorption coefficients of the dust.
+        ksca : astropy.units.Quantity
+            Scattering coefficients of the dust.
+        interpolate : int
+            Number of points to interpolate the dust opacities.
+        device : str
+            Device to run the computations on (e.g., "cpu" or "cuda").
+        """
         super().__init__()
         kunit = kabs.unit
         lam_unit = lam.unit
@@ -147,7 +164,6 @@ class Dust(pl.LightningDataModule):
             self.ml_step_model = nn.Sequential(*all_layers)
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False):
-
         self.nsamples = nsamples
         self.test_split = test_split
         self.valid_split = valid_split
@@ -350,7 +366,7 @@ class Dust(pl.LightningDataModule):
 
         self.dataset = TensorDataset(X, y)
 
-    def prepare_data_ml_step(self):
+    def prepare_data_ml_step(self, device='cpu'):
         if hasattr(self, "dataset"):
             return
 
@@ -371,15 +387,15 @@ class Dust(pl.LightningDataModule):
 
             column = df.columns[j]
 
-            kde = gaussian_kde(df.loc[:, base_features + [column]].values.T)
-            x = np.linspace(df.loc[:, column].values.min(), df.loc[:, column].values.max(), 1000)
+            kde = KernelDensity(kernel="gaussian", bandwidth="scott").fit(torch.tensor(df.loc[:, base_features + [column]].values, device=device, dtype=torch.float32))
+            x = torch.linspace(df.loc[:, column].values.min(), df.loc[:, column].values.max(), 100, device=device, dtype=torch.float32)
 
             for i in trange(df.shape[0]):
-                X = np.vstack(tuple(np.repeat(df.loc[i, col], 1000) for col in base_features) + (x,))
+                X = torch.transpose(torch.vstack(tuple(torch.repeat_interleave(torch.tensor(df.loc[i, col], dtype=torch.float32), torch.tensor([100])).to(device) for col in base_features) + (x,)), 0, 1)
 
-                pdf = kde(X)
+                log_pdf = kde.score_samples(X_eval, batch_size=100)
 
-                cdf = np.cumsum(pdf)
+                cdf = np.cumsum(np.exp(log_pdf.numpy()))
                 cdf /= cdf.max()
 
                 interp = scipy.interpolate.interp1d(x, cdf, kind='cubic')
