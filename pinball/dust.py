@@ -1,3 +1,5 @@
+import urllib
+import requests
 from .sources import Star
 from .grids import UniformSphericalGrid
 from .utils import log_uniform_interp
@@ -19,9 +21,12 @@ import pytorch_lightning as pl
 import torch
 import os
 from torchkde import KernelDensity
+import PyMieScatt
 
 class Dust(pl.LightningDataModule):
-    def __init__(self, lam, kabs, ksca, interpolate=10000, device="cpu"):
+    def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
+                 amin=None, amax=None, p=None, with_dhs=False, fmax=0.8, nf=50, interpolate=10000, 
+                 device="cpu"):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
 
@@ -33,12 +38,47 @@ class Dust(pl.LightningDataModule):
             Absorption coefficients of the dust.
         ksca : astropy.units.Quantity
             Scattering coefficients of the dust.
+        recipe : str or dict
+            Recipe to use for the dust composition. If a string, it should be one of the predefined recipes.
+        optical_constants : DustOpticalConstants
+            Precomputed optical constants for the dust to use to calculate the opacities.
+        amin : astropy.units.Quantity
+            Minimum grain size for the size distribution.
+        amax : astropy.units.Quantity
+            Maximum grain size for the size distribution.
+        p : float
+            Power-law index for the grain size distribution.
+        with_dhs : bool
+            Whether to use the Distribution of Hollow Spheres method for calculating opacities.
+        fmax : float
+            Maximum volume fraction of the hollow sphere in the DHS method.
+        nf : int
+            Number of discrete hollow sphere fractions to use in the DHS method.
         interpolate : int
             Number of points to interpolate the dust opacities.
         device : str
             Device to run the computations on (e.g., "cpu" or "cuda").
         """
         super().__init__()
+
+        if recipe is not None or optical_constants is not None:
+            if recipe is not None:
+                optical_constants = DustOpticalConstants(recipe=recipe)
+
+                if type(recipe) == str and recipe in DustOpticalConstants.recipes:
+                    recipe = recipe_dict[recipe]
+
+                if "with_dhs" in recipe:
+                    with_dhs = recipe["with_dhs"]
+                if "filling" in recipe:
+                    fmax = recipe["filling"]
+
+            optical_constants.calculate_size_distribution_opacity(amin, amax, p, nang=1, with_dhs=with_dhs, fmax=fmax, nf=nf)
+
+            lam = optical_constants.lam
+            kabs = optical_constants.kabs
+            ksca = optical_constants.ksca
+
         kunit = kabs.unit
         lam_unit = lam.unit
 
@@ -164,6 +204,26 @@ class Dust(pl.LightningDataModule):
             self.ml_step_model = nn.Sequential(*all_layers)
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False):
+        """
+        Learn a model for either the random_nu function or the ml_step function.
+        
+        Parameters
+        ----------
+        model : str
+            The model to learn. Either "random_nu" or "ml_step".
+        nsamples : int
+            The total number of samples to generate for the learning process (including validation and testing)
+        test_split : float
+            The fraction of the samples to use for testing.
+        valid_split : float
+            The fraction of the remaining samples (after testing) to use for validation.
+        hidden_units : tuple
+            The number of hidden units in each layer of the neural network.
+        max_epochs : int
+            The maximum number of epochs to train the model.
+        plot : bool
+            Whether to plot the results after training.
+        """
         self.nsamples = nsamples
         self.test_split = test_split
         self.valid_split = valid_split
@@ -282,6 +342,20 @@ class Dust(pl.LightningDataModule):
         return 10.**vals[:,0], 10.**vals[:,1], vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
     def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None):
+        """
+        Run a dust simulation that can be used to learn an ML-step model with the given parameters.
+
+        Parameters
+        ----------
+        nphotons : int
+            The number of photons to simulate.
+        tau_range : tuple
+            The range of optical depths to sample from (in log10).
+        temperature_range : tuple
+            The range of temperatures to sample from (in log10).
+        nu_range : tuple
+            The range of frequencies to sample from (in GHz). If None, use the full range of the dust opacities.
+        """
         if nu_range is None:
             nu_range = (self.nu.value.min(), self.nu.value.max())
 
@@ -393,7 +467,7 @@ class Dust(pl.LightningDataModule):
             for i in trange(df.shape[0]):
                 X = torch.transpose(torch.vstack(tuple(torch.repeat_interleave(torch.tensor(df.loc[i, col], dtype=torch.float32), torch.tensor([100])).to(device) for col in base_features) + (x,)), 0, 1)
 
-                log_pdf = kde.score_samples(X_eval, batch_size=100)
+                log_pdf = kde.score_samples(X, batch_size=100)
 
                 cdf = np.cumsum(np.exp(log_pdf.numpy()))
                 cdf /= cdf.max()
@@ -466,6 +540,16 @@ class Dust(pl.LightningDataModule):
 
 
 def load(filename, device="cpu"):
+    """
+    Load a Dust object from a file or state_dict.
+    
+    Parameters
+    ----------
+    filename : str, dict, or Dust
+        The filename to load the Dust object from, or a state_dict, or a Dust object.
+    device : str
+        The device to load the Dust object onto.
+    """
     if isinstance(filename, str):
         state_dict = torch.load(filename, weights_only=False)
     elif isinstance(filename, dict):
@@ -524,3 +608,309 @@ class DustLightningModule(pl.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         x, y = batch
         return self(x)
+
+recipe_dict = {
+    "draine":{
+        "dust":["astronomical_silicates","graphite_parallel_0.01","graphite_perpendicular_0.01"],
+        "format":["draine","draine","draine"],
+        "density":np.array([3.3,2.24,2.24]),
+        "abundance":np.array([0.65,0.35*1./3,0.35*2./3])
+    },
+    "dsharp":{
+        "dust":["astronomical_silicates","troilite","organics","water_ice"],
+        "format":["draine","henn","henn","henn"],
+        "density":np.array([3.3,4.83,1.5,0.92]),
+        "abundance":np.array([0.1670,0.0258,0.4430,0.3642])
+    },
+    "pollack":{
+        "dust":["astronomical_silicates","troilite","organics","water_ice"],
+        "format":["draine","henn","henn","henn"],
+        "density":np.array([3.3,4.83,1.5,0.92]),
+        "mass_fraction":np.array([3.41e-3,7.68e-4,4.13e-3,5.55e-3]),
+    },
+    "diana":{
+        "dust":["amorphous_silicates_extrapolated","amorphous_carbon_zubko1996_extrapolated"],
+        "format":["henn","henn"],
+        "density":np.array([3.3,1.0]),
+        "abundance":np.array([0.8,0.2]),
+        "filling":0.75,
+        "with_dhs":True,
+    },
+    "diana_wice":{
+        "dust":["amorphous_silicates_extrapolated","amorphous_carbon_zubko1996_extrapolated","water_ice"],
+        "format":["henn","henn","henn"],
+        "density":np.array([3.3,1.0,0.92]),
+        "abundance":np.array([0.8,0.2,0.5]),
+        "filling":0.75,
+        "with_dhs":True,
+    },
+}
+    
+class DustOpticalConstants:
+    recipes = ["draine","pollack","diana","diana_wice"]
+
+    def __init__(self, recipe=None):
+        if recipe is not None:
+            if type(recipe) == str:
+                recipe = recipe_dict[recipe]
+            elif type(recipe) == dict:
+                pass
+
+            water_ice = DustOpticalConstants()
+            water_ice.set_optical_constants_from_henn("water_ice.txt")
+
+            species = []
+            for i in range(len(recipe["dust"])):
+                species.append(DustOpticalConstants())
+                if recipe["format"][i] == "henn":
+                    species[-1].set_optical_constants_from_henn(recipe["dust"][i]+".txt")
+                    if "extrapolated" in recipe["dust"][i]:
+                        species[-1].calculate_optical_constants_on_wavelength_grid(water_ice.lam)
+                elif recipe["format"][i] == "draine":
+                    species[-1].set_optical_constants_from_draine(recipe["dust"][i]+".txt")
+                    species[-1].calculate_optical_constants_on_wavelength_grid(water_ice.lam)
+                species[-1].set_density(recipe["density"][i])
+
+            if "mass_fraction" in recipe:
+                abundances = (recipe["mass_fraction"]/recipe["density"])/(recipe["mass_fraction"]/recipe["density"]).sum()
+            else:
+                abundances = recipe["abundance"] / recipe["abundance"].sum()
+
+            if "filling" not in recipe:
+                recipe["filling"] = 1.
+
+            dust = mix_dust(species, abundances, filling=recipe["filling"])
+
+            self.set_optical_constants(dust.lam, dust.n, dust.k)
+            self.set_density(dust.rho)
+            
+    def add_coat(self, coat):
+        self.coat = coat
+
+    def calculate_optical_constants_on_wavelength_grid(self, lam):
+        f = scipy.interpolate.interp1d(self.lam, self.n)
+        n = f(lam)
+        f = scipy.interpolate.interp1d(self.lam, self.k)
+        k = f(lam)
+
+        self.lam = lam
+        self.nu = const.c.to('cm/s').value / self.lam
+
+        self.n = n
+        self.k = k
+        self.m = self.n + 1j*self.k
+
+    def calculate_size_distribution_opacity(self, amin, amax, p, \
+            coat_volume_fraction=0.0, nang=1000, with_dhs=False, fmax=0.8, \
+            nf=50):
+        na = int(round(np.log10(amax.to(u.um).value) - np.log10(amin.to(u.um).value))*100+1)
+        a = np.logspace(np.log10(amin.to(u.um).value),np.log10(amax.to(u.um).value),na) * u.um
+        kabsgrid = np.zeros((self.lam.size,na))
+        kscagrid = np.zeros((self.lam.size,na))
+        
+        normfunc = a**(3-p)
+
+        for i in range(na):
+            if with_dhs:
+                self.calculate_dhs_opacity(a[i], fmax=fmax, nf=nf, nang=nang)
+            else:
+                self.calculate_opacity(a[i], \
+                        coat_volume_fraction=coat_volume_fraction, nang=nang)
+            
+            kabsgrid[:,i] = self.kabs*normfunc[i]
+            kscagrid[:,i] = self.ksca*normfunc[i]
+        
+        norm = scipy.integrate.trapezoid(normfunc,x=a)
+        
+        self.kabs = scipy.integrate.trapezoid(kabsgrid,x=a)/norm
+        self.ksca = scipy.integrate.trapezoid(kscagrid,x=a)/norm
+        self.kext = self.kabs + self.ksca
+        self.albedo = self.ksca / self.kext
+
+    def calculate_opacity(self, a, coat_volume_fraction=0.0, nang=1000):
+        self.kabs = np.zeros(self.lam.size) * a.unit**2 / u.g
+        self.ksca = np.zeros(self.lam.size) * a.unit**2 / u.g
+        
+        if not hasattr(self, 'coat'):
+            mdust = 4*np.pi*a**3/3*self.rho
+            
+            for i in range(self.lam.size):                
+                Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQ(self.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value)
+
+                self.kabs[i] = np.pi*a**2*Qabs/mdust
+                self.ksca[i] = np.pi*a**2*Qsca/mdust
+        else:
+            a_coat = a*(1+coat_volume_fraction)**(1./3)
+
+            mdust = 4*np.pi*a**3/3*self.rho+ \
+                    4*np.pi/3*(a_coat**3-a**3)*self.coat.rho
+            
+            for i in range(self.lam.size):
+                Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQCoreShell(self.m[i],self.coat.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value,a_coat.to(u.nm).value)
+
+                self.kabs[i] = np.pi*a_coat**2*Qabs/mdust
+                self.ksca[i] = np.pi*a_coat**2*Qsca/mdust
+
+        self.kext = self.kabs + self.ksca
+        self.albedo = self.ksca / self.kext
+
+    def calculate_dhs_opacity(self, a, fmax=0.8, nf=50, nang=1000):
+        self.kabs = np.zeros(self.lam.size) * a.unit**2 / u.g
+        self.ksca = np.zeros(self.lam.size) * a.unit**2 / u.g
+
+        for i in range(self.lam.size):
+            for j, f in enumerate(np.linspace(0., fmax, nf)):
+                x = 2*np.pi*a*f**(1./3)/self.lam[i]
+                y = 2*np.pi*a/self.lam[i]
+
+                if f == 0:
+                    Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQ(self.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value)
+                else:
+                    Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQCoreShell(1.0+1j,self.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value*f**(1./3),a.to(u.nm).value)
+
+                mdust = 4*np.pi*a**3*(1.-f)/3*self.rho
+
+                self.kabs[i] += np.pi*a**2*Qabs/mdust * 1./fmax * fmax/nf
+                self.ksca[i] += np.pi*a**2*Qsca/mdust * 1./fmax * fmax/nf
+
+        self.kext = self.kabs + self.ksca
+        self.albedo = self.ksca / self.kext
+
+    def set_density(self, rho):
+        if not isinstance(rho, u.Quantity):
+            rho = rho * u.g / u.cm**3
+        self.rho = rho
+
+    def set_optical_constants(self, lam, n, k):
+        self.lam = lam
+        if not isinstance(self.lam, u.Quantity):
+            self.lam = self.lam * u.cm
+        self.nu = (const.c / self.lam).to(u.GHz)
+
+        self.n = n
+        self.k = k
+        self.m = n+1j*k
+
+    def load_optical_constants_file_generic(self, filename):
+        if not os.path.exists(filename):
+            if os.path.exists(os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename):
+                filename = os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename
+            else:
+                web_data_location = 'https://raw.githubusercontent.com/psheehan/pdspy/master/pdspy/dust/data/optical_constants/'+filename
+                response = requests.get(web_data_location)
+                if response.status_code == 200:
+                    if not os.path.exists(os.environ["HOME"]+"/.pinballrt/data/optical_constants"):
+                        os.makedirs(os.environ["HOME"]+"/.pinballrt/data/optical_constants")
+                    urllib.request.urlretrieve(web_data_location, 
+                            os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename)
+                    filename = os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename
+                else:
+                    print(web_data_location+' does not exist')
+                    return
+
+        opt_data = np.loadtxt(filename)
+
+        return opt_data
+
+    def set_optical_constants_from_draine(self, filename):
+        opt_data = self.load_optical_constants_file_generic(filename)
+
+        self.lam = np.flipud(opt_data[:,0])*1.0e-4 * u.cm
+        self.nu = (const.c / self.lam).to(u.GHz)
+
+        self.n = np.flipud(opt_data[:,3])+1.0
+        self.k = np.flipud(opt_data[:,4])
+        self.m = self.n+1j*self.k
+
+    def set_optical_constants_from_henn(self, filename):
+        opt_data = self.load_optical_constants_file_generic(filename)
+
+        self.lam = opt_data[:,0]*1.0e-4 * u.cm
+        self.nu = (const.c / self.lam).to(u.GHz)
+
+        self.n = opt_data[:,1]
+        self.k = opt_data[:,2]
+        self.m = self.n+1j*self.k
+
+    def set_optical_constants_from_jena(self, filename, type="standard"):
+        opt_data = self.load_optical_constants_file_generic(filename)
+
+        if type == "standard":
+            self.lam = np.flipud(1./opt_data[:,0]) * u.cm
+            self.n = np.flipud(opt_data[:,1])
+            self.k = np.flipud(opt_data[:,2])
+        elif type == "umwave":
+            self.lam = np.flipud(opt_data[:,0])*1.0e-4 * u.cm
+            self.n = np.flipud(opt_data[:,1])
+            self.k = np.flipud(opt_data[:,2])
+
+        self.nu = (const.c / self.lam).to(u.GHz)
+        self.m = self.n+1j*self.k
+
+    def set_optical_constants_from_oss(self, filename):
+        opt_data = self.load_optical_constants_file_generic(filename)
+        
+        self.lam = opt_data[:,0] * u.cm # in cm
+        self.nu = (const.c / self.lam).to(u.GHz)
+
+        self.n = opt_data[:,1]
+        self.k = opt_data[:,2]
+        self.m = self.n+1j*self.k
+
+def mix_dust(dust, abundance, medium=None, rule="Bruggeman", filling=1.):
+
+    if rule == "Bruggeman":
+        meff = np.zeros(dust[0].lam.size,dtype=complex)
+        rho = 0.0
+        
+        for i in range(dust[0].lam.size):
+            temp = scipy.optimize.fsolve(bruggeman,np.array([1.0,0.0]),\
+                    args=(dust,abundance,i, filling))
+            meff[i] = temp[0]+1j*temp[1]
+        
+        for i in range(len(dust)):
+            rho += dust[i].rho*abundance[i]
+
+        rho *= filling
+    
+    elif rule == "MaxGarn":
+        numerator = 0.0+1j*0.0
+        denominator = 0.0+1j*0.0
+        rho = 0.0
+        
+        for i in range(len(dust)):
+            gamma = 3. / (dust[i].m**2 + 2)
+
+            numerator += abundance[i] * gamma * dust[i].m**2
+            denominator += abundance[i] * gamma
+
+            rho += dust[i].rho*abundance[i]
+
+        mmix = np.sqrt(numerator / denominator)
+        
+        F = (mmix**2 - 1.) / (mmix**2 + 2.)
+
+        meff = np.sqrt((1. + 2.*filling*F) / (1. - filling*F))
+
+        rho *= filling
+
+    new = DustOpticalConstants()
+    new.set_density(rho)
+    new.set_optical_constants(dust[0].lam, meff.real, meff.imag)
+    
+    return new
+
+def bruggeman(meff, dust, abundance, index, filling):
+    
+    m_eff = meff[0]+1j*meff[1]
+    tot = 0+0j
+    
+    for j in range(len(dust)):
+        tot += filling * abundance[j]*(dust[j].m[index]**2-m_eff**2)/ \
+                (dust[j].m[index]**2+2*m_eff**2)
+
+    # Add in the void.
+
+    tot += (1 - filling) * (1. - m_eff**2) / (1. + 2*m_eff**2)
+    
+    return np.array([tot.real,tot.imag])
