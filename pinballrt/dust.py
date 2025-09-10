@@ -14,14 +14,17 @@ import astropy.units as u
 import astropy.constants as const
 import scipy.stats.qmc
 import scipy.integrate
+from scipy.interpolate import RegularGridInterpolator
 import warp as wp
 import numpy as np
 import torch.nn as nn
 import pytorch_lightning as pl
 import torch
 import os
-from torchkde import KernelDensity
 import PyMieScatt
+from KDEpy import FFTKDE
+import interpn
+import psutil
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
@@ -209,121 +212,6 @@ class Dust(pl.LightningDataModule):
 
         return frequency
 
-    def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
-        all_layers = [nn.Flatten()]
-
-        for hidden_unit in hidden_units:
-            layer = nn.Linear(input_size, hidden_unit)
-            all_layers.append(layer)
-            all_layers.append(nn.Sigmoid())
-            input_size = hidden_unit
-
-        all_layers.append(nn.Linear(hidden_units[-1], output_size))
-
-        if model == "random_nu":
-            self.random_nu_model = nn.Sequential(*all_layers)
-        elif model == "ml_step":
-            self.ml_step_model = nn.Sequential(*all_layers)
-
-    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False):
-        """
-        Learn a model for either the random_nu function or the ml_step function.
-        
-        Parameters
-        ----------
-        model : str
-            The model to learn. Either "random_nu" or "ml_step".
-        nsamples : int
-            The total number of samples to generate for the learning process (including validation and testing)
-        test_split : float
-            The fraction of the samples to use for testing.
-        valid_split : float
-            The fraction of the remaining samples (after testing) to use for validation.
-        hidden_units : tuple
-            The number of hidden units in each layer of the neural network.
-        max_epochs : int
-            The maximum number of epochs to train the model.
-        plot : bool
-            Whether to plot the results after training.
-        """
-        self.nsamples = nsamples
-        self.test_split = test_split
-        self.valid_split = valid_split
-        self.learning = model
-
-        # Set up the NN
-
-        if model == "random_nu":
-            input_size, output_size = 2, 1
-        elif model == "ml_step":
-            input_size, output_size = 12, 9
-
-        self.initialize_model(model=model, input_size=input_size, output_size=output_size, hidden_units=hidden_units)
-
-        # Wrap the model in lightning
-
-        dustLM = DustLightningModule(getattr(self, model+"_model"))
-
-        trainer = pl.Trainer(max_epochs=10)
-        trainer.fit(model=dustLM, datamodule=self)
-
-        # Test the model.
-
-        trainer.test(model=dustLM, datamodule=self)
-
-        # Plot the result
-
-        if plot:
-            import matplotlib.pyplot as plt
-
-            if model == "random_nu":
-                y_pred = trainer.predict(dustLM, datamodule=self)
-                y_pred = torch.cat(y_pred)
-                y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
-
-                with torch.no_grad():
-                    count, bins, patches = plt.hist(y_true, 100, histtype='step')
-                    plt.hist(y_pred, bins, histtype='step')
-                    plt.savefig("predicted_vs_actual.png")
-            else:
-                y_pred = trainer.predict(dustLM, datamodule=self)
-                y_pred = torch.cat(y_pred)
-                y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
-
-                X_test = torch.cat([batch[0] for batch in self.predict_dataloader()])
-
-                columns = self.df.columns
-                features = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"])
-                targets = np.array(["log10_nu", "log10_Eabs", "tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"])
-
-                fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
-
-                for i, key1 in enumerate(columns):
-                    for j, key2 in enumerate(columns):
-                        if key1 == key2:
-                            ax[i,j].hist(self.df[key1], bins=50, histtype='step', density=True)
-                            if key1 in targets:
-                                ax[i,j].hist(y_true.numpy()[:,np.where(targets == key1)[0][0]], bins=50, histtype='step', density=True)
-                        elif i > j:
-                            ax[i,j].scatter(self.df[key2], self.df[key1], marker='.', s=0.1)
-
-                            if key1 in targets or key2 in targets:
-                                if key2 in targets:
-                                    x = y_true.numpy()[:,np.where(targets == key2)[0][0]]
-                                else:
-                                    x = X_test.numpy()[:,np.where(features == key2)[0][0]]
-
-                                if key1 in targets:
-                                    y = y_true.numpy()[:,np.where(targets == key1)[0][0]]
-                                else:
-                                    y = X_test.numpy()[:,np.where(features == key1)[0][0]]
-
-                                ax[i,j].scatter(x, y, marker='.', s=0.1)
-                        elif i < j:
-                            ax[i,j].set_axis_off()
-
-                plt.show()
-
     def random_nu(self, photon_list, subset=None):
         temperature = wp.to_torch(photon_list.temperature)
         if subset is not None:
@@ -367,7 +255,193 @@ class Dust(pl.LightningDataModule):
 
         return 10.**vals[:,0], 10.**vals[:,1], vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
-    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None):
+    def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
+        all_layers = [nn.Flatten()]
+
+        for hidden_unit in hidden_units:
+            layer = nn.Linear(input_size, hidden_unit)
+            all_layers.append(layer)
+            all_layers.append(nn.Sigmoid())
+            input_size = hidden_unit
+
+        all_layers.append(nn.Linear(hidden_units[-1], output_size))
+
+        if model == "random_nu":
+            self.random_nu_model = nn.Sequential(*all_layers)
+        elif model == "ml_step":
+            self.ml_step_model = nn.Sequential(*all_layers)
+
+    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False, 
+            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None):
+        """
+        Learn a model for either the random_nu function or the ml_step function.
+        
+        Parameters
+        ----------
+        model : str
+            The model to learn. Either "random_nu" or "ml_step".
+        nsamples : int
+            The total number of samples to generate for the learning process (including validation and testing)
+        test_split : float
+            The fraction of the samples to use for testing.
+        valid_split : float
+            The fraction of the remaining samples (after testing) to use for validation.
+        hidden_units : tuple
+            The number of hidden units in each layer of the neural network.
+        max_epochs : int
+            The maximum number of epochs to train the model.
+        plot : bool
+            Whether to plot the results after training.
+        """
+        self.nsamples = nsamples
+        self.test_split = test_split
+        self.valid_split = valid_split
+        self.learning = model
+
+        # Set up the NN
+
+        if model == "random_nu":
+            input_size, output_size = 2, 1
+        elif model == "ml_step":
+            input_size, output_size = 12, 9
+
+            if nu_range is None:
+                nu_range = (self.nu.value.min(), self.nu.value.max())
+
+            self.log10_nu0_min = nu_range[0]
+            self.log10_nu0_max = nu_range[1]
+            self.log10_T_min = temperature_range[0]
+            self.log10_T_max = temperature_range[1]
+            self.log10_tau_cell_nu0_min = tau_range[0]
+            self.log10_tau_cell_nu0_max = tau_range[1]
+
+        self.initialize_model(model=model, input_size=input_size, output_size=output_size, hidden_units=hidden_units)
+
+        # Wrap the model in lightning
+
+        self.dustLM = DustLightningModule(getattr(self, model+"_model"))
+
+        self.trainer = pl.Trainer(max_epochs=max_epochs)
+        self.trainer.fit(model=self.dustLM, datamodule=self)
+
+        # Test the model.
+
+        self.trainer.test(model=self.dustLM, datamodule=self)
+
+        # Plot the result
+
+        if plot:
+            import matplotlib.pyplot as plt
+
+            if model == "random_nu":
+                y_pred = trainer.predict(dustLM, datamodule=self)
+                y_pred = torch.cat(y_pred)
+                y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
+
+                with torch.no_grad():
+                    count, bins, patches = plt.hist(y_true, 100, histtype='step')
+                    plt.hist(y_pred, bins, histtype='step')
+                    plt.savefig("predicted_vs_actual.png")
+            else:
+                self.plot_ml_step()
+
+    def prepare_data(self):
+        if self.learning == "random_nu":
+            self.prepare_data_random_nu()
+        elif self.learning == "ml_step":
+            self.prepare_data_ml_step()
+
+    def prepare_data_random_nu(self):
+        sampler = scipy.stats.qmc.LatinHypercube(d=2)
+        samples = sampler.random(self.nsamples)
+
+        logT = 5*samples[:,0] - 1.
+        ksi = samples[:,1]
+        X = torch.tensor(np.vstack((logT, ksi)).T, dtype=torch.float32)
+
+        y = np.concatenate([self.random_nu_manual(10.**X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch in DataLoader(X, batch_size=1000)])
+        y = torch.tensor(np.log10(y.value), dtype=torch.float32)
+
+        self.dataset = TensorDataset(X, y)
+
+    def prepare_data_ml_step(self, device='cpu'):
+        if hasattr(self, "dataset"):
+            return
+
+        if os.path.exists("sim_results.csv"):
+            df = pd.read_csv("sim_results.csv", index_col=0)
+
+            self.log10_nu0_min = df['log10_nu0'].min()
+            self.log10_nu0_max = df['log10_nu0'].max()
+            self.log10_T_min = df['log10_T'].min()
+            self.log10_T_max = df['log10_T'].max()
+            self.log10_tau_cell_nu0_min = df['log10_tau_cell_nu0'].min()
+            self.log10_tau_cell_nu0_max = df['log10_tau_cell_nu0'].max()
+        else:
+            df = self.run_dust_simulation(nphotons=self.nsamples, tau_range=(self.log10_tau_cell_nu0_min, self.log10_tau_cell_nu0_max),
+                    temperature_range=(self.log10_T_min, self.log10_T_max), nu_range=(self.log10_nu0_min, self.log10_nu0_max))
+            df.to_csv("sim_results.csv")
+
+        self.df = df
+        self.nsamples = len(df)
+
+        new_order = df.columns[[0, 1, 2, 3, 4, 9, 10, 11, 8, 6, 7, 5]]
+
+        df = df.loc[:, new_order]
+
+        dependencies = {
+            "log10_nu":["log10_nu0", "log10_T", "log10_tau_cell_nu0"],
+            "log10_Eabs":["log10_nu0", "log10_T", "log10_tau_cell_nu0", "log10_nu"],
+            "direction_yaw":["log10_nu0", "log10_T", "log10_tau_cell_nu0","log10_nu", "log10_Eabs"],
+            "direction_pitch":["log10_nu0", "log10_T", "log10_nu", "log10_Eabs"],
+            "direction_roll":["log10_nu0", "log10_T", "log10_tau_cell_nu0", "log10_nu", "log10_Eabs"],
+            "roll":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll"],
+            "yaw":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
+            "pitch":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
+            "tau":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll", "pitch"],
+        }
+
+        new_columns = []
+        for i in trange(3,df.shape[1]):
+            column = df.columns[i]
+
+            bw = len(df)**(-1./(len(dependencies[column])+1 + 4))
+
+            kde = FFTKDE(bw=bw, kernel="gaussian")
+            kde.fit(df[dependencies[column] + [column]].values)
+
+            Ndim = len(dependencies[column]) + 1
+            N = min(100, round((0.1*psutil.virtual_memory().available / 8 / Ndim )**(1./Ndim)))
+            shape = (N,)*Ndim
+
+            result = kde.evaluate(shape)
+
+            cdf = np.cumsum(result[1].reshape(shape), axis=-1)
+
+            slices = (slice(None),) * len(dependencies[column])
+            cdf /= cdf[slices + (-1,)][slices + (np.newaxis,)]
+
+            dims = cdf.shape
+            starts = result[0].min(axis=0)
+            steps = np.array([np.unique(result[0][:,j])[1] - np.unique(result[0][:,j])[0] for j in range(result[0].shape[1])])
+
+            cdf_interp = interpn.MultilinearRegular.new(dims, starts, steps, cdf)
+            ksi = cdf_interp.eval(df.loc[:, dependencies[column] + [column]].values.T)
+
+            new_columns.append(("ksi_"+column, ksi))
+
+        for name, values in new_columns:
+            df[name] = values
+
+        features = ["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"]
+        targets = ["log10_nu", "log10_Eabs", "tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
+
+        X = torch.tensor(df.loc[:, features].values, dtype=torch.float32)
+        y = torch.tensor(df.loc[:, targets].values, dtype=torch.float32)
+
+        self.dataset = TensorDataset(X, y)
+
+    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, use_ml_step=False):
         """
         Run a dust simulation that can be used to learn an ML-step model with the given parameters.
 
@@ -415,7 +489,7 @@ class Dust(pl.LightningDataModule):
         tau = 10.**np.random.uniform(tau_range[0], tau_range[1], nphotons)
         photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.frequency.numpy()*u.GHz) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
-        grid.propagate_photons(photon_list, learning=True, use_ml_step=False)
+        grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step)
 
         # Calculate roll, pitch, and yaw for the position relative to where it started.
 
@@ -453,74 +527,54 @@ class Dust(pl.LightningDataModule):
 
     # DataModule functions
 
-    def prepare_data_random_nu(self):
-        sampler = scipy.stats.qmc.LatinHypercube(d=2)
-        samples = sampler.random(self.nsamples)
+    def plot_ml_step(self):
+        import matplotlib.pyplot as plt
 
-        logT = 5*samples[:,0] - 1.
-        ksi = samples[:,1]
-        X = torch.tensor(np.vstack((logT, ksi)).T, dtype=torch.float32)
+        if self.trainer is not None:
+            y_pred = self.trainer.predict(self.dustLM, datamodule=self)
+            y_pred = torch.cat(y_pred).numpy()
+            y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
 
-        y = np.concatenate([self.random_nu_manual(10.**X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch in DataLoader(X, batch_size=1000)])
-        y = torch.tensor(np.log10(y.value), dtype=torch.float32)
+            X_test = torch.cat([batch[0] for batch in self.predict_dataloader()]).numpy()
 
-        self.dataset = TensorDataset(X, y)
+            predict = True
 
-    def prepare_data_ml_step(self, device='cpu'):
-        if hasattr(self, "dataset"):
-            return
+        columns = self.df.columns
+        features = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"])
+        targets = np.array(["log10_nu", "log10_Eabs", "tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"])
 
-        if os.path.exists("sim_results.csv"):
-            df = pd.read_csv("sim_results.csv", index_col=0)
-        else:
-            df = self.run_dust_simulation(nphotons=self.nsamples)
-            df.to_csv("sim_results.csv")
+        fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
 
-        self.df = df
-        self.nsamples = len(df)
+        for i, key1 in enumerate(columns):
+            for j, key2 in enumerate(columns):
+                if key1 == key2:
+                    ax[i,j].hist(self.df[key1], bins=50, histtype='step', density=True)
+                    if key1 in targets and predict:
+                        ax[i,j].hist(y_pred[:,np.where(targets == key1)[0][0]], bins=50, histtype='step', density=True)
+                elif i > j:
+                    ax[i,j].scatter(self.df[key2], self.df[key1], marker='.', s=0.025)
 
-        base_features = ["log10_nu0", "log10_T", "log10_tau_cell_nu0"]
+                    if (key1 in targets or key2 in targets) and predict:
+                        if key2 in targets:
+                            x = y_pred[:,np.where(targets == key2)[0][0]]
+                        else:
+                            x = X_test[:,np.where(features == key2)[0][0]]
 
-        new_columns = []
-        for j in range(3,df.shape[1]):
-            ksi = []
+                        if key1 in targets:
+                            y = y_pred[:,np.where(targets == key1)[0][0]]
+                        else:
+                            y = X_test[:,np.where(features == key1)[0][0]]
 
-            column = df.columns[j]
+                        ax[i,j].scatter(x, y, marker='.', s=0.025)
+                elif i < j:
+                    ax[i,j].set_axis_off()
 
-            kde = KernelDensity(kernel="gaussian", bandwidth="scott").fit(torch.tensor(df.loc[:, base_features + [column]].values, device=device, dtype=torch.float32))
-            x = torch.linspace(df.loc[:, column].values.min(), df.loc[:, column].values.max(), 100, device=device, dtype=torch.float32)
+                if i == len(columns) - 1:
+                    ax[i,j].set_xlabel(key2)
 
-            for i in trange(df.shape[0]):
-                X = torch.transpose(torch.vstack(tuple(torch.repeat_interleave(torch.tensor(df.loc[i, col], dtype=torch.float32), torch.tensor([100])).to(device) for col in base_features) + (x,)), 0, 1)
+            ax[i,0].set_ylabel(key1)
 
-                log_pdf = kde.score_samples(X, batch_size=100)
-
-                cdf = np.cumsum(np.exp(log_pdf.numpy()))
-                cdf /= cdf.max()
-
-                interp = scipy.interpolate.interp1d(x, cdf, kind='cubic')
-                ksi.append(float(interp(df.loc[i, column])))
-
-            new_columns.append(("ksi_"+column, ksi))
-
-            base_features.append(column)
-
-        for name, values in new_columns:
-            df[name] = values
-
-        features = ["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"]
-        targets = ["log10_nu", "log10_Eabs", "tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
-
-        X = torch.tensor(df.loc[:, features].values, dtype=torch.float32)
-        y = torch.tensor(df.loc[:, targets].values, dtype=torch.float32)
-
-        self.dataset = TensorDataset(X, y)
-
-    def prepare_data(self):
-        if self.learning == "random_nu":
-            self.prepare_data_random_nu()
-        elif self.learning == "ml_step":
-            self.prepare_data_ml_step()
+        plt.show()
 
     def setup(self, stage=None):
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
@@ -557,6 +611,13 @@ class Dust(pl.LightningDataModule):
 
         if hasattr(self, "ml_step_model"):
             state_dict["ml_step_state_dict"] = self.ml_step_model.state_dict()
+
+            state_dict["log10_nu0_min"] = self.log10_nu0_min
+            state_dict["log10_nu0_max"] = self.log10_nu0_max
+            state_dict["log10_T_min"] = self.log10_T_min
+            state_dict["log10_T_max"] = self.log10_T_max
+            state_dict["log10_tau_cell_nu0_min"] = self.log10_tau_cell_nu0_min
+            state_dict["log10_tau_cell_nu0_max"] = self.log10_tau_cell_nu0_max
 
     def save(self, filename):
         torch.save(self.state_dict(), filename)
@@ -597,6 +658,15 @@ def load(filename, device="cpu"):
 
         d.ml_step_model.load_state_dict(state_dict['ml_step_state_dict'])
 
+        """
+        d.log10_nu0_min = state_dict["log10_nu0_min"]
+        d.log10_nu0_max = state_dict["log10_nu0_max"]
+        d.log10_T_min = state_dict["log10_T_min"]
+        d.log10_T_max = state_dict["log10_T_max"]
+        d.log10_tau_cell_nu0_min = state_dict["log10_tau_cell_nu0_min"]
+        d.log10_tau_cell_nu0_max = state_dict["log10_tau_cell_nu0_max"]
+        """
+
     return d
 
 
@@ -611,19 +681,25 @@ class DustLightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        loss = nn.functional.mse_loss(self(x), y.reshape(-1,1))
+        if y.dim() == 1:
+            y = y.reshape(-1,1)
+        loss = nn.functional.mse_loss(self(x), y)
         self.log('train_loss', loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        loss = nn.functional.mse_loss(self(x), y.reshape(-1,1))
+        if y.dim() == 1:
+            y = y.reshape(-1,1)
+        loss = nn.functional.mse_loss(self(x), y)
         self.log('valid_loss', loss, prog_bar=True)
         return loss
 
     def test_step(self, batch, batch_idx):
         x, y = batch
-        loss = nn.functional.mse_loss(self(x), y.reshape(-1,1))
+        if y.dim() == 1:
+            y = y.reshape(-1,1)
+        loss = nn.functional.mse_loss(self(x), y)
         self.log('test_loss', loss, prog_bar=True)
         return loss
 

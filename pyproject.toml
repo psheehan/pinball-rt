@@ -23,7 +23,6 @@ dependencies = [
   "scipy",
   "tqdm",
   "xarray",
-  "torch-kde",
   "PyMieScatt @ git+https://github.com/bsumlin/PyMieScatt.git",
 ]
 
