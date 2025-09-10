@@ -33,6 +33,8 @@ class GridStruct:
     density: wp.array3d(dtype=float)
     temperature: wp.array3d(dtype=float)
     energy: wp.array3d(dtype=float)
+    amax: wp.array3d(dtype=float)
+    p: wp.array3d(dtype=float)
 
 class Grid:
     def __init__(self, _w1, _w2, _w3, device='cpu'):
@@ -48,13 +50,28 @@ class Grid:
 
             self.shape = (self.grid.n1, self.grid.n2, self.grid.n3)
 
-    def add_density(self, _density, dust):
+    def add_density(self, _density, dust, amax=1.0, p=3.5):
         with wp.ScopedDevice(self.device):
             self.grid.density = wp.array3d((_density*dust.kmean).to(1./self.distance_unit).value, dtype=float)
 
             self.grid.energy = wp.zeros(_density.shape, dtype=float)
             self.grid.temperature = wp.array3d(np.ones(_density.shape)*0.1, dtype=float)
             self.mass = (_density * self.volume.cpu().numpy() * self.distance_unit**3).decompose()
+
+            if isinstance(amax, (int, float)):
+                self.grid.amax = wp.array3d(np.ones(_density.shape)*amax, dtype=float)
+            elif isinstance(amax, np.ndarray):
+                self.grid.amax = wp.array3d(amax, dtype=float)
+            elif isinstance(amax, u.Quantity):
+                if len(amax.shape) == 0:
+                    self.grid.amax = wp.array3d(np.ones(_density.shape)*amax.to(u.um).value, dtype=float)
+                else:
+                    self.grid.amax = wp.array3d(amax.to(u.um).value, dtype=float)
+
+            if isinstance(p, (int, float)):
+                self.grid.p = wp.array3d(np.ones(_density.shape)*p, dtype=float)
+            elif isinstance(p, np.ndarray):
+                self.grid.p = wp.array3d(p, dtype=float)
 
             self.dust = dust
 
@@ -227,16 +244,17 @@ class Grid:
 
     @wp.kernel
     def photon_cell_properties(photon_list: PhotonList,
-                           temperature: wp.array3d(dtype=float),
-                           density: wp.array3d(dtype=float),
+                           grid: GridStruct,
                            iphotons: wp.array(dtype=int)):
         itemp = wp.tid()
         ip = iphotons[itemp]
 
         ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
 
-        photon_list.temperature[ip] = temperature[ix, iy, iz]
-        photon_list.density[ip] = density[ix, iy, iz]
+        photon_list.temperature[ip] = grid.temperature[ix, iy, iz]
+        photon_list.density[ip] = grid.density[ix, iy, iz]
+        photon_list.amax[ip] = grid.amax[ix, iy, iz]
+        photon_list.p[ip] = grid.p[ix, iy, iz]
 
     @wp.kernel
     def update_frequency(photon_list: PhotonList,
@@ -307,13 +325,13 @@ class Grid:
         photon_temperature_time = t2 - t1
 
         if not scattering and nabsorb > 0:
-            new_frequency = self.dust.random_nu(wp.to_torch(photon_list.temperature)[absorb])
+            new_frequency = self.dust.random_nu(photon_list, subset=absorb)
 
         t1 = time.time()
         if not scattering and nabsorb > 0:
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
-                      inputs=[photon_list, new_frequency, self.dust.interpolate_kabs_wp(new_frequency), self.dust.interpolate_ksca_wp(new_frequency), iabsorb])
+                      inputs=[photon_list, new_frequency, self.dust.interpolate_kabs_wp(photon_list, iabsorb, new_frequency), self.dust.interpolate_ksca_wp(photon_list, iabsorb, new_frequency), iabsorb])
         t2 = time.time()
         dust_interpolation_time = t2 - t1
     
@@ -331,7 +349,7 @@ class Grid:
         if not learning:
             wp.launch(kernel=self.photon_cell_properties,
                       dim=(interact.sum(),),
-                      inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons])
+                      inputs=[photon_list, self.grid, iphotons])
 
         return photon_temperature_time, dust_interpolation_time, photon_loc_time
 
@@ -347,7 +365,7 @@ class Grid:
                 old_temperature = temperature.copy()
 
                 t1 = time.time()
-                planck_mean_opacity = self.dust.planck_mean_opacity(old_temperature)
+                planck_mean_opacity = self.dust.planck_mean_opacity(old_temperature, self.grid)
                 t2 = time.time()
                 pmo_time += t2 - t1
 
@@ -440,8 +458,8 @@ class Grid:
 
         wp.launch(kernel=self.update_frequency,
                   dim=(iphotons.size,),
-                  inputs=[photon_list, frequency, self.dust.interpolate_kabs(frequency*u.GHz).astype(np.float32), self.dust.interpolate_ksca(frequency*u.GHz).astype(np.float32), iphotons])
-        
+                  inputs=[photon_list, frequency, self.dust.interpolate_kabs_wp(photon_list, iphotons, frequency), self.dust.interpolate_ksca_wp(photon_list, iphotons, frequency), iphotons])
+
         wp.launch(kernel=self.ml_rotate_direction,
                   dim=(iphotons.size,),
                   inputs=[photon_list, yaw, pitch, roll, iphotons])
@@ -483,8 +501,8 @@ class Grid:
             ml_step_time = 0.
 
             t1 = time.time()
-            photon_list.kabs = self.dust.interpolate_kabs_wp(photon_list.frequency)
-            photon_list.ksca = self.dust.interpolate_ksca_wp(photon_list.frequency)
+            photon_list.kabs = self.dust.interpolate_kabs_wp(photon_list, iphotons)
+            photon_list.ksca = self.dust.interpolate_ksca_wp(photon_list, iphotons)
             photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
@@ -585,7 +603,7 @@ class Grid:
                 if not learning:
                     wp.launch(kernel=self.photon_cell_properties,
                               dim=(nphotons,),
-                              inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons])
+                              inputs=[photon_list, self.grid, iphotons])
 
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
@@ -652,8 +670,8 @@ class Grid:
             absorb_time = 0.
 
             t1 = time.time()
-            photon_list.kabs = wp.array(self.dust.interpolate_kabs_wp(photon_list.frequency), dtype=float)
-            photon_list.ksca = wp.array(self.dust.interpolate_ksca_wp(photon_list.frequency), dtype=float)
+            photon_list.kabs = self.dust.interpolate_kabs_wp(photon_list, iphotons)
+            photon_list.ksca = self.dust.interpolate_ksca_wp(photon_list, iphotons)
             photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
@@ -707,7 +725,7 @@ class Grid:
 
                 wp.launch(kernel=self.photon_cell_properties,
                       dim=(nphotons,),
-                      inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons])
+                      inputs=[photon_list, self.grid, iphotons])
 
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
@@ -776,10 +794,10 @@ class Grid:
         alpha_ext = 0.
         alpha_sca = 0.
 
-        tau_cell = tau_cell + s[ir]*ray_list.kext[inu]*grid.density[ix,iy,iz]
-        alpha_ext = alpha_ext + ray_list.kext[inu]*grid.density[ix,iy,iz]
-        alpha_sca = alpha_sca + ray_list.kext[inu]*ray_list.albedo[inu]*grid.density[ix,iy,iz]
-        intensity_abs = intensity_abs + ray_list.kext[inu] * (1. - ray_list.albedo[inu]) * \
+        tau_cell = tau_cell + s[ir]*ray_list.kext[iray,inu]*grid.density[ix,iy,iz]
+        alpha_ext = alpha_ext + ray_list.kext[iray,inu]*grid.density[ix,iy,iz]
+        alpha_sca = alpha_sca + ray_list.kext[iray,inu]*ray_list.ray_albedo[iray,inu]*grid.density[ix,iy,iz]
+        intensity_abs = intensity_abs + ray_list.kext[iray,inu] * (1. - ray_list.ray_albedo[iray,inu]) * \
                 grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu] / 1e9, grid.temperature[ix,iy,iz])
 
         albedo_total = alpha_sca / alpha_ext
@@ -804,7 +822,7 @@ class Grid:
 
         ix, iy, iz = ray_list.indices[ir][0], ray_list.indices[ir][1], ray_list.indices[ir][2]
 
-        ray_list.intensity[ir, inu] = ray_list.intensity[ir, inu] * wp.exp(-s[ir] * ray_list.kext[inu] * grid.density[ix, iy, iz])
+        ray_list.intensity[ir, inu] = ray_list.intensity[ir, inu] * wp.exp(-s[ir] * ray_list.kext[ir, inu] * grid.density[ix, iy, iz])
 
     def propagate_rays(self, ray_list: PhotonList, frequency, pixel_size):
         with wp.ScopedDevice(self.device):
@@ -814,10 +832,10 @@ class Grid:
             nnu = frequency.size
             ray_list.in_grid = wp.zeros(nrays, dtype=bool)
 
-            ray_list.kext = wp.array(self.dust.interpolate_kext(frequency*u.GHz), dtype=float)
-            ray_list.albedo = wp.array(self.dust.interpolate_albedo(frequency*u.GHz), dtype=float)
-
             ray_list.frequency = wp.array(frequency, dtype=float)
+
+            ray_list.kext = self.dust.interpolate_kext_wp(ray_list, iray)
+            ray_list.ray_albedo = self.dust.interpolate_albedo_wp(ray_list, iray)
 
             s = wp.zeros(nrays, dtype=float)
 
@@ -849,6 +867,9 @@ class Grid:
                 iray = iray_original[torch.logical_and(wp.to_torch(ray_list.in_grid), torch.logical_not(wp.to_torch(ray_list.pixel_too_large)))]
                 nrays = iray.size(0)
 
+                ray_list.kext = self.dust.interpolate_kext_wp(ray_list, iray)
+                ray_list.ray_albedo = self.dust.interpolate_albedo_wp(ray_list, iray)
+
     def propagate_rays_from_source(self, ray_list: PhotonList, frequency):
         with wp.ScopedDevice(self.device):
             nrays = ray_list.position.numpy().shape[0]
@@ -856,11 +877,11 @@ class Grid:
             iray_original = iray.clone()
             nnu = frequency.size
             ray_list.in_grid = wp.zeros(nrays, dtype=bool)
-    
-            ray_list.kext = wp.array(self.dust.interpolate_kext(frequency*u.GHz), dtype=float)
-            ray_list.albedo = wp.array(self.dust.interpolate_albedo(frequency*u.GHz), dtype=float)
-    
+
             ray_list.frequency = wp.array(frequency, dtype=float)
+    
+            ray_list.kext = self.dust.interpolate_kext_wp(ray_list, iray)
+            ray_list.ray_albedo = self.dust.interpolate_albedo_wp(ray_list, iray)
     
             s = wp.zeros(nrays, dtype=float)
             
@@ -927,11 +948,13 @@ class UniformCartesianGrid(Grid):
 
             photon_list.density = wp.zeros(nphotons, dtype=float)
             photon_list.temperature = wp.zeros(nphotons, dtype=float)
+            photon_list.amax = wp.zeros(nphotons, dtype=float)
+            photon_list.p = wp.zeros(nphotons, dtype=float)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
                           dim=(nphotons,),
-                          inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons])
+                          inputs=[photon_list, self.grid, iphotons])
 
         return photon_list
 
@@ -1226,11 +1249,13 @@ class UniformSphericalGrid(Grid):
 
             photon_list.density = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.amax = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.p = wp.array(np.zeros(nphotons), dtype=float)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
                           dim=(nphotons,),
-                          inputs=[photon_list, self.grid.temperature, self.grid.density, iphotons])
+                          inputs=[photon_list, self.grid, iphotons])
 
         return photon_list
 

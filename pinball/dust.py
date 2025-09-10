@@ -2,7 +2,7 @@ import urllib
 import requests
 from .sources import Star
 from .grids import UniformSphericalGrid
-from .utils import log_uniform_interp
+from .utils import log_uniform_interp, log_uniform_interp_extra_dim
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
@@ -141,21 +141,43 @@ class Dust(pl.LightningDataModule):
     def interpolate_ksca(self, nu):
         return np.interp(nu, self.nu, self.ksca)
 
-    def interpolate_kabs_wp(self, nu):
-        kabs = wp.zeros(len(nu), dtype=float)
-        wp.launch(log_uniform_interp, dim=len(nu,), inputs=[nu, self.nu_wp, self.kabs_wp, kabs])
+    def interpolate_kabs_wp(self, photon_list, iphotons, frequency=None):
+        if frequency is None:
+            frequency = photon_list.frequency
+
+        kabs = wp.zeros(len(frequency), dtype=float)
+        wp.launch(log_uniform_interp, dim=len(frequency), inputs=[frequency, self.nu_wp, self.kabs_wp, kabs])
         return kabs
-    
-    def interpolate_ksca_wp(self, nu):
-        ksca = wp.zeros(len(nu), dtype=float)
-        wp.launch(log_uniform_interp, dim=len(nu,), inputs=[nu, self.nu_wp, self.ksca_wp, ksca])
+
+    def interpolate_ksca_wp(self, photon_list, iphotons, frequency=None):
+        if frequency is None:
+            frequency = photon_list.frequency
+
+        ksca = wp.zeros(len(frequency), dtype=float)
+        wp.launch(log_uniform_interp, dim=len(frequency), inputs=[frequency, self.nu_wp, self.ksca_wp, ksca])
         return ksca
 
     def interpolate_kext(self, nu):
         return np.interp(nu, self.nu, self.kext)
+    
+    def interpolate_kext_wp(self, photon_list, iphotons, frequency=None):
+        if frequency is None:
+            frequency = photon_list.frequency
+
+        kext = wp.zeros((len(photon_list.in_grid), len(frequency)), dtype=float)
+        wp.launch(log_uniform_interp_extra_dim, dim=(len(photon_list.in_grid), len(frequency)), inputs=[frequency, self.nu_wp, self.kext_wp, kext])
+        return kext
 
     def interpolate_albedo(self, nu):
         return np.interp(nu, self.nu, self.albedo)
+
+    def interpolate_albedo_wp(self, photon_list, iphotons, frequency=None):
+        if frequency is None:
+            frequency = photon_list.frequency
+
+        albedo = wp.zeros((len(photon_list.in_grid), len(frequency)), dtype=float)
+        wp.launch(log_uniform_interp_extra_dim, dim=(len(photon_list.in_grid), len(frequency)), inputs=[frequency, self.nu_wp, self.albedo_wp, albedo])
+        return albedo
 
     def absorb(self, temperature):
         nphotons = frequency.numpy().size
@@ -302,7 +324,11 @@ class Dust(pl.LightningDataModule):
 
                 plt.show()
 
-    def random_nu(self, temperature):
+    def random_nu(self, photon_list, subset=None):
+        temperature = wp.to_torch(photon_list.temperature)
+        if subset is not None:
+            temperature = temperature[subset]
+            
         nphotons = temperature.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
 
@@ -312,7 +338,7 @@ class Dust(pl.LightningDataModule):
 
         return nu
 
-    def planck_mean_opacity(self, temperature):
+    def planck_mean_opacity(self, temperature, grid):
         """
         vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
                 models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))

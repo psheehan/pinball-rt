@@ -18,8 +18,11 @@ class PhotonList:
     kabs: wp.array(dtype=float)
     ksca: wp.array(dtype=float)
     albedo: wp.array(dtype=float)
-    kext: wp.array(dtype=float)
+    kext: wp.array2d(dtype=float)
+    ray_albedo: wp.array2d(dtype=float)
     absorb: wp.array(dtype=bool)
+    amax: wp.array(dtype=float)
+    p: wp.array(dtype=float)
 
     tau: wp.array(dtype=float)
     total_tau_abs: wp.array(dtype=float)

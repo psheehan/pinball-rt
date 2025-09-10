@@ -44,3 +44,16 @@ def log_uniform_interp(x: wp.array(dtype=float),
 
     f[ip] = (x[ip] - xp[index]) * (fp[index+1] - fp[index]) / \
         (xp[index+1] - xp[index]) + fp[index]
+    
+@wp.kernel
+def log_uniform_interp_extra_dim(x: wp.array(dtype=float),
+                                 xp: wp.array(dtype=float),
+                                 fp: wp.array(dtype=float),
+                                 f: wp.array2d(dtype=float)):
+     
+    ip, inu = wp.tid()
+
+    index = int((wp.log10(x[inu]) - wp.log10(xp[0])) / (wp.log10(xp[1]) - wp.log10(xp[0])))
+
+    f[ip, inu] = (x[inu] - xp[index]) * (fp[index+1] - fp[index]) / \
+        (xp[index+1] - xp[index]) + fp[index]
