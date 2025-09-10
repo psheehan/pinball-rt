@@ -12,7 +12,26 @@ import time
 
 class Model:
     def __init__(self, grid: Grid, ncells: int = 9, dx: u.Quantity = 1.0 * u.au, mirror: bool = False, ncores = 1, pool = SerialPool()):
-        """Initialize the Model with a grid and optional parameters."""
+        """
+        Initialize the Model with a grid and optional parameters.
+
+        Parameters
+        ----------
+        grid : Grid
+            The grid to use for the model.
+        ncells : int or list-like, optional
+            The number of cells in the grid. Can be specified either as an integer, in which case each dimension will 
+            have the same number of cells, or a 3 element tuple/list/array that specifies the number of cells separately 
+            for each dimension (default is 9).
+        dx : astropy.units.Quantity, optional
+            The cell size (default is 1.0 * u.au).
+        mirror : bool, optional
+            Whether to use a mirrored grid (default is False).
+        ncores : int, optional
+            The number of CPU cores to use (default is 1).
+        pool : schwimmbad.Pool, optional
+            The pool to use for parallel processing (default is SerialPool()).
+        """
         self.grid_list = {"cpu":[grid(ncells=ncells, dx=dx, device='cpu') for _ in range(ncores)]}
         if wp.get_cuda_device_count() > 0:
             self.grid_list["cuda"] = [grid(ncells=ncells, dx=dx, device=d) for d in wp.get_cuda_devices()]
@@ -32,18 +51,50 @@ class Model:
         self.pool = pool
 
     def add_density(self, density: u.Quantity, dust):
-        """Add density to the grid."""
+        """
+        Add density to the grid.
+        
+        Parameters
+        ----------
+        density : astropy.units.Quantity
+            The density to add to the grid.
+        dust : Dust
+            The dust distribution to use.
+        """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
                 grid.add_density(density, load(dust) if isinstance(dust, str) else dust)
 
     def add_star(self, star):
-        """Add a star to the grid."""
+        """
+        Add a star to the grid.
+
+        Parameters
+        ----------
+        star : Star
+            The star to add to the grid.
+        """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
                 grid.add_star(star)
 
     def thermal_mc(self, nphotons, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu"):
+        """
+        Perform a thermal Monte Carlo simulation.
+
+        Parameters
+        ----------
+        nphotons : int
+            The number of photons to simulate.
+        Qthresh : float, optional
+            The threshold for the quality factor (default is 2.0).
+        Delthresh : float, optional
+            The threshold for the temperature change (default is 1.1).
+        p : float, optional
+            The percentile to use for the temperature adjustment (default is 99.).
+        device : str, optional
+            The device to use for the simulation (default is "cpu").
+        """
         told = self.grid.grid.temperature.numpy().copy()
 
         count = 0
@@ -91,6 +142,18 @@ class Model:
             count += 1
 
     def scattering_mc(self, nphotons, wavelengths, device="cpu"):
+        """
+        Perform a scattering Monte Carlo simulation.
+
+        Parameters
+        ----------
+        nphotons : int
+            The number of photons to simulate.
+        wavelengths : array-like
+            The wavelengths to simulate.
+        device : str, optional
+            The device to use for the simulation (default is "cpu").
+        """
         for dev in self.grid_list:
             for grid in self.grid_list[dev]:
                 with wp.ScopedDevice(grid.device):
@@ -112,6 +175,28 @@ class Model:
                     grid.scattering[i] = total_scattering[i].clone().to(wp.device_to_torch(grid.device))
 
     def make_image(self, nx, ny, pixel_size, lam, incl, pa, dpc, device="cpu"):
+        """
+        Create an image from the dust distribution.
+
+        Parameters
+        ----------
+        nx : int
+            The number of pixels in the x direction.
+        ny : int
+            The number of pixels in the y direction.
+        pixel_size : float
+            The size of each pixel in the image.
+        lam : array-like
+            The wavelengths to simulate.
+        incl : float
+            The inclination angle of the image.
+        pa : float
+            The position angle of the image.
+        dpc : float
+            The distance to the image plane in parsecs.
+        device : str, optional
+            The device to use for the simulation (default is "cpu").
+        """
         # First, run a scattering simulation to get the scattering phase function
 
         self.scattering_mc(100000, lam, device=device)

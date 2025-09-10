@@ -1,7 +1,7 @@
-from pinball.dust import load
-from pinball.sources import Star
-from pinball.grids import UniformCartesianGrid, UniformSphericalGrid
-from pinball.model import Model
+from pinballrt.dust import load
+from pinballrt.sources import Star
+from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid
+from pinballrt.model import Model
 
 import astropy.units as u
 import matplotlib.pyplot as plt
