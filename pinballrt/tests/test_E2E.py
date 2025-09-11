@@ -30,7 +30,7 @@ def test_UniformCartesian_E2E(return_vals=False):
     model.add_density(density, d)
     model.add_star(star)
 
-    model.thermal_mc(nphotons=1000000)
+    model.thermal_mc(nphotons=1000000, use_ml_step=True)
 
     image = model.make_image(256, 256, 0.1, np.array([1., 1000.])*u.micron, 45., 45., 1.)
 

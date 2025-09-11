@@ -398,14 +398,21 @@ class Grid:
                           s1: wp.array(dtype=float),
                           s2: wp.array(dtype=float),
                           s3: wp.array(dtype=float),
-                          iphotons: wp.array(dtype=int)):
+                          iphotons: wp.array(dtype=int),
+                          log10_nu_min: float,
+                          log10_nu_max: float,
+                          log10_T_min: float,
+                          log10_T_max: float):
         """
         Check if the photon should do a modified random walk step.
         """
         ip = iphotons[wp.tid()]
 
         photon_list.do_ml_step[ip] = photon_list.in_grid[ip] and \
-                                        s3[ip] * photon_list.kabs[ip] * photon_list.density[ip] > 10.**0.5 and \
+                                        photon_list.frequency[ip] >= 10.**log10_nu_min and \
+                                        photon_list.frequency[ip] <= 10.**log10_nu_max and \
+                                        photon_list.temperature[ip] >= 10.**log10_T_min and \
+                                        photon_list.temperature[ip] <= 10.**log10_T_max and \
                                         s2[ip] < s1[ip] and \
                                         s3[ip] > s2[ip]
 
@@ -450,22 +457,24 @@ class Grid:
         """
         Perform the "modified" random walk step for the photons.
         """
+        nphotons = iphotons.size(0)
+
         frequency, deposited_energy, tau, yaw, pitch, roll, direction_yaw, direction_pitch, direction_roll = self.dust.ml_step(photon_list, s, iphotons)
 
         wp.launch(kernel=self.ml_deposited_energy,
-                  dim=(iphotons.size,),
+                  dim=(nphotons,),
                   inputs=[photon_list, deposited_energy, iphotons])
 
         wp.launch(kernel=self.update_frequency,
-                  dim=(iphotons.size,),
+                  dim=(nphotons,),
                   inputs=[photon_list, frequency, self.dust.interpolate_kabs_wp(photon_list, iphotons, frequency), self.dust.interpolate_ksca_wp(photon_list, iphotons, frequency), iphotons])
 
         wp.launch(kernel=self.ml_rotate_direction,
-                  dim=(iphotons.size,),
+                  dim=(nphotons,),
                   inputs=[photon_list, yaw, pitch, roll, iphotons])
 
         wp.launch(kernel=self.ml_new_tau,
-                  dim=(iphotons.size,),
+                  dim=(nphotons,),
                   inputs=[photon_list, tau, s, iphotons])
         
         return direction_yaw, direction_pitch, direction_roll
@@ -534,7 +543,7 @@ class Grid:
                     t1 = time.time()
                     wp.launch(kernel=self.minimum_wall_distance,
                               dim=(nphotons,),
-                              inputs=[photon_list, self.grid, s3, iphotons])
+                              inputs=[photon_list, self.grid, s3, iphotons, self.dust.log10_tau_cell_nu0_min, self.dust.log10_tau_cell_nu0_max])
                     t2 = time.time()
                     minimum_wall_distance_time += t2 - t1
 
@@ -543,9 +552,9 @@ class Grid:
                     t1 = time.time()
                     wp.launch(kernel=self.check_do_ml_step,
                               dim=(nphotons,),
-                              inputs=[photon_list, s1, s2, s3, iphotons])
-                    s[photon_list.do_ml_step] = wp.to_torch(s3)[photon_list.do_ml_step]
-                    iml_photons = iphotons_original[photon_list.do_ml_step]
+                              inputs=[photon_list, s1, s2, s3, iphotons, self.dust.log10_nu0_min, self.dust.log10_nu0_max, self.dust.log10_T_min, self.dust.log10_T_max])
+                    s[wp.to_torch(photon_list.do_ml_step)] = wp.to_torch(s3)[wp.to_torch(photon_list.do_ml_step)]
+                    iml_photons = iphotons_original[wp.to_torch(photon_list.do_ml_step)]
                     t2 = time.time()
                     ml_step_time += t2 - t1
 
@@ -555,7 +564,7 @@ class Grid:
 
                 # Do the ml step here
 
-                if not learning and use_ml_step and iml_photons.size > 0:
+                if not learning and use_ml_step and iml_photons.size(0) > 0:
                     t1 = time.time()
                     yaw, pitch, roll = self.ml_step(photon_list, s, iml_photons)
                     t2 = time.time()
@@ -583,10 +592,10 @@ class Grid:
 
                 # Before we update the locations, we should rotate the direction vector of the ml photons to the new direction after the ml
 
-                if not learning and use_ml_step and iml_photons.size > 0:
+                if not learning and use_ml_step and iml_photons.size(0) > 0:
                     t1 = time.time()
                     wp.launch(kernel=self.ml_rotate_direction,
-                              dim=(iml_photons.size,),
+                              dim=(iml_photons.size(0),),
                               inputs=[photon_list, yaw, pitch, roll, iml_photons])
                     t2 = time.time()
                     ml_step_time += t2 - t1
@@ -604,7 +613,7 @@ class Grid:
                     wp.launch(kernel=self.photon_cell_properties,
                               dim=(nphotons,),
                               inputs=[photon_list, self.grid, iphotons])
-
+                    
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
                           dim=(nphotons,),
@@ -1006,7 +1015,9 @@ class UniformCartesianGrid(Grid):
     def minimum_wall_distance(photon_list: PhotonList,
                               grid: GridStruct,
                               distances: wp.array(dtype=float),
-                              iphotons: wp.array(dtype=int)):
+                              iphotons: wp.array(dtype=int),
+                              log10_tau_min: float,
+                              log10_tau_max: float):
         """
         Calculate the distance to the nearest wall in the grid for each photon.
         This is used to determine how far a photon can travel before hitting a wall.
@@ -1038,10 +1049,10 @@ class UniformCartesianGrid(Grid):
         if sz2 < s:
             s = sz2
 
-        if s * photon_list.kabs[ip] * grid.density[ix, iy, iz] < 3.0:
+        if s * photon_list.kabs[ip] * grid.density[ix, iy, iz] < 10.**log10_tau_min:
             s = 0.
 
-        max_tau_distance = 10. / photon_list.alpha[ip]
+        max_tau_distance = 10.**log10_tau_max / photon_list.alpha[ip]
 
         distances[ip] = wp.min(s, max_tau_distance)
 
@@ -1138,7 +1149,7 @@ class UniformCartesianGrid(Grid):
             i1 = 0
         else:
             i1 = wp.int(wp.floor((photon_list.position[ip][0] - grid.w1[0]) / (grid.w1[1] - grid.w1[0])))
-
+            
         if equal(photon_list.position[ip][0], grid.w1[i1], EPSILON):
             photon_list.position[ip][0] = grid.w1[i1]
         elif equal(photon_list.position[ip][0], grid.w1[i1+1], EPSILON):
@@ -1372,7 +1383,9 @@ class UniformSphericalGrid(Grid):
     def minimum_wall_distance(photon_list: PhotonList,
                               grid: GridStruct,
                               distances: wp.array(dtype=float),
-                              iphotons: wp.array(dtype=int)):
+                              iphotons: wp.array(dtype=int),
+                              log10_tau_min: float,
+                              log10_tau_max: float):
         """
         Calculate the distance to the nearest wall in the grid for each photon.
         """
@@ -1415,10 +1428,10 @@ class UniformSphericalGrid(Grid):
                 if sp < s:
                     s = sp
 
-        if s * photon_list.kabs[ip] * grid.density[iw1, iw2, iw3] < 3.0:
+        if s * photon_list.kabs[ip] * grid.density[iw1, iw2, iw3] < log10_tau_min:
             s = 0.
 
-        max_tau_distance = 10. / photon_list.alpha[ip]
+        max_tau_distance = log10_tau_max / photon_list.alpha[ip]
 
         distances[ip] = wp.min(s, max_tau_distance)
 

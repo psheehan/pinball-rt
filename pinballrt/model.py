@@ -78,7 +78,7 @@ class Model:
             for grid in self.grid_list[device]:
                 grid.add_star(star)
 
-    def thermal_mc(self, nphotons, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu"):
+    def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu"):
         """
         Perform a thermal Monte Carlo simulation.
 
@@ -104,7 +104,7 @@ class Model:
             told = self.grid.grid.temperature.numpy().copy()
 
             t1 = time.time()
-            result = self.pool.map(lambda grid: grid.propagate_photons(grid.emit(int(nphotons / self.ncores))), self.grid_list[device])
+            result = self.pool.map(lambda grid: grid.propagate_photons(grid.emit(int(nphotons / self.ncores)), use_ml_step=use_ml_step), self.grid_list[device])
             success = [r for r in result]
             t2 = time.time()
             print("Time:", t2 - t1)

@@ -236,22 +236,24 @@ class Dust(pl.LightningDataModule):
         return np.interp(temperature, self.temperature, self.pmo)
 
     def ml_step(self, photon_list, s, iphotons):
-        nphotons = iphotons.size
+        nphotons = iphotons.size(0)
 
-        test_x = torch.tensor(np.vstack((np.log10(photon_list.frequency.numpy()[iphotons]),
-                              np.log10(photon_list.temperature.numpy()[iphotons]),
-                              np.log10(photon_list.density.numpy()[iphotons] * photon_list.kabs.numpy()[iphotons] * s[iphotons]),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)),
-                              np.random.rand(int(nphotons)))).T, dtype=torch.float32)
+        test_x = torch.transpose(torch.vstack((torch.log10(wp.to_torch(photon_list.frequency)[iphotons]),
+                              torch.log10(wp.to_torch(photon_list.temperature)[iphotons]),
+                              torch.log10(wp.to_torch(photon_list.density)[iphotons] * wp.to_torch(photon_list.kabs)[iphotons] * s[iphotons]),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)),
+                              torch.rand(int(nphotons)))), 0, 1)
 
-        vals = self.ml_step_model(test_x).detach().numpy()
+        vals = self.ml_step_model(test_x).detach()
+
+        vals[:,0] = torch.clamp(vals[:,0], self.log10_nu0_min, self.log10_nu0_max)
 
         return 10.**vals[:,0], 10.**vals[:,1], vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
