@@ -530,6 +530,15 @@ class Dust(pl.LightningDataModule):
     def plot_ml_step(self):
         import matplotlib.pyplot as plt
 
+        if self.trainer is None and hasattr(self, "ml_step_model"):
+            self.dustLM = DustLightningModule(getattr(self, "ml_step_model"))
+
+            self.trainer = pl.Trainer()
+
+            self.learning = 'ml_step'
+            self.test_split = 0.1
+            self.valid_split = 0.2
+
         if self.trainer is not None:
             y_pred = self.trainer.predict(self.dustLM, datamodule=self)
             y_pred = torch.cat(y_pred).numpy()
@@ -619,6 +628,8 @@ class Dust(pl.LightningDataModule):
             state_dict["log10_tau_cell_nu0_min"] = self.log10_tau_cell_nu0_min
             state_dict["log10_tau_cell_nu0_max"] = self.log10_tau_cell_nu0_max
 
+        return state_dict
+
     def save(self, filename):
         torch.save(self.state_dict(), filename)
 
@@ -658,14 +669,12 @@ def load(filename, device="cpu"):
 
         d.ml_step_model.load_state_dict(state_dict['ml_step_state_dict'])
 
-        """
         d.log10_nu0_min = state_dict["log10_nu0_min"]
         d.log10_nu0_max = state_dict["log10_nu0_max"]
         d.log10_T_min = state_dict["log10_T_min"]
         d.log10_T_max = state_dict["log10_T_max"]
         d.log10_tau_cell_nu0_min = state_dict["log10_tau_cell_nu0_min"]
         d.log10_tau_cell_nu0_max = state_dict["log10_tau_cell_nu0_max"]
-        """
 
     return d
 
