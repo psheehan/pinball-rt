@@ -651,6 +651,22 @@ def load(filename, device="cpu"):
         The device to load the Dust object onto.
     """
     if isinstance(filename, str):
+        if not os.path.exists(filename):
+            if os.path.exists(os.environ["HOME"]+"/.pinballrt/data/dust/"+filename):
+                filename = os.environ["HOME"]+"/.pinballrt/data/dust/"+filename
+            else:
+                web_data_location = 'https://raw.githubusercontent.com/psheehan/pinball-warp/main/pinballrt/tests/data/'+filename
+                response = requests.get(web_data_location)
+                if response.status_code == 200:
+                    if not os.path.exists(os.environ["HOME"]+"/.pinballrt/data/dust"):
+                        os.makedirs(os.environ["HOME"]+"/.pinballrt/data/dust")
+                    urllib.request.urlretrieve(web_data_location, 
+                            os.environ["HOME"]+"/.pinballrt/data/dust/"+filename)
+                    filename = os.environ["HOME"]+"/.pinballrt/data/dust/"+filename
+                else:
+                    print(web_data_location+' does not exist')
+                    return
+                
         state_dict = torch.load(filename, weights_only=False)
     elif isinstance(filename, dict):
         state_dict = filename
