@@ -105,6 +105,9 @@ class Dust(pl.LightningDataModule):
         self.kext = (kabs + ksca) / self.kmean.value
         self.albedo = ksca / (kabs + ksca)
 
+        self.log10_nu_min = np.log10(self.nu.value.min())
+        self.log10_nu_max = np.log10(self.nu.value.max())
+
         with wp.ScopedDevice(device):
             self.nu_wp = wp.array(self.nu.value, dtype=float)
             self.kabs_wp = wp.array(self.kabs, dtype=float)
@@ -253,7 +256,7 @@ class Dust(pl.LightningDataModule):
 
         vals = self.ml_step_model(test_x).detach()
 
-        vals[:,0] = torch.clamp(vals[:,0], self.log10_nu0_min, self.log10_nu0_max)
+        vals[:,0] = torch.clamp(vals[:,0], self.log10_nu_min, self.log10_nu_max)
 
         return 10.**vals[:,0], 10.**vals[:,1], vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
@@ -400,7 +403,7 @@ class Dust(pl.LightningDataModule):
             "roll":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll"],
             "yaw":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
             "pitch":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
-            "tau":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll", "pitch"],
+            "log10_tau":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll", "pitch"],
         }
 
         new_columns = []
@@ -435,8 +438,8 @@ class Dust(pl.LightningDataModule):
         for name, values in new_columns:
             df[name] = values
 
-        features = ["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"]
-        targets = ["log10_nu", "log10_Eabs", "tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
+        features = ["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_log10_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"]
+        targets = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
 
         X = torch.tensor(df.loc[:, features].values, dtype=torch.float32)
         y = torch.tensor(df.loc[:, targets].values, dtype=torch.float32)
@@ -515,8 +518,8 @@ class Dust(pl.LightningDataModule):
                        "log10_T":np.log10(photon_list.temperature.numpy()),
                        "log10_tau_cell_nu0":np.log10(tau),
                        "log10_nu":np.log10(photon_list.frequency.numpy().copy()),
-                       "log10_Eabs":np.log10(np.where(photon_list.deposited_energy.numpy() > 0, photon_list.deposited_energy.numpy(), 1.0e-5)/photon_list.energy.numpy()),
-                       "tau":photon_list.tau.numpy().copy(),
+                       "log10_Eabs":np.log10(np.where(photon_list.deposited_energy.numpy() > 0, photon_list.deposited_energy.numpy(), photon_list.deposited_energy.numpy().min()/100)/photon_list.energy.numpy()),
+                       "log10_tau":np.log10(photon_list.tau.numpy().copy()),
                        "yaw":ypr[:,0],
                        "pitch":ypr[:,1],
                        "roll":ypr[:,2],
@@ -551,8 +554,8 @@ class Dust(pl.LightningDataModule):
             predict = True
 
         columns = self.df.columns
-        features = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"])
-        targets = np.array(["log10_nu", "log10_Eabs", "tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"])
+        features = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_log10_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"])
+        targets = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"])
 
         fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
 
