@@ -80,7 +80,7 @@ class Grid:
     def add_star(self, star):
         self.star = star
 
-    def base_emit(self, nphotons, wavelength="random", scattering=False):
+    def base_emit(self, nphotons, wavelength="random", scattering=False, timing={}):
         with wp.ScopedDevice(self.device):
             if scattering:
                 nphotons_per_source = int(nphotons / 2)
@@ -88,9 +88,9 @@ class Grid:
                 nphotons_per_source = nphotons
 
             t1 = time.time()
-            photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device)
+            photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device, timing=timing)
             t2 = time.time()
-            print("Star emission time: ", t2 - t1)
+            timing["Star emission time"] = t2 - t1
 
             cell_coords = []
             if scattering:
@@ -353,7 +353,7 @@ class Grid:
 
         return photon_temperature_time, dust_interpolation_time, photon_loc_time
 
-    def update_grid(self):
+    def update_grid(self, timing={}):
         with wp.ScopedDevice(self.device):
             total_energy = self.grid.energy.numpy()
             temperature = self.grid.temperature.numpy().copy()
@@ -377,7 +377,7 @@ class Grid:
 
                 if (np.abs(old_temperature - temperature) / old_temperature).max() < 1.0e-2:
                     converged = True
-            print(f"PMO time: {pmo_time:.3f} seconds")
+            timing["PMO time"] = pmo_time
 
             self.grid.temperature = wp.array3d(temperature, dtype=float)
 
@@ -479,7 +479,7 @@ class Grid:
         
         return direction_yaw, direction_pitch, direction_roll
 
-    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False):
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -643,19 +643,19 @@ class Grid:
 
             progress_bar.close()
 
-            print("next_wall_time = ", next_wall_time)
-            print("dust_interpolation_time = ", dust_interpolation_time)
-            print("tau_distance_time = ", tau_distance_time)
-            print("minimum_wall_distance_time = ", minimum_wall_distance_time)
-            print("move_time = ", move_time)
-            print("deposit_energy_time = ", deposit_energy_time)
-            print("photon_loc_time = ", photon_loc_time)
-            print("in_grid_time = ", in_grid_time)
-            print("removing_photons_time = ", removing_photons_time)
-            print("absorb_time = ", absorb_time)
-            print("ml_step_time = ", ml_step_time)
+            timing["next_wall_time"] = next_wall_time
+            timing["dust_interpolation_time"] = dust_interpolation_time
+            timing["tau_distance_time"] = tau_distance_time
+            timing["minimum_wall_distance_time"] = minimum_wall_distance_time
+            timing["move_time"] = move_time
+            timing["deposit_energy_time"] = deposit_energy_time
+            timing["photon_loc_time"] = photon_loc_time
+            timing["in_grid_time"] = in_grid_time
+            timing["removing_photons_time"] = removing_photons_time
+            timing["absorb_time"] = absorb_time
+            timing["ml_step_time"] = ml_step_time
 
-    def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False):
+    def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False, timing={}):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -763,15 +763,15 @@ class Grid:
 
             progress_bar.close()
 
-            print(next_wall_time)
-            print(dust_interpolation_time)
-            print(tau_distance_time)
-            print(move_time)
-            print(deposit_energy_time)
-            print(photon_loc_time)
-            print(in_grid_time)
-            print(removing_photons_time)
-            print(absorb_time)
+            timing["next_wall_time"] = next_wall_time
+            timing["dust_interpolation_time"] = dust_interpolation_time
+            timing["tau_distance_time"] = tau_distance_time
+            timing["move_time"] = move_time
+            timing["deposit_energy_time"] = deposit_energy_time
+            timing["photon_loc_time"] = photon_loc_time
+            timing["in_grid_time"] = in_grid_time
+            timing["removing_photons_time"] = removing_photons_time
+            timing["absorb_time"] = absorb_time
 
     @wp.kernel
     def check_pixel_too_large(photon_list: PhotonList,
@@ -941,11 +941,11 @@ class UniformCartesianGrid(Grid):
         with wp.ScopedDevice(self.device):
             self.volume = torch.ones((self.grid.n1, self.grid.n2, self.grid.n3), device=wp.device_to_torch(wp.get_device())) * (dx.value * dy.value * dz.value)
 
-    def emit(self, nphotons, wavelength="random", scattering=False, learning=False):
+    def emit(self, nphotons, wavelength="random", scattering=False, learning=False, timing={}):
         t1 = time.time()
-        photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering)
+        photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering, timing=timing)
         t2 = time.time()
-        print("Photon emission time: ", t2 - t1)
+        timing["Photon emission time"] = t2 - t1
 
         with wp.ScopedDevice(self.device):
             iphotons = wp.array(np.arange(nphotons), dtype=int)
@@ -1238,8 +1238,11 @@ class UniformSphericalGrid(Grid):
                     (wp.to_torch(self.grid.cos_w2).to(torch.float64)[0:-1] - wp.to_torch(self.grid.cos_w2).to(torch.float64)[1:])[None,:,None] * \
                     (wp.to_torch(self.grid.w3).to(torch.float64)[1:] - wp.to_torch(self.grid.w3).to(torch.float64)[0:-1]) / 3 * self.volume_scale
 
-    def emit(self, nphotons, wavelength="random", scattering=False, learning=False):
-        photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering)
+    def emit(self, nphotons, wavelength="random", scattering=False, learning=False, timing={}):
+        t1 = time.time()
+        photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering, timing=timing)
+        t2 = time.time()
+        timing["Photon emission time"] = t2 - t1
         
         with wp.ScopedDevice(self.device):
             photon_list.radius = wp.array(np.zeros(nphotons), dtype=float)

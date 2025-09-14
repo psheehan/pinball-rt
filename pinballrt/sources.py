@@ -33,7 +33,7 @@ class Star:
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.Bnu, self.nu, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
 
-    def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu"):
+    def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
         theta = np.pi*np.random.rand(nphotons)
         phi = 2*np.pi*np.random.rand(nphotons)
 
@@ -55,7 +55,7 @@ class Star:
             t1 = time.time()
             frequency = self.random_nu(nphotons, device=device)
             t2 = time.time()
-            print(f"Random frequency generation took {t2-t1:.3f} seconds")
+            timing["Random frequency generation"] = t2 - t1
         else:
             frequency = np.repeat((const.c / wavelength).to(u.GHz), nphotons).value
 

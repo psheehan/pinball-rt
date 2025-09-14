@@ -78,7 +78,7 @@ class Model:
             for grid in self.grid_list[device]:
                 grid.add_star(star)
 
-    def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu"):
+    def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", return_timing=False):
         """
         Perform a thermal Monte Carlo simulation.
 
@@ -97,26 +97,31 @@ class Model:
         """
         told = self.grid.grid.temperature.numpy().copy()
 
+        timing = {}
         count = 0
         while count < 10:
+            iter_timing = {}
+
             print("Iteration", count)
             treallyold = told.copy()
             told = self.grid.grid.temperature.numpy().copy()
 
             t1 = time.time()
-            result = self.pool.map(lambda grid: grid.propagate_photons(grid.emit(int(nphotons / self.ncores)), use_ml_step=use_ml_step), self.grid_list[device])
+            result = self.pool.map(lambda grid: grid.propagate_photons(
+                    grid.emit(int(nphotons / self.ncores), timing=iter_timing), 
+                    use_ml_step=use_ml_step, timing=iter_timing), self.grid_list[device])
             success = [r for r in result]
             t2 = time.time()
-            print("Time:", t2 - t1)
+            iter_timing["Total Time"] = t2 - t1
 
             total_energy = np.mean(np.array([grid.grid.energy.numpy() for grid in self.grid_list[device]]), axis=0)
             with wp.ScopedDevice(self.grid.device):
                 self.grid.grid.energy = wp.array3d(total_energy, dtype=float)
 
             t1 = time.time()
-            self.grid.update_grid()
+            self.grid.update_grid(timing=iter_timing)
             t2 = time.time()
-            print("Update grid temperature time:", t2 - t1)
+            iter_timing["Update grid temperature time"] = t2 - t1
 
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:
@@ -139,9 +144,13 @@ class Model:
             else:
                 print(count)
 
+            timing[str(count)] = iter_timing
             count += 1
 
-    def scattering_mc(self, nphotons, wavelengths, device="cpu"):
+        if return_timing:
+            return timing
+
+    def scattering_mc(self, nphotons, wavelengths, device="cpu", return_timing=False):
         """
         Perform a scattering Monte Carlo simulation.
 
@@ -159,12 +168,15 @@ class Model:
                 with wp.ScopedDevice(grid.device):
                     grid.scattering = torch.zeros((len(wavelengths),)+grid.shape, dtype=torch.float32, device=wp.device_to_torch(wp.get_device()))
 
+        timing = {}
         for i, wavelength in enumerate(wavelengths):
+            iter_timing = {}
+
             for grid in self.grid_list[device]:
                 grid.initialize_luminosity_array(wavelength=wavelength)
 
             t1 = time.time()
-            result = self.pool.map(lambda grid: grid.propagate_photons_scattering(grid.emit(int(nphotons / self.ncores), wavelength, scattering=True), i), self.grid_list[device])
+            result = self.pool.map(lambda grid: grid.propagate_photons_scattering(grid.emit(int(nphotons / self.ncores), wavelength, scattering=True, timing=iter_timing), i, timing=iter_timing), self.grid_list[device])
             success = [r for r in result]
             t2 = time.time()
             print("Time:", t2 - t1)
@@ -173,6 +185,11 @@ class Model:
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:
                     grid.scattering[i] = total_scattering[i].clone().to(wp.device_to_torch(grid.device))
+
+            timing[str(i)] = iter_timing
+
+        if return_timing:
+            return timing
 
     def make_image(self, nx, ny, pixel_size, lam, incl, pa, dpc, device="cpu"):
         """
