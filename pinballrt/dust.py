@@ -258,7 +258,7 @@ class Dust(pl.LightningDataModule):
 
         vals[:,0] = torch.clamp(vals[:,0], self.log10_nu_min, self.log10_nu_max)
 
-        return 10.**vals[:,0], 10.**vals[:,1], vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
+        return 10.**vals[:,0], 10.**vals[:,1], 10.**vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
     def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
         all_layers = [nn.Flatten()]
