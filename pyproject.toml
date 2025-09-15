@@ -28,7 +28,6 @@ dependencies = [
   "PyMieScatt @ git+https://github.com/bsumlin/PyMieScatt.git",
   "schwimmbad",
   "requests",
-  "urllib",
 ]
 
 [project.optional-dependencies]
