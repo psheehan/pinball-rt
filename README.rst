@@ -23,7 +23,7 @@ Then set up a model and run:
    import astropy.units as u
    import numpy as np
 
-   d = os.path.join(os.path.dirname(__file__), "data/yso.dst")
+   d = os.path.join("yso.dst")
 
    # Set up the star.
    star = Star()
