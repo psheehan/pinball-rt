@@ -23,7 +23,7 @@ class Star:
         self.y = y
         self.z = z
 
-    def set_blackbody_spectrum(self, nu=np.logspace(0., 8., 1000)*u.GHz):
+    def set_blackbody_spectrum(self, nu=np.logspace(0.5, 6.45, 1000)*u.GHz):
         self.nu = np.logspace(np.log10(nu.value.min()), np.log10(nu.value.max()), 1000) * nu.unit
 
         self.flux = models.BlackBody(temperature=self.temperature)

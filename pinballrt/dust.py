@@ -225,7 +225,8 @@ class Dust(pl.LightningDataModule):
 
         test_x = torch.transpose(torch.vstack((torch.log10(temperature), ksi)), 0, 1)
 
-        nu = wp.from_torch(10.**torch.flatten(self.random_nu_model(test_x).detach()))
+        log10_nu = torch.clamp(self.random_nu_model(test_x).detach(), self.log10_nu_min, self.log10_nu_max)
+        nu = wp.from_torch(10.**torch.flatten(log10_nu))
 
         return nu
 
