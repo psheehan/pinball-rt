@@ -16,14 +16,11 @@ Then set up a model and run:
 
 .. code-block:: python
 
-   from pinballrt.dust import load
    from pinballrt.sources import Star
    from pinballrt.grids import UniformCartesianGrid
    from pinballrt.model import Model
    import astropy.units as u
    import numpy as np
-
-   d = os.path.join("yso.dst")
 
    # Set up the star.
    star = Star()
@@ -34,7 +31,7 @@ Then set up a model and run:
 
    density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
 
-   model.add_density(density, d)
+   model.add_density(density, "yso.dst")
    model.add_star(star)
 
    model.thermal_mc(nphotons=1000000)
