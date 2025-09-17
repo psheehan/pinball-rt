@@ -1,3 +1,6 @@
+[![E2E tests](https://github.com/psheehan/pinball-rt/actions/workflows/run_E2E_tests.yml/badge.svg)](https://github.com/psheehan/pinball-rt/actions/workflows/run_E2E_tests.yml)
+[![codecov](https://codecov.io/gh/psheehan/pinball-rt/graph/badge.svg?token=980X3QJEOS)](https://codecov.io/gh/psheehan/pinball-rt)
+
 Monte Carlo radiative transfer, at Warp speed!
 ==============================================
 
@@ -8,14 +11,13 @@ Quickstart
 
 Install pinball-rt with pip:
 
-.. code-block:: bash
-
-   pip install pinball-rt
+```bash
+   pip install git+https://github.com/psheehan/pinball-rt.git
+```
 
 Then set up a model and run:
 
-.. code-block:: python
-
+```python
    from pinballrt.sources import Star
    from pinballrt.grids import UniformCartesianGrid
    from pinballrt.model import Model
@@ -35,5 +37,6 @@ Then set up a model and run:
    model.add_star(star)
 
    model.thermal_mc(nphotons=1000000)
+```
 
 For more information, see the documentation at https://pinball-rt.readthedocs.io (coming soon).
