@@ -548,6 +548,7 @@ class Grid:
                     minimum_wall_distance_time += t2 - t1
 
                 s = torch.minimum(wp.to_torch(s1), wp.to_torch(s2))
+
                 if not learning and use_ml_step:
                     t1 = time.time()
                     wp.launch(kernel=self.check_do_ml_step,
@@ -1370,7 +1371,7 @@ class UniformSphericalGrid(Grid):
         # Calculate the distance to intersection with the nearest phi wall.
 
         if grid.n3 != 1:
-            for i in range(iw3, iw3+3):
+            for i in range(iw3, iw3+2):
                 if photon_list.phi[ip] != grid.w3[i]:
                     c = photon_list.position[ip][0]*grid.sin_w3[i]-photon_list.position[ip][1]*grid.cos_w3[i]
                     d = photon_list.direction[ip][0]*grid.sin_w3[i]-photon_list.direction[ip][1]*grid.cos_w3[i]
@@ -1421,7 +1422,7 @@ class UniformSphericalGrid(Grid):
         # Calculate the distance to the nearest phi wall.
 
         if grid.n3 != 1:
-            for i in range(iw3, iw3+3):
+            for i in range(iw3, iw3+2):
                 r_hat = wp.vec3(grid.cos_w3[i], grid.sin_w3[i], 0.)
                 z_hat = wp.vec3(0., 0., 1.)
 
