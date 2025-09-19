@@ -11,7 +11,7 @@ import torch
 import time
 
 class Model:
-    def __init__(self, grid: Grid, ncells: int = 9, dx: u.Quantity = 1.0 * u.au, mirror: bool = False, ncores = 1, pool = SerialPool()):
+    def __init__(self, grid: Grid, grid_kwargs={}, ncores = 1, pool = SerialPool()):
         """
         Initialize the Model with a grid and optional parameters.
 
@@ -32,9 +32,9 @@ class Model:
         pool : schwimmbad.Pool, optional
             The pool to use for parallel processing (default is SerialPool()).
         """
-        self.grid_list = {"cpu":[grid(ncells=ncells, dx=dx, device='cpu') for _ in range(ncores)]}
+        self.grid_list = {"cpu":[grid(**grid_kwargs, device='cpu') for _ in range(ncores)]}
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = [grid(ncells=ncells, dx=dx, device=d) for d in wp.get_cuda_devices()]
+            self.grid_list["cuda"] = [grid(**grid_kwargs, device=d) for d in wp.get_cuda_devices()]
             self.grid = self.grid_list["cuda"][0]
         else:
             self.grid = self.grid_list["cpu"][0]

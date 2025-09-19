@@ -29,7 +29,7 @@ Then set up a model and run:
    star.set_blackbody_spectrum()
 
    # Set up the grid.
-   model = Model(grid=UniformCartesianGrid, ncells=9, dx=2.0*u.au)
+   model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
 
    density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
 
