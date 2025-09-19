@@ -28,7 +28,7 @@ import psutil
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
-                 amin=None, amax=None, p=None, with_dhs=False, fmax=0.8, nf=50, interpolate=10000, 
+                 amin=None, amax=None, p=None, with_dhs=False, fmax=0.8, nf=50, interpolate=1000, 
                  device="cpu"):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
@@ -84,22 +84,38 @@ class Dust(pl.LightningDataModule):
 
         kunit = kabs.unit
         lam_unit = lam.unit
+        amax_unit = amax.unit
 
         if interpolate > 0:
             f_kabs = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(kabs.value), kind="cubic")
             f_ksca = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(ksca.value), kind="cubic")
 
-            lam = 10.**np.linspace(np.log10(lam.value).min(), np.log10(lam.value).max(), interpolate)[::-1]
-            kabs = 10.**f_kabs(np.log10(lam))
-            ksca = 10.**f_ksca(np.log10(lam))
+            log_grid = np.meshgrid(np.linspace(p.min(), p.max(), 30),
+                    np.linspace(np.log10(amax.value).min(), np.log10(amax.value).max(), 100),
+                    np.linspace(np.log10(lam.value).min(), np.log10(lam.value).max(), interpolate)[::-1], indexing='ij')
+            flat_log_grid = np.array(log_grid).reshape((3,-1)).T
+
+            kabs = 10.**scipy.interpolate.interpn((p, np.log10(amax.value), np.log10(lam.value)), np.log10(kabs.value), flat_log_grid, method="cubic")
+            ksca = 10.**scipy.interpolate.interpn((p, np.log10(amax.value), np.log10(lam.value)), np.log10(ksca.value), flat_log_grid, method="cubic")
+
+            kabs = kabs.reshape(log_grid[0].shape)
+            ksca = ksca.reshape(log_grid[0].shape)
+
+            lam = 10.**log_grid[2][0,0,:]
+            amax = 10.**log_grid[1][0,:,0]
+            p = 10.**log_grid[0][:,0,0]
         else:
             lam = lam.value
+            amax = amax.value
+            p = p
             kabs = kabs.value
             ksca = ksca.value
 
         self.nu = (const.c / (lam * lam_unit)).decompose().to(u.GHz)
         self.kmean = np.mean(kabs) * kunit
         self.lam = lam * lam_unit
+        self.amax = amax * amax_unit
+        self.p = p
         self.kabs = kabs / self.kmean.value
         self.ksca = ksca / self.kmean.value
         self.kext = (kabs + ksca) / self.kmean.value
@@ -110,23 +126,27 @@ class Dust(pl.LightningDataModule):
 
         with wp.ScopedDevice(device):
             self.nu_wp = wp.array(self.nu.value, dtype=float)
-            self.kabs_wp = wp.array(self.kabs, dtype=float)
-            self.ksca_wp = wp.array(self.ksca, dtype=float)
-            self.kext_wp = wp.array(self.kext, dtype=float)
-            self.albedo_wp = wp.array(self.albedo, dtype=float)
+            self.amax_wp = wp.array(self.amax.value, dtype=float)
+            self.p_wp = wp.array(self.p, dtype=float)
+            self.kabs_wp = wp.array3d(self.kabs, dtype=float)
+            self.ksca_wp = wp.array3d(self.ksca, dtype=float)
+            self.kext_wp = wp.array3d(self.kext, dtype=float)
+            self.albedo_wp = wp.array3d(self.albedo, dtype=float)
 
-        self.temperature = np.logspace(-1.,4.,1000)
+        self.temperature = np.logspace(-1.,4.,999)
         self.log_temperature = np.log10(self.temperature)
 
         random_nu_PDF = np.array([kabs * models.BlackBody(temperature=T*u.K)(self.nu) for T in self.temperature])
-        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(random_nu_PDF, self.nu, axis=1, initial=0.)
-        self.random_nu_CPD /= self.random_nu_CPD[:,-1:]
+        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(random_nu_PDF, self.nu, axis=-1, initial=0.)
+        self.random_nu_CPD /= self.random_nu_CPD[:,:,:,-1:]
         self.drandom_nu_CPD_dT = np.gradient(self.random_nu_CPD, self.temperature, axis=0)
+        """
 
         vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
                 models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
 
         self.pmo = np.pi / (const.sigma_sb.cgs.value * self.temperature**4) * vectorized_bb(self.temperature)
+        """
 
     def to_device(self, device):
         with wp.ScopedDevice(device):
@@ -615,6 +635,8 @@ class Dust(pl.LightningDataModule):
         state_dict = {
             "dust_properties":{
                 "lam": self.lam,
+                "amax": self.amax,
+                "p": self.p,
                 "kabs": self.kabs*self.kmean,
                 "ksca": self.ksca*self.kmean,
             },
