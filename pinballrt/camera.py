@@ -76,7 +76,7 @@ class Camera:
     def put_intensity_in_image(image_ix: wp.array(dtype=int),
                                image_iy: wp.array(dtype=int),
                                ray_intensity: wp.array2d(dtype=float),
-                               image_intensity: wp.array3d(dtype=float)):
+                               image_intensity: wp.array3d(dtype=float)): # pragma: no cover
 
         ir, inu = wp.tid()
 

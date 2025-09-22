@@ -123,7 +123,7 @@ class Star:
                          random_nu_CPD: wp.array(dtype=float),
                          nu: wp.array(dtype=float),
                          random_nu: wp.array(dtype=float),
-                         iCPD: wp.array(dtype=int)):
+                         iCPD: wp.array(dtype=int)): # pragma: no cover
         ip = wp.tid()
         
         index = len(random_nu_CPD) - 1

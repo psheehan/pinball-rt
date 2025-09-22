@@ -127,7 +127,7 @@ class Grid:
     def tau_distance_extinction(grid: GridStruct,
                      photon_list: PhotonList, 
                      distances: wp.array(dtype=float),
-                     iphotons: wp.array(dtype=int)):
+                     iphotons: wp.array(dtype=int)): # pragma: no cover
 
         ip = iphotons[wp.tid()]
 
@@ -140,7 +140,7 @@ class Grid:
     def tau_distance_scattering(grid: GridStruct,
                      photon_list: PhotonList,
                      distances: wp.array(dtype=float),
-                     iphotons: wp.array(dtype=int)):
+                     iphotons: wp.array(dtype=int)): # pragma: no cover
 
         ip = iphotons[wp.tid()]
 
@@ -152,7 +152,7 @@ class Grid:
     @wp.kernel
     def move(photon_list: PhotonList,
              distances: wp.array(dtype=float),
-             iray: wp.array(dtype=int)):
+             iray: wp.array(dtype=int)): # pragma: no cover
     
         ip = iray[wp.tid()]
 
@@ -163,7 +163,7 @@ class Grid:
     @wp.kernel
     def deposit_energy(photon_list: PhotonList,
                        grid: GridStruct,
-                       iphotons: wp.array(dtype=int)):
+                       iphotons: wp.array(dtype=int)): # pragma: no cover
         """
         Deposit energy in the grid based on the absorption of photons.
 
@@ -184,7 +184,7 @@ class Grid:
                                grid: GridStruct,
                                distances: wp.array(dtype=float),
                                iphotons: wp.array(dtype=int),
-                               track: bool):
+                               track: bool): # pragma: no cover
         """
         Deposit energy in the grid based on the absorption of photons.
 
@@ -211,7 +211,7 @@ class Grid:
     @wp.kernel
     def reduce_tau(photon_list: PhotonList,
                    distances: wp.array(dtype=float),
-                   iphotons: wp.array(dtype=int)):
+                   iphotons: wp.array(dtype=int)): # pragma: no cover
         """
         Reduce the optical depth of the photons based on the distances they have traveled.
         """
@@ -223,7 +223,7 @@ class Grid:
     def deposit_scattering(photon_list: PhotonList,
                        distances: wp.array(dtype=float),
                        scattering: wp.array3d(dtype=float),
-                       iphotons: wp.array(dtype=int)):
+                       iphotons: wp.array(dtype=int)): # pragma: no cover
 
         ip = iphotons[wp.tid()]
 
@@ -246,7 +246,7 @@ class Grid:
     @wp.kernel
     def photon_cell_properties(photon_list: PhotonList,
                            grid: GridStruct,
-                           iphotons: wp.array(dtype=int)):
+                           iphotons: wp.array(dtype=int)): # pragma: no cover
         itemp = wp.tid()
         ip = iphotons[itemp]
 
@@ -262,7 +262,7 @@ class Grid:
                          frequency: wp.array(dtype=float),
                          kabs: wp.array(dtype=float),
                          ksca: wp.array(dtype=float),
-                         iphotons: wp.array(dtype=int)):
+                         iphotons: wp.array(dtype=int)): # pragma: no cover
         
         i = wp.tid()
         ip = iphotons[i]
@@ -274,7 +274,7 @@ class Grid:
 
     @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
-                         iphotons: wp.array(dtype=int)):
+                         iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
@@ -290,7 +290,7 @@ class Grid:
 
     @wp.kernel
     def random_tau(photon_list: PhotonList,
-                   iphotons: wp.array(dtype=int)):
+                   iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
@@ -300,7 +300,7 @@ class Grid:
 
     @wp.kernel
     def random_absorb(photon_list: PhotonList,
-                      iphotons: wp.array(dtype=int)):
+                      iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
@@ -403,7 +403,7 @@ class Grid:
                           log10_nu_min: float,
                           log10_nu_max: float,
                           log10_T_min: float,
-                          log10_T_max: float):
+                          log10_T_max: float): # pragma: no cover
         """
         Check if the photon should do a modified random walk step.
         """
@@ -420,7 +420,7 @@ class Grid:
     @wp.kernel
     def ml_deposited_energy(photon_list: PhotonList,
                              deposited_energy: wp.array(dtype=float),
-                             iphotons: wp.array(dtype=int)):
+                             iphotons: wp.array(dtype=int)): # pragma: no cover
         """
         Calculate the deposited energy for the modified random walk step.
         """
@@ -433,7 +433,7 @@ class Grid:
                              yaw: wp.array(dtype=float),
                              pitch: wp.array(dtype=float),
                              roll: wp.array(dtype=float),
-                             iphotons: wp.array(dtype=int)):
+                             iphotons: wp.array(dtype=int)): # pragma: no cover
         """
         Rotate the direction of the photons based on the yaw, pitch, and roll angles.
         """
@@ -448,7 +448,7 @@ class Grid:
     def ml_new_tau(photon_list: PhotonList,
                     tau: wp.array(dtype=float),
                     s: wp.array(dtype=float),
-                    iphotons: wp.array(dtype=int)):
+                    iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
@@ -779,7 +779,7 @@ class Grid:
     def check_pixel_too_large(photon_list: PhotonList,
                               pixel_size: float,
                               cell_size: wp.array3d(dtype=float),
-                              irays: wp.array(dtype=int)):
+                              irays: wp.array(dtype=int)): # pragma: no cover
         
         iray = wp.tid()
         ir = irays[iray]
@@ -793,7 +793,7 @@ class Grid:
                       s: wp.array(dtype=float),
                       grid: GridStruct,
                       scattering: wp.array4d(dtype=float),
-                      irays: wp.array(dtype=int)):
+                      irays: wp.array(dtype=int)): # pragma: no cover
 
         iray, inu = wp.tid()
         ir = irays[iray]
@@ -827,7 +827,7 @@ class Grid:
     def reduce_source_intensity(ray_list: PhotonList,
                                 grid: GridStruct,
                                 s: wp.array(dtype=float),
-                                irays: wp.array(dtype=int)):
+                                irays: wp.array(dtype=int)): # pragma: no cover
         iray, inu = wp.tid()
         ir = irays[iray]
 
@@ -990,7 +990,7 @@ class UniformCartesianGrid(Grid):
     @wp.kernel
     def random_location_in_cell(position: wp.array(dtype=wp.vec3),
                                 coords: wp.array2d(dtype=int),
-                                grid: GridStruct):
+                                grid: GridStruct): # pragma: no cover
         ip = wp.tid()
 
         ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
@@ -1005,7 +1005,7 @@ class UniformCartesianGrid(Grid):
     def next_wall_distance(photon_list: PhotonList,
                            grid: GridStruct,
                            distances: wp.array(dtype=float),
-                           irays: wp.array(dtype=int)):
+                           irays: wp.array(dtype=int)): # pragma: no cover
     
         ip = irays[wp.tid()]
         #print(ip)
@@ -1037,7 +1037,7 @@ class UniformCartesianGrid(Grid):
                               distances: wp.array(dtype=float),
                               iphotons: wp.array(dtype=int),
                               log10_tau_min: float,
-                              log10_tau_max: float):
+                              log10_tau_max: float): # pragma: no cover
         """
         Calculate the distance to the nearest wall in the grid for each photon.
         This is used to determine how far a photon can travel before hitting a wall.
@@ -1079,7 +1079,7 @@ class UniformCartesianGrid(Grid):
     @wp.kernel
     def outer_wall_distance(photon_list: PhotonList,
                            grid: GridStruct,
-                           distances: wp.array(dtype=float)):
+                           distances: wp.array(dtype=float)): # pragma: no cover
 
         ip = wp.tid()
 
@@ -1145,7 +1145,7 @@ class UniformCartesianGrid(Grid):
     @wp.kernel
     def check_in_grid(photon_list: PhotonList,
                 grid: GridStruct,
-                irays: wp.array(dtype=int)):
+                irays: wp.array(dtype=int)): # pragma: no cover
     
         ip = irays[wp.tid()]
 
@@ -1159,7 +1159,7 @@ class UniformCartesianGrid(Grid):
     @wp.kernel
     def photon_loc(photon_list: PhotonList,
                    grid: GridStruct,
-                   iray: wp.array(dtype=int)):
+                   iray: wp.array(dtype=int)): # pragma: no cover
 
         ip = iray[wp.tid()]
 
@@ -1313,7 +1313,7 @@ class UniformSphericalGrid(Grid):
     @wp.kernel
     def random_location_in_cell(position: wp.array(dtype=wp.vec3),
                                 coords: wp.array2d(dtype=int),
-                                grid: GridStruct):
+                                grid: GridStruct): # pragma: no cover
         ip = wp.tid()
 
         ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
@@ -1332,7 +1332,7 @@ class UniformSphericalGrid(Grid):
     def next_wall_distance(photon_list: PhotonList,
                            grid: GridStruct,
                            distances: wp.array(dtype=float),
-                           irays: wp.array(dtype=int)):
+                           irays: wp.array(dtype=int)): # pragma: no cover
 
         ip = irays[wp.tid()]
         #print(ip)
@@ -1425,7 +1425,7 @@ class UniformSphericalGrid(Grid):
                               distances: wp.array(dtype=float),
                               iphotons: wp.array(dtype=int),
                               log10_tau_min: float,
-                              log10_tau_max: float):
+                              log10_tau_max: float): # pragma: no cover
         """
         Calculate the distance to the nearest wall in the grid for each photon.
         """
@@ -1478,7 +1478,7 @@ class UniformSphericalGrid(Grid):
     @wp.kernel
     def outer_wall_distance(photon_list: PhotonList,
                            grid: GridStruct,
-                           distances: wp.array(dtype=float)):
+                           distances: wp.array(dtype=float)): # pragma: no cover
         """
         Calculate the distance to the outermost radial wall for a photon in spherical coordinates.
     
@@ -1521,7 +1521,7 @@ class UniformSphericalGrid(Grid):
     @wp.kernel
     def check_in_grid(photon_list: PhotonList,
                       grid: GridStruct,
-                      irays: wp.array(dtype=int)):
+                      irays: wp.array(dtype=int)): # pragma: no cover
     
         ip = irays[wp.tid()]
 
@@ -1533,7 +1533,7 @@ class UniformSphericalGrid(Grid):
     @wp.kernel
     def photon_loc(photon_list: PhotonList,
                    grid: GridStruct,
-                   iray: wp.array(dtype=int)):
+                   iray: wp.array(dtype=int)): # pragma: no cover
         """
         #Given a photon's position and direction, return its cell indices in the spherical grid.
         #Optionally, prev_indices can be provided for efficient searching.
@@ -1782,7 +1782,7 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
     @wp.kernel
     def random_location_in_cell(position: wp.array(dtype=wp.vec3),
                                 coords: wp.array2d(dtype=int),
-                                grid: GridStruct):
+                                grid: GridStruct): # pragma: no cover
         ip = wp.tid()
 
         ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
@@ -1803,7 +1803,7 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
     @wp.kernel
     def photon_loc(photon_list: PhotonList,
                    grid: GridStruct,
-                   iray: wp.array(dtype=int)):
+                   iray: wp.array(dtype=int)): # pragma: no cover
         """
         #Given a photon's position and direction, return its cell indices in the spherical grid.
         #Optionally, prev_indices can be provided for efficient searching.
