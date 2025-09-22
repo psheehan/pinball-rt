@@ -191,17 +191,15 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, nx, ny, pixel_size, lam, incl, pa, dpc, device="cpu"):
+    def make_image(self, npix, pixel_size, lam, incl, pa, distance, device="cpu"):
         """
         Create an image from the dust distribution.
 
         Parameters
         ----------
-        nx : int
-            The number of pixels in the x direction.
-        ny : int
-            The number of pixels in the y direction.
-        pixel_size : float
+        npix : int or tuple, optional
+            The number of pixels in the image.
+        pixel_size : Quantity
             The size of each pixel in the image.
         lam : array-like
             The wavelengths to simulate.
@@ -209,11 +207,17 @@ class Model:
             The inclination angle of the image.
         pa : float
             The position angle of the image.
-        dpc : float
+        dpc : Quantity
             The distance to the image plane in parsecs.
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+
+        if isinstance(npix, int):
+            nx, ny = npix, npix
+        elif isinstance(npix, (list, tuple, np.ndarray)):
+            nx, ny = npix
+
         # First, run a scattering simulation to get the scattering phase function
 
         self.scattering_mc(100000, lam, device=device)
@@ -222,9 +226,9 @@ class Model:
 
         for dev in self.camera_list:
             for camera in self.camera_list[dev]:
-                camera.set_orientation(incl, pa, dpc)
+                camera.set_orientation(incl, pa, distance)
 
-        pixel_size = (pixel_size*u.arcsecond*dpc*u.pc).cgs.value
+        pixel_size = (pixel_size*distance).cgs.value
 
         image = xr.Dataset(
             #data_vars={
@@ -243,7 +247,7 @@ class Model:
         intensity = np.array(list(self.pool.map(lambda x: x[0].raytrace(x[1], x[2], nx, ny, image.pixel_size, image.nu).numpy(), 
                         zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0)
 
-        intensity += np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, dpc, 
+        intensity += np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, distance, 
                         nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0)
 
         image = image.assign(intensity=(("x","y","lam"), intensity))

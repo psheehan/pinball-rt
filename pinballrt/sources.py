@@ -73,7 +73,7 @@ class Star:
 
         return photon_list
     
-    def emit_rays(self, nu, distance_unit, ez, nrays, dpc, device="cpu"):
+    def emit_rays(self, nu, distance_unit, ez, nrays, distance, device="cpu"):
         theta = np.pi*np.random.rand(nrays)
         phi = 2*np.pi*np.random.rand(nrays)
 
@@ -83,7 +83,7 @@ class Star:
         
         direction = np.tile(ez, (nrays, 1))
 
-        intensity = (np.tile(self.flux(nu), (nrays, 1)) * np.pi * ((self.radius.to(u.cm).value / (dpc*u.pc).to(u.cm).value) * u.radian)**2 / nrays).to(u.Jy).value
+        intensity = (np.tile(self.flux(nu), (nrays, 1)) * np.pi * ((self.radius.to(u.cm).value / (distance).to(u.cm).value) * u.radian)**2 / nrays).to(u.Jy).value
         tau_intensity = np.zeros((nrays, nu.size), dtype=float)
 
         with wp.ScopedDevice(device):
@@ -96,6 +96,7 @@ class Star:
             ray_list.pixel_too_large = wp.zeros(nrays, dtype=bool)
 
             ray_list.radius = wp.array(np.zeros(nrays), dtype=float)
+            ray_list.logradius = wp.array(np.zeros(nrays), dtype=float)
             ray_list.theta = wp.zeros(nrays, dtype=float)
             ray_list.phi = wp.zeros(nrays, dtype=float)
             ray_list.sin_theta = wp.zeros(nrays, dtype=float)

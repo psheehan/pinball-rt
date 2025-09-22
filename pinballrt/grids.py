@@ -13,6 +13,7 @@ from .utils import EPSILON, equal, equal_zero, planck_function
 @wp.struct
 class GridStruct:
     w1: wp.array(dtype=float)
+    logw1: wp.array(dtype=float)
     w2: wp.array(dtype=float)
     w3: wp.array(dtype=float)
     n1: int
@@ -920,7 +921,24 @@ class Grid:
                 nrays = iray.size(0)
 
 class UniformCartesianGrid(Grid):
-    def __init__(self, ncells=9, dx=1.0, device="cpu"):
+    def __init__(self, ncells=9, dx=1.0*u.au, device="cpu"):
+        """
+        A Cartesian grid with uniform cell sizes.
+
+        Parameters
+        ----------
+        ncells : int or tuple of int
+            The number of cells in each dimension. If an int is provided, the same number of
+            cells will be used in all dimensions. If a tuple is provided, it should contain
+            three integers specifying the number of cells in the x, y, and z dimensions.
+        dx : astropy Quantity or tuple of astropy Quantity
+            The size of each cell in each dimension. If a Quantity is provided, the
+            same cell size will be used in all dimensions. If a tuple is provided, it should
+            contain three Quantities specifying the cell size in the x, y, and z
+            dimensions.
+        device : str
+            The device to use for computations. Can be "cpu" or "cuda".
+        """
         if type(ncells) == int:
             n1, n2, n3 = ncells, ncells, ncells
         elif type(ncells) == tuple:
@@ -943,6 +961,7 @@ class UniformCartesianGrid(Grid):
             self.volume = torch.ones((self.grid.n1, self.grid.n2, self.grid.n3), device=wp.device_to_torch(wp.get_device())) * (dx.value * dy.value * dz.value)
 
     def emit(self, nphotons, wavelength="random", scattering=False, learning=False, timing={}):
+
         t1 = time.time()
         photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering, timing=timing)
         t2 = time.time()
@@ -1199,7 +1218,24 @@ class UniformCartesianGrid(Grid):
         photon_list.indices[ip][2] = i3
 
 class UniformSphericalGrid(Grid):
-    def __init__(self, ncells=9, dr=1.0, mirror=True, device="cpu"):
+    def __init__(self, ncells=9, dr=1.0*u.au, mirror=True, device="cpu"):
+        """
+        A grid in spherical coordinates with uniform cell sizes in r, theta, and phi.
+
+        Parameters
+        ----------
+        ncells : int or tuple
+            The number of cells in each dimension. If an integer is provided, the same
+            cells will be used in all dimensions. If a tuple is provided, it should contain
+            three integers specifying the number of cells in the x, y, and z dimensions.
+        dr : astropy Quantity
+            The size each cell in the radial dimension.
+        mirror : bool
+            If True, the grid will only cover theta from 0 to pi/2, with mirror symmetry
+            applied at the midplane. If False, the grid will cover theta from 0 to pi.
+        device : str
+            The device to use for computations. Can be "cpu" or "cuda".
+        """
         if type(ncells) == int:
             n1, n2, n3 = ncells, ncells, ncells
         elif type(ncells) == tuple:
@@ -1548,6 +1584,277 @@ class UniformSphericalGrid(Grid):
             i1 = 0
         else:
             i1 = wp.int(wp.floor((photon_list.radius[ip] - grid.w1[0]) / (grid.w1[1] - grid.w1[0])))
+
+        # Snap to wall if needed
+        if equal(photon_list.radius[ip], grid.w1[i1], EPS):
+            photon_list.radius[ip] = grid.w1[i1]
+        elif equal(photon_list.radius[ip], grid.w1[i1+1], EPS):
+            photon_list.radius[ip] = grid.w1[i1+1]
+
+        # Direction-based update
+        gnx = photon_list.sin_theta[ip] * photon_list.cos_phi[ip]
+        gny = photon_list.sin_theta[ip] * photon_list.sin_phi[ip]
+        gnz = photon_list.cos_theta[ip]
+        if (photon_list.radius[ip] == grid.w1[i1]) and (wp.dot(photon_list.direction[ip], wp.vec3(gnx, gny, gnz)) < 0):
+            i1 -= 1
+        elif (photon_list.radius[ip] == grid.w1[i1+1]) and (wp.dot(photon_list.direction[ip], wp.vec3(gnx, gny, gnz)) >= 0):
+            i1 += 1
+
+        if photon_list.radius[ip] > grid.w1[grid.n1] * (1. + EPSILON):
+            i1 = grid.n1
+
+        # --- Theta index ---
+        if grid.n2 == 1:
+            i2 = 0
+        else:
+            if -photon_list.cos_theta[ip] >= grid.neg_mu[grid.n2-1]:
+                i2 = grid.n2-1
+            elif -photon_list.cos_theta[ip] <= grid.neg_mu[0]:
+                i2 = 0
+            else:
+                i2 = wp.int(wp.floor((photon_list.theta[ip] - grid.w2[0]) / (grid.w2[1] - grid.w2[0])))
+
+            # Snap to wall if needed
+            #if equal(photon_list.cos_theta[ip], grid.cos_w2[i2], grid.cos_tol_w2[i2]):
+            if equal(photon_list.theta[ip], grid.w2[i2], EPS):
+                photon_list.theta[ip] = grid.w2[i2]
+                photon_list.cos_theta[ip] = grid.cos_w2[i2]
+                photon_list.sin_theta[ip] = grid.sin_w2[i2]
+            #elif equal(photon_list.cos_theta[ip], grid.cos_w2[i2+1], grid.cos_tol_w2[i2+1]):
+            if equal(photon_list.theta[ip], grid.w2[i2+1], EPS):
+                photon_list.theta[ip] = grid.w2[i2+1]
+                photon_list.cos_theta[ip] = grid.cos_w2[i2+1]
+                photon_list.sin_theta[ip] = grid.sin_w2[i2+1]
+
+            # Direction-based update
+            gnx = photon_list.cos_theta[ip] * photon_list.cos_phi[ip]
+            gny = photon_list.cos_theta[ip] * photon_list.sin_phi[ip]
+            gnz = -photon_list.sin_theta[ip]
+            if (photon_list.cos_theta[ip] == grid.cos_w2[i2]) and (wp.dot(photon_list.direction[ip], wp.vec3(gnx, gny, gnz)) < 0):
+                i2 -= 1
+            elif (photon_list.cos_theta[ip] == grid.cos_w2[i2+1]) and (wp.dot(photon_list.direction[ip], wp.vec3(gnx, gny, gnz)) >= 0):
+                i2 += 1
+
+            # Clamp
+            if i2 == -1: i2 = 0
+            if i2 == grid.n2: i2 = grid.n2-1
+
+        # --- Phi index ---
+        if grid.n3 == 1:
+            i3 = 0
+        else:
+            i3 = wp.int(wp.floor((photon_list.phi[ip] - grid.w3[0]) / (grid.w3[1] - grid.w3[0])))
+
+            # Snap to wall if needed
+            if equal(photon_list.phi[ip], grid.w3[i3], EPS):
+                photon_list.phi[ip] = grid.w3[i3]
+                photon_list.sin_phi[ip] = grid.sin_w3[i3]
+                photon_list.cos_phi[ip] = grid.cos_w3[i3]
+            elif equal(photon_list.phi[ip], grid.w3[i3+1], EPS):
+                photon_list.phi[ip] = grid.w3[i3+1]
+                photon_list.sin_phi[ip] = grid.sin_w3[i3+1]
+                photon_list.cos_phi[ip] = grid.cos_w3[i3+1]
+
+            # Direction-based update
+            gnx = -photon_list.sin_phi[ip]
+            gny = photon_list.cos_phi[ip]
+            gnz = 0.0
+            if (photon_list.phi[ip] == grid.w3[i3]) and (wp.dot(photon_list.direction[ip], wp.vec3(gnx, gny, gnz)) <= 0):
+                i3 -= 1
+            elif (photon_list.phi[ip] == grid.w3[i3+1]) and (wp.dot(photon_list.direction[ip], wp.vec3(gnx, gny, gnz)) >= 0):
+                i3 += 1
+            i3 = (i3 + grid.n3) % grid.n3
+
+            # Special case for phi=0 and negative direction
+            if (photon_list.phi[ip] == 0) and (i3 == grid.n3-1):
+                photon_list.phi[ip] = grid.w3[i3+1]
+
+        # Return indices
+
+        photon_list.indices[ip][0] = i1
+        photon_list.indices[ip][1] = i2
+        photon_list.indices[ip][2] = i3
+
+        #Since we may have updated r, theta and phi to be exactly on the grid 
+        # cell walls, change the photon position slightly to reflect this. */
+
+        photon_list.position[ip][0] = photon_list.radius[ip] * photon_list.sin_theta[ip] * photon_list.cos_phi[ip]
+        photon_list.position[ip][1] = photon_list.radius[ip] * photon_list.sin_theta[ip] * photon_list.sin_phi[ip]
+        photon_list.position[ip][2] = photon_list.radius[ip] * photon_list.cos_theta[ip]
+
+class LogUniformSphericalGrid(UniformSphericalGrid):
+    def __init__(self, ncells=9, rmin=0.1*u.au, rmax=4.5*u.au, mirror=True, device="cpu"):
+        """
+        A grid in spherical coordinates with logarithmically spaced cells in r and uniform cell sizes in theta and phi.
+
+        Parameters
+        ----------
+        ncells : int or tuple
+            The number of cells in each dimension. If an integer is provided, the same
+            cells will be used in all dimensions. If a tuple is provided, it should contain
+            three integers specifying the number of cells in the x, y, and z dimensions.
+        rmin : astropy Quantity
+            The minimum radius of the grid.
+        rmax : astropy Quantity
+            The maximum radius of the grid.
+        mirror : bool
+            If True, the grid will only cover theta from 0 to pi/2, with mirror symmetry
+            applied at the midplane. If False, the grid will cover theta from 0 to pi.
+        device : str
+            The device to use for computations. Can be "cpu" or "cuda".
+        """
+        if type(ncells) == int:
+            n1, n2, n3 = ncells, ncells, ncells
+        elif type(ncells) == tuple:
+            n1, n2, n3 = ncells
+
+        self.distance_unit = rmax.unit
+
+        _w1 = np.hstack(([0.], np.logspace(np.log10(rmin.value), np.log10(rmax.value), n1)))
+        if mirror:
+            _w2_max = np.pi / 2
+        else:
+            _w2_max = np.pi
+        _w2 = np.linspace(0, _w2_max, n2+1)
+        _w3 = np.linspace(0, 2*np.pi, n3+1)
+
+        super(UniformSphericalGrid, self).__init__(_w1, _w2, _w3, device=device)
+
+        with wp.ScopedDevice(self.device):
+            self.grid.logw1 = wp.array(np.log10(_w1[1:]), dtype=float) # Exclude the zero at the start
+            self.grid.sin_w2 = wp.array(np.sin(_w2), dtype=float)
+            self.grid.cos_w2 = wp.array(np.cos(_w2), dtype=float)
+            self.grid.tan_w2 = wp.array(np.tan(_w2), dtype=float)
+            self.grid.neg_mu = wp.array(-self.grid.cos_w2.numpy(), dtype=float)
+            self.grid.sin_tol_w2 = wp.array(np.abs(np.sin(_w2.astype(np.float32) * (1.0 - EPSILON)) - np.sin(_w2.astype(np.float32))), dtype=float)
+            self.grid.cos_tol_w2 = wp.array(np.abs(np.cos(_w2.astype(np.float32) * (1.0 - EPSILON)) - np.cos(_w2.astype(np.float32))), dtype=float)
+
+            self.grid.sin_w3 = wp.array(np.sin(_w3), dtype=float)
+            self.grid.cos_w3 = wp.array(np.cos(_w3), dtype=float)
+
+            if np.abs(self.grid.cos_w2.numpy()[-1]) < EPSILON:
+                self.grid.mirror_symmetry = True
+                self.volume_scale = 2
+            else:
+                self.grid.mirror_symmetry = False
+                self.volume_scale = 1
+
+            self.volume = (wp.to_torch(self.grid.w1).to(torch.float64)[1:]**3 - wp.to_torch(self.grid.w1).to(torch.float64)[0:-1]**3)[:,None,None] * \
+                    (wp.to_torch(self.grid.cos_w2).to(torch.float64)[0:-1] - wp.to_torch(self.grid.cos_w2).to(torch.float64)[1:])[None,:,None] * \
+                    (wp.to_torch(self.grid.w3).to(torch.float64)[1:] - wp.to_torch(self.grid.w3).to(torch.float64)[0:-1]) / 3 * self.volume_scale
+
+    def emit(self, nphotons, wavelength="random", scattering=False, learning=False, timing={}):
+        t1 = time.time()
+        photon_list = self.base_emit(nphotons, wavelength=wavelength, scattering=scattering, timing=timing)
+        t2 = time.time()
+        timing["Photon emission time"] = t2 - t1
+        
+        with wp.ScopedDevice(self.device):
+            photon_list.radius = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.logradius = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.theta = wp.zeros(nphotons, dtype=float)
+            photon_list.phi = wp.zeros(nphotons, dtype=float)
+            photon_list.sin_theta = wp.zeros(nphotons, dtype=float)
+            photon_list.cos_theta = wp.zeros(nphotons, dtype=float)
+            photon_list.phi = wp.zeros(nphotons, dtype=float)
+            photon_list.sin_phi = wp.zeros(nphotons, dtype=float)
+            photon_list.cos_phi = wp.zeros(nphotons, dtype=float)
+
+            iphotons = wp.array(np.arange(nphotons), dtype=int)
+
+            photon_list.indices = wp.zeros((nphotons, 3), dtype=int)
+            wp.launch(kernel=self.photon_loc,
+                      dim=(nphotons,),
+                      inputs=[photon_list, self.grid, iphotons])
+
+            photon_list.density = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.amax = wp.array(np.zeros(nphotons), dtype=float)
+            photon_list.p = wp.array(np.zeros(nphotons), dtype=float)
+
+            if not learning:
+                wp.launch(kernel=self.photon_cell_properties,
+                          dim=(nphotons,),
+                          inputs=[photon_list, self.grid, iphotons])
+
+        return photon_list
+    
+    @wp.kernel
+    def random_location_in_cell(position: wp.array(dtype=wp.vec3),
+                                coords: wp.array2d(dtype=int),
+                                grid: GridStruct):
+        ip = wp.tid()
+
+        ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
+
+        rng = wp.rand_init(1234, ip)
+
+        if ix == 0:
+            r = 10.**(wp.randf(rng) * grid.logw1[ix])
+        else:
+            r = 10.**(grid.logw1[ix-1] + wp.randf(rng) * (grid.logw1[ix] - grid.logw1[ix-1]))
+        theta = grid.w2[iy] + wp.randf(rng) * (grid.w2[iy+1] - grid.w2[iy])
+        phi = grid.w3[iz] + wp.randf(rng) * (grid.w3[iz+1] - grid.w3[iz])
+
+        position[ip][0] = r * wp.sin(theta) * wp.cos(phi)
+        position[ip][1] = r * wp.sin(theta) * wp.sin(phi)
+        position[ip][2] = r * wp.cos(theta)
+
+    @wp.kernel
+    def photon_loc(photon_list: PhotonList,
+                   grid: GridStruct,
+                   iray: wp.array(dtype=int)):
+        """
+        #Given a photon's position and direction, return its cell indices in the spherical grid.
+        #Optionally, prev_indices can be provided for efficient searching.
+        #Returns: l (np.array of shape (3,))
+        """
+
+        ip = iray[wp.tid()]
+        
+        EPS = 1e-5
+
+        photon_list.radius[ip] = wp.sqrt(photon_list.position[ip][0]**2. + photon_list.position[ip][1]**2. + photon_list.position[ip][2]**2.)
+        photon_list.logradius[ip] = wp.log10(photon_list.radius[ip])
+
+        # Handle r == 0 case
+        if photon_list.radius[ip] == 0:
+            photon_list.cos_theta[ip] *= -1.0
+            photon_list.theta[ip] = np.pi - photon_list.theta[ip]
+            if grid.n3 != 2:
+                photon_list.phi[ip] = wp.mod(photon_list.phi[ip] + np.pi, 2.*np.pi)
+        else:
+            R = wp.sqrt(photon_list.position[ip][0]**2. + photon_list.position[ip][1]**2.)
+            
+            photon_list.cos_theta[ip] = photon_list.position[ip][2] / photon_list.radius[ip]
+            photon_list.sin_theta[ip] = R / photon_list.radius[ip]
+            photon_list.theta[ip] = wp.acos(photon_list.cos_theta[ip])
+            
+            if grid.n3 != 2:
+                photon_list.phi[ip] = wp.mod(wp.atan2(photon_list.position[ip][1], photon_list.position[ip][0]) + 2.*np.pi, 2.*np.pi)
+            if R == 0:
+                photon_list.cos_phi[ip] = 1.0
+                photon_list.sin_phi[ip] = 0.0
+            else:
+                photon_list.cos_phi[ip] = photon_list.position[ip][0] / R
+                photon_list.sin_phi[ip] = photon_list.position[ip][1] / R
+
+        if grid.mirror_symmetry:
+            if photon_list.cos_theta[ip] < 0:
+                photon_list.theta[ip] = np.pi - photon_list.theta[ip]
+                photon_list.direction[ip][2] *= -1.
+                photon_list.cos_theta[ip] *= -1.
+
+            if equal_zero(photon_list.cos_theta[ip], EPSILON) and photon_list.direction[ip][2] < 0:
+                photon_list.direction[ip][2] *= -1.
+
+        # --- Radial index ---
+        if photon_list.radius[ip] >= grid.w1[grid.n1-1]:
+            i1 = grid.n1-1
+        elif photon_list.radius[ip] <= grid.w1[1]:
+            i1 = 0
+        else:
+            i1 = wp.int(wp.floor((photon_list.logradius[ip] - grid.logw1[0])) / (grid.logw1[1] - grid.logw1[0])) + 1
 
         # Snap to wall if needed
         if equal(photon_list.radius[ip], grid.w1[i1], EPS):

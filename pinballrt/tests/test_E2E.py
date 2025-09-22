@@ -1,6 +1,6 @@
 from pinballrt.dust import load
 from pinballrt.sources import Star
-from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid
+from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
 
 import astropy.units as u
@@ -14,6 +14,7 @@ import pytest
 test_data = [
     (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}),
+    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}),
 ]
 
 @pytest.mark.parametrize("grid_class,grid_kwargs", test_data)
@@ -40,7 +41,7 @@ def test_E2E(grid_class, grid_kwargs, return_vals=False):
 
     model.thermal_mc(nphotons=1000000, use_ml_step=False)
 
-    image = model.make_image(256, 256, 0.1, np.array([1., 1000.])*u.micron, 45., 45., 1.)
+    image = model.make_image(256, 0.1*u.arcsec, np.array([1., 1000.])*u.micron, 45., 45., 1.*u.pc)
 
     # Do the checks.
 

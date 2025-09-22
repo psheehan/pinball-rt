@@ -1,4 +1,5 @@
 from .photons import PhotonList
+from .grids import LogUniformSphericalGrid
 import astropy.units as u
 import astropy.constants as const
 import warp as wp
@@ -59,6 +60,8 @@ class Camera:
         ray_list.pixel_too_large = wp.array(pixel_too_large, dtype=bool)
 
         ray_list.radius = wp.array(np.zeros(xflat.shape), dtype=float)
+        if isinstance(self.grid, LogUniformSphericalGrid):
+            ray_list.logradius = wp.array(np.zeros(xflat.shape), dtype=float)
         ray_list.theta = wp.zeros(xflat.shape, dtype=float)
         ray_list.phi = wp.zeros(xflat.shape, dtype=float)
         ray_list.sin_theta = wp.zeros(xflat.shape, dtype=float)
@@ -141,13 +144,13 @@ class Camera:
 
         return intensity
 
-    def raytrace_sources(self, x, y, nx, ny, nu, dpc, nrays=1000):
+    def raytrace_sources(self, x, y, nx, ny, nu, distance, nrays=1000):
         with wp.ScopedDevice(self.grid.device):
             intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
     
             # Also propagate rays from any sources in the grid.
     
-            ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, dpc, device=self.grid.device)
+            ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, distance, device=self.grid.device)
             iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
     
             wp.launch(kernel=self.grid.photon_loc,

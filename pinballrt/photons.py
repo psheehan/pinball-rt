@@ -34,6 +34,7 @@ class PhotonList:
     pixel_too_large: wp.array(dtype=bool)
 
     radius: wp.array(dtype=float)
+    logradius: wp.array(dtype=float)
     theta: wp.array(dtype=float)
     sin_theta: wp.array(dtype=float)
     cos_theta: wp.array(dtype=float)
