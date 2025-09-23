@@ -228,7 +228,7 @@ class Model:
             for camera in self.camera_list[dev]:
                 camera.set_orientation(incl, pa, distance)
 
-        pixel_size = (pixel_size*distance).cgs.value
+        pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
 
         image = xr.Dataset(
             #data_vars={

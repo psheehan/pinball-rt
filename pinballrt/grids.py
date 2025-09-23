@@ -850,6 +850,15 @@ class Grid:
 
             s = wp.zeros(nrays, dtype=float)
 
+            # Sanity check on which rays are actually in the grid.
+
+            wp.launch(kernel=self.check_in_grid,
+                      dim=(nrays,),
+                      inputs=[ray_list, self.grid, iray])
+            
+            iray = iray_original[wp.to_torch(ray_list.in_grid)]
+            nrays = iray.size(0)
+
             while nrays > 0:
                 wp.launch(kernel=self.check_pixel_too_large,
                           dim=(nrays,),
