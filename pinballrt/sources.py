@@ -1,3 +1,4 @@
+from pinballrt.utils import EPSILON
 from .photons import PhotonList
 from astropy.modeling import models
 import astropy.units as u
@@ -125,6 +126,7 @@ class Star:
                          random_nu: wp.array(dtype=float),
                          iCPD: wp.array(dtype=int)): # pragma: no cover
         ip = wp.tid()
+        rng = wp.rand_init(1324, ip)
         
         index = len(random_nu_CPD) - 1
         # Find the index where ksi[ip] is less than random_nu_CPD[index]
@@ -133,5 +135,10 @@ class Star:
                 index = i
                 break
 
-        random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
-                (random_nu_CPD[index] - random_nu_CPD[index-1]) + nu[index-1]
+        dCPD = random_nu_CPD[index] - random_nu_CPD[index-1]
+
+        if dCPD < EPSILON:
+            random_nu[ip] = (nu[index] - nu[index-1]) * wp.randf(rng) + nu[index-1]
+        else:
+            random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
+                    dCPD + nu[index-1]
