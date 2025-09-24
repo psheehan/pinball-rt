@@ -191,7 +191,7 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, npix, pixel_size, lam, incl, pa, distance, device="cpu"):
+    def make_image(self, npix=100, pixel_size=None, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, device="cpu"):
         """
         Create an image from the dust distribution.
 
@@ -200,12 +200,13 @@ class Model:
         npix : int or tuple, optional
             The number of pixels in the image.
         pixel_size : Quantity
-            The size of each pixel in the image.
-        lam : array-like
+            The size of each pixel in the image. If none, will set the pixel size such that the image is
+            25% larger than the grid.
+        lam : array-like Quantity
             The wavelengths to simulate.
-        incl : float
+        incl : Quantity
             The inclination angle of the image.
-        pa : float
+        pa : Quantity
             The position angle of the image.
         dpc : Quantity
             The distance to the image plane in parsecs.
@@ -217,6 +218,9 @@ class Model:
             nx, ny = npix, npix
         elif isinstance(npix, (list, tuple, np.ndarray)):
             nx, ny = npix
+
+        if pixel_size is None:
+            pixel_size = ((1.25*self.grid.grid_size()*self.grid.distance_unit / distance).decompose()*u.radian).to(u.arcsec) / npix
 
         # First, run a scattering simulation to get the scattering phase function
 

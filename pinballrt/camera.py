@@ -18,8 +18,8 @@ class Camera:
 
         #self.r = (dpc*u.pc).cgs.value;
         self.r = self.grid.grid_size()
-        self.incl = incl * np.pi/180.
-        self.pa = pa * np.pi/180.
+        self.incl = incl.to(u.radian).value
+        self.pa = pa.to(u.radian).value
 
         phi = -np.pi/2 - self.pa
 
