@@ -41,7 +41,7 @@ def test_E2E(grid_class, grid_kwargs, return_vals=False):
 
     model.thermal_mc(nphotons=1000000, use_ml_step=False)
 
-    image = model.make_image(256, 0.1*u.arcsec, np.array([1., 1000.])*u.micron, 45., 45., 1.*u.pc)
+    image = model.make_image(npix=256, pixel_size=0.1*u.arcsec, lam=np.array([1., 1000.])*u.micron, incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc)
 
     # Do the checks.
 
@@ -55,13 +55,13 @@ def test_E2E(grid_class, grid_kwargs, return_vals=False):
         base_image = xr.open_dataset(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_image.nc"))
 
         temperature_diff = (model.grid.grid.temperature.numpy() - temperature_mean) / temperature_std
-        assert np.all(temperature_diff) <= 3., f"Temperature difference exceeds tolerance: {np.max(np.abs(temperature_diff))}"
+        assert np.all(np.abs(temperature_diff) <= 3.), f"Temperature difference exceeds tolerance: {np.max(np.abs(temperature_diff))}"
 
         scattering_diff = (model.grid.scattering.numpy() - scattering_mean) / np.where(scattering_std > 0, scattering_std, 1.0)
-        assert np.all(scattering_diff) < 3., f"Scattering difference exceeds tolerance: {np.max(np.abs(scattering_diff))}"
+        assert np.all(np.abs(scattering_diff) < 3.), f"Scattering difference exceeds tolerance: {np.max(np.abs(scattering_diff))}"
 
         image_diff = (image.intensity - base_image.intensity) / np.where(base_image.unc > 0, base_image.unc, 1.0)
-        assert np.all(image_diff) < 3., f"Image difference exceeds tolerance: {np.max(np.abs(image_diff))}"
+        assert np.all(np.abs(image_diff) < 3.), f"Image difference exceeds tolerance: {np.max(np.abs(image_diff))}"
     else:
         return model.grid.grid.temperature.numpy(), model.grid.scattering.numpy(), image
 
