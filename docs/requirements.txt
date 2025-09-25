@@ -1,0 +1,6 @@
+sphinx
+sphinx-automodapi
+sphinx_book_theme
+numpydoc
+
+pinball-rt @ https://github.com/psheehan/pinball-rt@main
