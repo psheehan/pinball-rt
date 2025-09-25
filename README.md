@@ -1,5 +1,7 @@
 [![E2E tests](https://github.com/psheehan/pinball-rt/actions/workflows/run_E2E_tests.yml/badge.svg)](https://github.com/psheehan/pinball-rt/actions/workflows/run_E2E_tests.yml)
 [![codecov](https://codecov.io/gh/psheehan/pinball-rt/graph/badge.svg?token=980X3QJEOS)](https://codecov.io/gh/psheehan/pinball-rt)
+[![Documentation Status](https://readthedocs.org/projects/pinball-rt/badge/?version=latest)](https://pinball-rt.readthedocs.io/en/latest/?badge=latest)
+
 
 Monte Carlo radiative transfer, at Warp speed!
 ==============================================
