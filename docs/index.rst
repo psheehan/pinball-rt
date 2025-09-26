@@ -41,7 +41,11 @@ Then set up a model and run:
 
    model.thermal_mc(nphotons=1000000)
 
-Or, `try me on Google Colab! <https://colab.research.google.com/drive/1Zo0obTjbQxd38zPbR_ltzJjLGU-vcdKy?usp=sharing>`_
+Or, click the link below to try it out in Google Colab:
+
+.. raw:: html 
+
+   <a target="_blank" href="https://colab.research.google.com/github/psheehan/pinball-rt/blob/main/examples/pinball-demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Or, Try Me In Colab"/></a>
 
 .. toctree::
    :maxdepth: 1

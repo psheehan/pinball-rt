@@ -1,6 +1,9 @@
 [![E2E tests](https://github.com/psheehan/pinball-rt/actions/workflows/run_E2E_tests.yml/badge.svg)](https://github.com/psheehan/pinball-rt/actions/workflows/run_E2E_tests.yml)
 [![codecov](https://codecov.io/gh/psheehan/pinball-rt/graph/badge.svg?token=980X3QJEOS)](https://codecov.io/gh/psheehan/pinball-rt)
 [![Documentation Status](https://readthedocs.org/projects/pinball-rt/badge/?version=latest)](https://pinball-rt.readthedocs.io/en/latest/?badge=latest)
+<a target="_blank" href="https://colab.research.google.com/github/psheehan/pinball-rt/blob/main/examples/pinball-demo.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Try Me In Colab"/>
+</a>
 
 
 Monte Carlo radiative transfer, at Warp speed!
@@ -41,4 +44,4 @@ Then set up a model and run:
    model.thermal_mc(nphotons=1000000)
 ```
 
-For more information, see the documentation at https://pinball-rt.readthedocs.io (coming soon).
+For more information, see the documentation at https://pinball-rt.readthedocs.io.
