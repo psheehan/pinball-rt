@@ -809,7 +809,7 @@ class Grid:
         alpha_ext = alpha_ext + ray_list.kext[iray,inu]*grid.density[ix,iy,iz]
         alpha_sca = alpha_sca + ray_list.kext[iray,inu]*ray_list.ray_albedo[iray,inu]*grid.density[ix,iy,iz]
         intensity_abs = intensity_abs + ray_list.kext[iray,inu] * (1. - ray_list.ray_albedo[iray,inu]) * \
-                grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu] / 1e9, grid.temperature[ix,iy,iz])
+                grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
 
         albedo_total = alpha_sca / alpha_ext
 
