@@ -131,12 +131,14 @@ class Camera:
                         dim=(nrays, nu.size),
                         inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
 
+                old_x = new_x[will_be_in_grid].copy()
+                old_y = new_y[will_be_in_grid].copy()
                 new_x, new_y = [], []
                 for i in range(nrays):
                     if ray_list.pixel_too_large.numpy()[i]:
                         for j in range(4):
-                            new_x.append(ray_list.image_ix.numpy()[i] + (-1)**j * pixel_size/4)
-                            new_y.append(ray_list.image_iy.numpy()[i] + (-1)**(int(j/2)) * pixel_size/4)
+                            new_x.append(old_x[i] + (-1)**j * pixel_size/4)
+                            new_y.append(old_y[i] + (-1)**(int(j/2)) * pixel_size/4)
                 new_x = np.array(new_x)
                 new_y = np.array(new_y)
                 pixel_size = pixel_size / 2

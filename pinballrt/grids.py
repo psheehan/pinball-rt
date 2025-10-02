@@ -820,7 +820,7 @@ class Grid:
 
         intensity_cell = intensity_abs
 
-        ray_list.intensity[ir,inu] = ray_list.intensity[ir,inu] + intensity_cell * wp.exp(-ray_list.tau_intensity[ir,inu])
+        ray_list.intensity[ir,inu] = (ray_list.intensity[ir,inu] + intensity_cell * wp.exp(-ray_list.tau_intensity[ir,inu])) * (1. - wp.float32(ray_list.pixel_too_large[ir]))
         ray_list.tau_intensity[ir,inu] = ray_list.tau_intensity[ir,inu] + tau_cell
 
     @wp.kernel
