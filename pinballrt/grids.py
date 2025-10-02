@@ -1394,7 +1394,7 @@ class UniformSphericalGrid(Grid):
                     a = photon_list.direction[ip][0]*photon_list.direction[ip][0]+photon_list.direction[ip][1]*photon_list.direction[ip][1]-photon_list.direction[ip][2]*photon_list.direction[ip][2]*grid.tan_w2[i]*grid.tan_w2[i]
                     b = 2.*(photon_list.position[ip][0]*photon_list.direction[ip][0]+photon_list.position[ip][1]*photon_list.direction[ip][1]-photon_list.position[ip][2]*photon_list.direction[ip][2]*grid.tan_w2[i]*grid.tan_w2[i])
 
-                    if equal(photon_list.sin_theta[ip], grid.sin_w2[i], grid.sin_tol_w2[i]):
+                    if equal(photon_list.sin_theta[ip], grid.sin_w2[i], EPSILON):
                         st1 = (-b + wp.abs(b))/(2.*a)
                         if (st1 < s) and (st1 > 0):
                             s = st1
@@ -1417,7 +1417,7 @@ class UniformSphericalGrid(Grid):
 
         if grid.n3 != 1:
             for i in range(iw3, iw3+2):
-                if photon_list.phi[ip] != grid.w3[i]:
+                if not equal(photon_list.phi[ip], grid.w3[i], EPSILON):
                     c = photon_list.position[ip][0]*grid.sin_w3[i]-photon_list.position[ip][1]*grid.cos_w3[i]
                     d = photon_list.direction[ip][0]*grid.sin_w3[i]-photon_list.direction[ip][1]*grid.cos_w3[i]
 
@@ -1863,7 +1863,7 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
         elif photon_list.radius[ip] <= grid.w1[1]:
             i1 = 0
         else:
-            i1 = wp.int(wp.floor((photon_list.logradius[ip] - grid.logw1[0])) / (grid.logw1[1] - grid.logw1[0])) + 1
+            i1 = wp.int(wp.floor((photon_list.logradius[ip] - grid.logw1[0]) / (grid.logw1[1] - grid.logw1[0]))) + 1
 
         # Snap to wall if needed
         if equal(photon_list.radius[ip], grid.w1[i1], EPS):
