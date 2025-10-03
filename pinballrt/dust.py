@@ -7,26 +7,21 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
 import scipy.interpolate
-from scipy.stats import gaussian_kde
 from tqdm import trange
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
 import scipy.stats.qmc
 import scipy.integrate
-from scipy.interpolate import RegularGridInterpolator
 import warp as wp
 import numpy as np
 import torch.nn as nn
-import pytorch_lightning as pl
 import torch
 import os
 import PyMieScatt
-from KDEpy import FFTKDE
-import interpn
-import psutil
+from sklearn.preprocessing import MinMaxScaler
 
-class Dust(pl.LightningDataModule):
+class Dust:
     def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
                  amin=None, amax=None, p=None, with_dhs=False, fmax=0.8, nf=50, interpolate=10000, 
                  device="cpu"):
@@ -261,24 +256,11 @@ class Dust(pl.LightningDataModule):
 
         return 10.**vals[:,0], 10.**vals[:,1], 10.**vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
-    def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
-        all_layers = [nn.Flatten()]
+    def initialize_model(self, model="random_nu", input_size=2, output_size=1, num_hidden_layers=3, num_hidden_units=48):
+        setattr(self, model+"_model", Generator(input_size=input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units, num_output_units=output_size).to(self.device))
 
-        for hidden_unit in hidden_units:
-            layer = nn.Linear(input_size, hidden_unit)
-            all_layers.append(layer)
-            all_layers.append(nn.Sigmoid())
-            input_size = hidden_unit
-
-        all_layers.append(nn.Linear(hidden_units[-1], output_size))
-
-        if model == "random_nu":
-            self.random_nu_model = nn.Sequential(*all_layers)
-        elif model == "ml_step":
-            self.ml_step_model = nn.Sequential(*all_layers)
-
-    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False, 
-            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None):
+    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, num_hidden_layers=3, num_hidden_units=48, max_epochs=10, 
+            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, device="cpu"):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -301,15 +283,15 @@ class Dust(pl.LightningDataModule):
         """
         self.nsamples = nsamples
         self.test_split = test_split
-        self.valid_split = valid_split
         self.learning = model
+        self.device = torch.device(device)
 
         # Set up the NN
 
         if model == "random_nu":
-            input_size, output_size = 2, 1
+            self.input_size, output_size = 2, 1
         elif model == "ml_step":
-            input_size, output_size = 12, 9
+            self.input_size, output_size = 12, 9
 
             if nu_range is None:
                 nu_range = (self.nu.value.min(), self.nu.value.max())
@@ -321,35 +303,45 @@ class Dust(pl.LightningDataModule):
             self.log10_tau_cell_nu0_min = tau_range[0]
             self.log10_tau_cell_nu0_max = tau_range[1]
 
-        self.initialize_model(model=model, input_size=input_size, output_size=output_size, hidden_units=hidden_units)
+        self.initialize_model(model=model, input_size=self.input_size, output_size=output_size, 
+                num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units)
+        self.gen_model = getattr(self, model+"_model")
+        self.disc_model = Discriminator(input_size=self.input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units).to(self.device)
 
         # Wrap the model in lightning
 
-        self.dustLM = DustLightningModule(getattr(self, model+"_model"))
+        self.setup()
 
-        self.trainer = pl.Trainer(max_epochs=max_epochs)
-        self.trainer.fit(model=self.dustLM, datamodule=self)
+        self.g_optimizer = torch.optim.Adam(self.gen_model.parameters(), lr=0.0001)
+        self.d_optimizer = torch.optim.Adam(self.disc_model.parameters(), lr=0.0001)
 
-        # Test the model.
+        self.loss_fn = nn.BCELoss()
 
-        self.trainer.test(model=self.dustLM, datamodule=self)
+        all_d_losses = []
+        all_g_losses = []
+        all_d_real = []
+        all_d_fake = []
+        
+        for epoch in range(1, max_epochs + 1):
+            d_losses = []
+            g_losses = []
+            d_vals_real, d_vals_fake = [], []
 
-        # Plot the result
+            for i, (x, l) in enumerate(self.train):
+                d_loss, d_proba_real, d_proba_fake = self.d_train(x, l)
+                d_losses.append(d_loss)
+                g_losses.append(self.g_train(x, l))
 
-        if plot:
-            import matplotlib.pyplot as plt
+                d_vals_real.append(d_proba_real.mean().cpu())
+                d_vals_fake.append(d_proba_fake.mean().cpu())
 
-            if model == "random_nu":
-                y_pred = trainer.predict(dustLM, datamodule=self)
-                y_pred = torch.cat(y_pred)
-                y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
+            all_d_losses.append(torch.tensor(d_losses).mean())
+            all_g_losses.append(torch.tensor(g_losses).mean())
 
-                with torch.no_grad():
-                    count, bins, patches = plt.hist(y_true, 100, histtype='step')
-                    plt.hist(y_pred, bins, histtype='step')
-                    plt.savefig("predicted_vs_actual.png")
-            else:
-                self.plot_ml_step()
+            all_d_real.append(torch.tensor(d_vals_real).mean())
+            all_d_fake.append(torch.tensor(d_vals_fake).mean())
+
+            print(f'Epoch {epoch:03d} | Avg Losses >> D: {all_d_losses[-1]:.4f} | G: {all_g_losses[-1]:.4f}')
 
     def prepare_data(self):
         if self.learning == "random_nu":
@@ -363,10 +355,24 @@ class Dust(pl.LightningDataModule):
 
         logT = 5*samples[:,0] - 1.
         ksi = samples[:,1]
+
         X = torch.tensor(np.vstack((logT, ksi)).T, dtype=torch.float32)
 
         y = np.concatenate([self.random_nu_manual(10.**X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch in DataLoader(X, batch_size=1000)])
-        y = torch.tensor(np.log10(y.value), dtype=torch.float32)
+        y = torch.unsqueeze(torch.tensor(np.log10(y.value), dtype=torch.float32), 1)
+
+        X = torch.unsqueeze(torch.tensor(logT, dtype=torch.float32), 1)
+
+        self.df = pd.DataFrame({"log10_T":logT, "log10_nu":y.numpy().flatten()})
+        self.features = ["log10_nu"]
+        self.labels = ["log10_T"]
+
+        self.random_nu_scaler = MinMaxScaler()
+        data = self.random_nu_scaler.fit_transform(self.df.values)
+        self.df = pd.DataFrame(data, columns=self.df.columns)
+
+        X = torch.tensor(self.df.loc[:, self.features].values, dtype=torch.float32)
+        y = torch.tensor(self.df.loc[:, self.labels].values, dtype=torch.float32)
 
         self.dataset = TensorDataset(X, y)
 
@@ -388,62 +394,22 @@ class Dust(pl.LightningDataModule):
                     temperature_range=(self.log10_T_min, self.log10_T_max), nu_range=(self.log10_nu0_min, self.log10_nu0_max))
             df.to_csv("sim_results.csv")
 
+        df.loc[df["log10_tau"] < -5., "log10_tau"] = -5.
+        df.loc[np.isnan(df["log10_tau"]), "log10_tau"] = -5.
+        df.loc[df["log10_Eabs"] < -7., "log10_Eabs"] = -7.
+
+        self.scaler = MinMaxScaler()
+        data = self.scaler.fit_transform(df.values)
+        df = pd.DataFrame(data, columns=df.columns)
+
         self.df = df
         self.nsamples = len(df)
 
-        new_order = df.columns[[0, 1, 2, 3, 4, 9, 10, 11, 8, 6, 7, 5]]
+        self.features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
+        self.labels = ["log10_nu0", "log10_T", "log10_tau_cell_nu0"]
 
-        df = df.loc[:, new_order]
-
-        dependencies = {
-            "log10_nu":["log10_nu0", "log10_T", "log10_tau_cell_nu0"],
-            "log10_Eabs":["log10_nu0", "log10_T", "log10_tau_cell_nu0", "log10_nu"],
-            "direction_yaw":["log10_nu0", "log10_T", "log10_tau_cell_nu0","log10_nu", "log10_Eabs"],
-            "direction_pitch":["log10_nu0", "log10_T", "log10_nu", "log10_Eabs"],
-            "direction_roll":["log10_nu0", "log10_T", "log10_tau_cell_nu0", "log10_nu", "log10_Eabs"],
-            "roll":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll"],
-            "yaw":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
-            "pitch":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
-            "log10_tau":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll", "pitch"],
-        }
-
-        new_columns = []
-        for i in trange(3,df.shape[1]):
-            column = df.columns[i]
-
-            bw = len(df)**(-1./(len(dependencies[column])+1 + 4))
-
-            kde = FFTKDE(bw=bw, kernel="gaussian")
-            kde.fit(df[dependencies[column] + [column]].values)
-
-            Ndim = len(dependencies[column]) + 1
-            N = min(100, round((0.1*psutil.virtual_memory().available / 8 / Ndim )**(1./Ndim)))
-            shape = (N,)*Ndim
-
-            result = kde.evaluate(shape)
-
-            cdf = np.cumsum(result[1].reshape(shape), axis=-1)
-
-            slices = (slice(None),) * len(dependencies[column])
-            cdf /= cdf[slices + (-1,)][slices + (np.newaxis,)]
-
-            dims = cdf.shape
-            starts = result[0].min(axis=0)
-            steps = np.array([np.unique(result[0][:,j])[1] - np.unique(result[0][:,j])[0] for j in range(result[0].shape[1])])
-
-            cdf_interp = interpn.MultilinearRegular.new(dims, starts, steps, cdf)
-            ksi = cdf_interp.eval(df.loc[:, dependencies[column] + [column]].values.T)
-
-            new_columns.append(("ksi_"+column, ksi))
-
-        for name, values in new_columns:
-            df[name] = values
-
-        features = ["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_log10_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"]
-        targets = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
-
-        X = torch.tensor(df.loc[:, features].values, dtype=torch.float32)
-        y = torch.tensor(df.loc[:, targets].values, dtype=torch.float32)
+        X = torch.tensor(df.loc[:, self.features].values, dtype=torch.float32)
+        y = torch.tensor(df.loc[:, self.labels].values, dtype=torch.float32)
 
         self.dataset = TensorDataset(X, y)
 
@@ -530,87 +496,94 @@ class Dust(pl.LightningDataModule):
                        "direction_roll":direction_ypr[:,2]})
 
         return df
+    
+    def d_train(self, x, labels):
+        self.disc_model.zero_grad()
+
+        batch_size = x.size(0)
+        x = x.view(batch_size, -1).to(self.device)
+
+        d_labels_real = torch.ones(batch_size, 1, device=self.device)
+        d_proba_real = self.disc_model(x, labels)
+        d_loss_real = self.loss_fn(d_proba_real, d_labels_real)
+
+        input_z = create_noise(batch_size, self.input_size - len(self.labels)).to(self.device)
+        fake_labels = torch.rand(batch_size, labels.size(1), device=self.device)
+        g_output = self.gen_model(input_z, fake_labels)
+
+        d_proba_fake = self.disc_model(g_output, fake_labels)
+        d_labels_fake = torch.zeros(batch_size, 1, device=self.device)
+        d_loss_fake = self.loss_fn(d_proba_fake, d_labels_fake)
+
+        d_loss = d_loss_real + d_loss_fake
+        d_loss.backward()
+        self.d_optimizer.step()
+
+        return d_loss.data.item(), d_proba_real.detach(), d_proba_fake.detach()
+
+    def g_train(self, x, labels):
+        self.gen_model.zero_grad()
+
+        batch_size = x.size(0)
+
+        input_z = create_noise(batch_size, self.input_size - len(self.labels)).to(self.device)
+        fake_labels = torch.rand(batch_size, labels.size(1), device=self.device)
+
+        g_output = self.gen_model(input_z, fake_labels)
+
+        d_proba_fake = self.disc_model(g_output, fake_labels)
+
+        g_labels_real = torch.ones(batch_size, 1, device=self.device)
+        g_loss = self.loss_fn(d_proba_fake, g_labels_real)
+
+        g_loss.backward()
+        self.g_optimizer.step()
+
+        return g_loss.data.item()
 
     # DataModule functions
 
-    def plot_ml_step(self):
+    def plot_learned_model(self):
         import matplotlib.pyplot as plt
 
-        if self.trainer is None and hasattr(self, "ml_step_model"):
-            self.dustLM = DustLightningModule(getattr(self, "ml_step_model"))
+        samples = create_samples(getattr(self, self.learning+"_model"), create_noise(len(self.df), self.input_size - len(self.labels)).to(self.device), 
+                torch.tensor(self.df.loc[:, self.labels].values, dtype=torch.float32).to(self.device)).detach().cpu().numpy()
 
-            self.trainer = pl.Trainer()
+        df_gen = pd.DataFrame(samples, columns=self.features)
+        for label in self.labels:
+            df_gen[label] = self.df[label].values
 
-            self.learning = 'ml_step'
-            self.test_split = 0.1
-            self.valid_split = 0.2
+        fig, ax = plt.subplots(nrows=len(self.df.columns), ncols=len(self.df.columns), figsize=(11,11))
 
-        if self.trainer is not None:
-            y_pred = self.trainer.predict(self.dustLM, datamodule=self)
-            y_pred = torch.cat(y_pred).numpy()
-            y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
-
-            X_test = torch.cat([batch[0] for batch in self.predict_dataloader()]).numpy()
-
-            predict = True
-
-        columns = self.df.columns
-        features = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_log10_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"])
-        targets = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"])
-
-        fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
-
-        for i, key1 in enumerate(columns):
-            for j, key2 in enumerate(columns):
+        for i, key1 in enumerate(self.df.columns):
+            for j, key2 in enumerate(self.df.columns):
                 if key1 == key2:
                     ax[i,j].hist(self.df[key1], bins=50, histtype='step', density=True)
-                    if key1 in targets and predict:
-                        ax[i,j].hist(y_pred[:,np.where(targets == key1)[0][0]], bins=50, histtype='step', density=True)
+                    ax[i,j].hist(df_gen[key1], bins=50, histtype='step', density=True)
                 elif i > j:
                     ax[i,j].scatter(self.df[key2], self.df[key1], marker='.', s=0.025)
-
-                    if (key1 in targets or key2 in targets) and predict:
-                        if key2 in targets:
-                            x = y_pred[:,np.where(targets == key2)[0][0]]
-                        else:
-                            x = X_test[:,np.where(features == key2)[0][0]]
-
-                        if key1 in targets:
-                            y = y_pred[:,np.where(targets == key1)[0][0]]
-                        else:
-                            y = X_test[:,np.where(features == key1)[0][0]]
-
-                        ax[i,j].scatter(x, y, marker='.', s=0.025)
+                    ax[i,j].scatter(df_gen[key2], df_gen[key1], marker='.', s=0.025)
                 elif i < j:
                     ax[i,j].set_axis_off()
 
-                if i == len(columns) - 1:
+                if i == len(self.df.columns) - 1:
                     ax[i,j].set_xlabel(key2)
 
             ax[i,0].set_ylabel(key1)
 
         plt.show()
+        plt.savefig("ml_step_results.png", dpi=300)
 
-    def setup(self, stage=None):
-        if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
+    def setup(self):
+        if hasattr(self, "train") and hasattr(self, "test"):
             return
+        if not hasattr(self, "dataset"):
+            self.prepare_data()
+
         test_size = int(self.test_split * self.nsamples)
-        valid_size = int((self.nsamples - test_size)*self.valid_split)
-        train_size = self.nsamples - test_size - valid_size
-        train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
-        self.train, self.val = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
-
-    def train_dataloader(self):
-        return DataLoader(self.train, batch_size=100, num_workers=2)
-
-    def val_dataloader(self):
-        return DataLoader(self.val, batch_size=100, num_workers=2)
-
-    def test_dataloader(self):
-        return DataLoader(self.test, batch_size=100, num_workers=2)
-
-    def predict_dataloader(self):
-        return DataLoader(self.test, batch_size=100, num_workers=2)
+        train_size = self.nsamples - test_size
+        self.train, self.test = random_split(self.dataset, [train_size, test_size], generator=torch.Generator().manual_seed(1))
+        self.train = DataLoader(self.train, batch_size=32, shuffle=False)
 
     def state_dict(self):
         state_dict = {
@@ -700,47 +673,47 @@ def load(filename, device="cpu"):
 
     return d
 
-
-class DustLightningModule(pl.LightningModule):
-    def __init__(self, model):
+class Generator(nn.Module):
+    def __init__(self, input_size=3, num_hidden_layers=3, num_hidden_units=48, num_output_units=3):
         super().__init__()
-        self.model = model
+        self.model = nn.Sequential()
+        for i in range(num_hidden_layers):
+            self.model.add_module(f'fc_g{i}', nn.Linear(input_size, num_hidden_units, bias=False))
+            self.model.add_module(f'bn_g{i}', nn.BatchNorm1d(num_hidden_units))
+            self.model.add_module(f'relu_g{i}', nn.LeakyReLU(0.2))
+            input_size = num_hidden_units
+        self.model.add_module(f'fc_g{num_hidden_layers}', nn.Linear(input_size, num_output_units))
+        self.model.add_module(f'sigmoid_g', nn.Sigmoid())
 
-    def forward(self, x):
-        x = self.model(x)
-        return x
+    def forward(self, z, labels):
+        x = torch.cat([z, labels], dim=1)
+        return self.model(x)
 
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-        if y.dim() == 1:
-            y = y.reshape(-1,1)
-        loss = nn.functional.mse_loss(self(x), y)
-        self.log('train_loss', loss, prog_bar=True)
-        return loss
+class Discriminator(nn.Module):
+    def __init__(self, input_size=3, num_hidden_layers=3, num_hidden_units=48, num_output_units=1):
+        super().__init__()
+        self.model = nn.Sequential()
+        for i in range(num_hidden_layers):
+            self.model.add_module(f'fc_d{i}', nn.Linear(input_size, num_hidden_units, bias=False))
+            self.model.add_module(f'bn_d{i}', nn.BatchNorm1d(num_hidden_units))
+            self.model.add_module(f'relu_d{i}', nn.LeakyReLU(0.2))
+            self.model.add_module('dropout', nn.Dropout(p=0.5))
+            input_size = num_hidden_units
+        self.model.add_module(f'fc_d{num_hidden_layers}', nn.Linear(input_size, num_output_units))
+        self.model.add_module(f'sigmoid', nn.Sigmoid())
 
-    def validation_step(self, batch, batch_idx):
-        x, y = batch
-        if y.dim() == 1:
-            y = y.reshape(-1,1)
-        loss = nn.functional.mse_loss(self(x), y)
-        self.log('valid_loss', loss, prog_bar=True)
-        return loss
+    def forward(self, x, labels):
+        x = torch.cat([x, labels], dim=1)
+        return self.model(x)
 
-    def test_step(self, batch, batch_idx):
-        x, y = batch
-        if y.dim() == 1:
-            y = y.reshape(-1,1)
-        loss = nn.functional.mse_loss(self(x), y)
-        self.log('test_loss', loss, prog_bar=True)
-        return loss
+def create_noise(batch_size, input_size):
+    return torch.randn(batch_size, input_size)
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
-        return optimizer
 
-    def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        x, y = batch
-        return self(x)
+def create_samples(g_model, input_z, input_labels):
+    g_output = g_model(input_z, input_labels)
+    return g_output
+
 
 recipe_dict = {
     "draine":{
