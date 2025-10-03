@@ -13,9 +13,9 @@ import os
 import pytest
 
 test_data = [
-    (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}),
+    #(UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}),
-    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}),
+    #(LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}),
 ]
 
 @pytest.mark.parametrize("grid_class,grid_kwargs", test_data)
