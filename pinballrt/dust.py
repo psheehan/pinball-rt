@@ -257,7 +257,7 @@ class Dust:
         return 10.**vals[:,0], 10.**vals[:,1], 10.**vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
 
     def initialize_model(self, model="random_nu", input_size=2, output_size=1, num_hidden_layers=3, num_hidden_units=48):
-        setattr(self, model+"_model", Generator(input_size=input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units, num_output_units=output_size).to(self.device))
+        setattr(self, model+"_model", Generator(input_size=input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units, num_output_units=output_size))
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, num_hidden_layers=3, num_hidden_units=48, max_epochs=10, 
             tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, device="cpu"):
@@ -305,7 +305,7 @@ class Dust:
 
         self.initialize_model(model=model, input_size=self.input_size, output_size=output_size, 
                 num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units)
-        self.gen_model = getattr(self, model+"_model")
+        self.gen_model = getattr(self, model+"_model").to(device)
         self.disc_model = Discriminator(input_size=self.input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units).to(self.device)
 
         # Wrap the model in lightning
@@ -654,13 +654,13 @@ def load(filename, device="cpu"):
 
     if "random_nu_state_dict" in state_dict:
         hidden_units = [state_dict['random_nu_state_dict'][key].shape[0] for key in state_dict['random_nu_state_dict'] if 'bias' in key][0:-1]
-        d.initialize_model(model="random_nu", input_size=2, output_size=1, hidden_units=hidden_units)
+        d.initialize_model(model="random_nu", input_size=2, output_size=1, num_hidden_units=hidden_units[0], num_hidden_layers=len(hidden_units))
 
         d.random_nu_model.load_state_dict(state_dict['random_nu_state_dict'])
 
     if "ml_step_state_dict" in state_dict:
         hidden_units = [state_dict['ml_step_state_dict'][key].shape[0] for key in state_dict['ml_step_state_dict'] if 'bias' in key][0:-1]
-        d.initialize_model(model="ml_step", input_size=12, output_size=9, hidden_units=hidden_units)
+        d.initialize_model(model="ml_step", input_size=12, output_size=9, num_hidden_units=hidden_units[0], num_hidden_layers=len(hidden_units))
 
         d.ml_step_model.load_state_dict(state_dict['ml_step_state_dict'])
 
