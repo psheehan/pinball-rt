@@ -216,11 +216,11 @@ class Dust:
             temperature = temperature[subset]
             
         nphotons = temperature.size(0)
-        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
+        ksi = torch.randn(int(nphotons), 1, device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
 
-        test_x = torch.transpose(torch.vstack((torch.log10(temperature), ksi)), 0, 1)
+        test_y = torch.transpose(torch.vstack((torch.log10(temperature), ksi)), 0, 1)
 
-        log10_nu = torch.clamp(self.random_nu_model(test_x).detach(), self.log10_nu_min, self.log10_nu_max)
+        log10_nu = torch.clamp(self.random_nu_model(ksi, test_y).detach(), self.log10_nu_min, self.log10_nu_max)
         nu = wp.from_torch(10.**torch.flatten(log10_nu))
 
         return nu
@@ -312,8 +312,8 @@ class Dust:
 
         self.setup()
 
-        self.g_optimizer = torch.optim.Adam(self.gen_model.parameters(), lr=0.0001)
-        self.d_optimizer = torch.optim.Adam(self.disc_model.parameters(), lr=0.0001)
+        self.g_optimizer = torch.optim.Adam(self.gen_model.parameters(), lr=0.0002, betas=(0.5,0.999))
+        self.d_optimizer = torch.optim.Adam(self.disc_model.parameters(), lr=0.0002, betas=(0.5,0.999))
 
         self.loss_fn = nn.BCELoss()
 
@@ -572,7 +572,6 @@ class Dust:
             ax[i,0].set_ylabel(key1)
 
         plt.show()
-        plt.savefig("ml_step_results.png", dpi=300)
 
     def setup(self):
         if hasattr(self, "train") and hasattr(self, "test"):
