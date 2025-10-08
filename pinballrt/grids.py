@@ -300,13 +300,14 @@ class Grid:
 
     @wp.kernel
     def random_absorb(photon_list: PhotonList,
-                      iphotons: wp.array(dtype=int)): # pragma: no cover
+                      iphotons: wp.array(dtype=int),
+                      seed: int): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
-        rng = wp.rand_init(1234, i)
+        rng = wp.rand_init(seed, i)
 
-        photon_list.absorb[ip] = wp.randf(rng) < photon_list.albedo[ip]
+        photon_list.absorb[ip] = wp.randf(rng) > photon_list.albedo[ip]
 
     def interact(self, photon_list: PhotonList, absorb, iabsorb, interact, iphotons, scattering=False, learning=False):
         nphotons = iphotons.size(0)
@@ -338,7 +339,8 @@ class Grid:
     
         wp.launch(kernel=self.random_tau, dim=(nphotons,), inputs=[photon_list, iphotons])
         if not scattering:
-            wp.launch(kernel=self.random_absorb, dim=(nphotons,), inputs=[photon_list, iphotons])
+            seed = np.random.randint(0, 100000)
+            wp.launch(kernel=self.random_absorb, dim=(nphotons,), inputs=[photon_list, iphotons, seed])
 
         t1 = time.time()
         wp.launch(kernel=self.photon_loc,
