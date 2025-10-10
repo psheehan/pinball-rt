@@ -108,14 +108,14 @@ class Grid:
                 new_position = wp.array(np.zeros((nphotons_per_source,3)), dtype=wp.vec3)
                 wp.launch(kernel=self.random_location_in_cell, 
                           dim=(nphotons_per_source,), 
-                          inputs=[new_position, cell_coords, self.grid])
+                          inputs=[new_position, cell_coords, self.grid, np.random.randint(0, 100000)])
 
                 photon_list.position = wp.array(np.concatenate((photon_list.position.numpy(), new_position.numpy()), axis=0), dtype=wp.vec3)
 
                 new_direction = wp.array(np.zeros((nphotons_per_source, 3)), dtype=wp.vec3)
                 wp.launch(kernel=self.random_direction,
                           dim=(nphotons_per_source,),
-                          inputs=[new_direction, torch.arange(nphotons_per_source, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))])
+                          inputs=[new_direction, torch.arange(nphotons_per_source, dtype=torch.int32, device=wp.device_to_torch(wp.get_device())), np.random.randint(0, 100000)])
                 photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), new_direction.numpy()), axis=0), dtype=wp.vec3)
 
                 photon_list.frequency = wp.array(np.concatenate([photon_list.frequency.numpy(), np.repeat((const.c / wavelength).to(u.GHz).value, nphotons_per_source)]), dtype=float)
@@ -274,11 +274,12 @@ class Grid:
 
     @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
-                         iphotons: wp.array(dtype=int)): # pragma: no cover
+                         iphotons: wp.array(dtype=int),
+                         seed: int): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
-        rng = wp.rand_init(4321, i)
+        rng = wp.rand_init(seed, i)
 
         cost = -1. + 2.*wp.randf(rng)
         sint = wp.sqrt(1.-cost**2.)
@@ -290,11 +291,12 @@ class Grid:
 
     @wp.kernel
     def random_tau(photon_list: PhotonList,
-                   iphotons: wp.array(dtype=int)): # pragma: no cover
+                   iphotons: wp.array(dtype=int),
+                   seed: int): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
-        rng = wp.rand_init(1234, i)
+        rng = wp.rand_init(seed, i)
 
         photon_list.tau[ip] = -wp.log(1. - wp.randf(rng))
 
@@ -314,7 +316,7 @@ class Grid:
 
         wp.launch(kernel=self.random_direction,
                   dim=(nphotons,),
-                  inputs=[photon_list.direction, iphotons])
+                  inputs=[photon_list.direction, iphotons, np.random.randint(0, 100000)])
 
         t1 = time.time()
         nabsorb = iabsorb.size(0)
@@ -337,7 +339,8 @@ class Grid:
         t2 = time.time()
         dust_interpolation_time = t2 - t1
     
-        wp.launch(kernel=self.random_tau, dim=(nphotons,), inputs=[photon_list, iphotons])
+        seed = np.random.randint(0, 100000)
+        wp.launch(kernel=self.random_tau, dim=(nphotons,), inputs=[photon_list, iphotons, seed])
         if not scattering:
             seed = np.random.randint(0, 100000)
             wp.launch(kernel=self.random_absorb, dim=(nphotons,), inputs=[photon_list, iphotons, seed])
@@ -1001,12 +1004,13 @@ class UniformCartesianGrid(Grid):
     @wp.kernel
     def random_location_in_cell(position: wp.array(dtype=wp.vec3),
                                 coords: wp.array2d(dtype=int),
-                                grid: GridStruct): # pragma: no cover
+                                grid: GridStruct,
+                                seed: int): # pragma: no cover
         ip = wp.tid()
 
         ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
 
-        rng = wp.rand_init(1234, ip)
+        rng = wp.rand_init(seed, ip)
 
         position[ip][0] = grid.w1[ix] + (grid.w1[ix+1] - grid.w1[ix])*wp.randf(rng)
         position[ip][1] = grid.w2[iy] + (grid.w2[iy+1] - grid.w2[iy])*wp.randf(rng)
@@ -1324,12 +1328,13 @@ class UniformSphericalGrid(Grid):
     @wp.kernel
     def random_location_in_cell(position: wp.array(dtype=wp.vec3),
                                 coords: wp.array2d(dtype=int),
-                                grid: GridStruct): # pragma: no cover
+                                grid: GridStruct,
+                                seed: int): # pragma: no cover
         ip = wp.tid()
 
         ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
 
-        rng = wp.rand_init(1234, ip)
+        rng = wp.rand_init(seed, ip)
 
         r = grid.w1[ix] + wp.randf(rng) * (grid.w1[ix+1] - grid.w1[ix])
         theta = grid.w2[iy] + wp.randf(rng) * (grid.w2[iy+1] - grid.w2[iy])
@@ -1793,12 +1798,13 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
     @wp.kernel
     def random_location_in_cell(position: wp.array(dtype=wp.vec3),
                                 coords: wp.array2d(dtype=int),
-                                grid: GridStruct): # pragma: no cover
+                                grid: GridStruct,
+                                seed: int): # pragma: no cover
         ip = wp.tid()
 
         ix, iy, iz = coords[ip][0], coords[ip][1], coords[ip][2]
 
-        rng = wp.rand_init(1234, ip)
+        rng = wp.rand_init(seed, ip)
 
         if ix == 0:
             r = 10.**(wp.randf(rng) * grid.logw1[ix])

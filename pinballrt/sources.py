@@ -115,7 +115,7 @@ class Star:
             random_nu = wp.zeros(nphotons, dtype=float)
             wp.launch(self.random_nu_kernel,
                       dim=(nphotons,),
-                      inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int)])
+                      inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int), np.random.randint(0, 100000)])
 
         return random_nu
     
@@ -124,9 +124,10 @@ class Star:
                          random_nu_CPD: wp.array(dtype=float),
                          nu: wp.array(dtype=float),
                          random_nu: wp.array(dtype=float),
-                         iCPD: wp.array(dtype=int)): # pragma: no cover
+                         iCPD: wp.array(dtype=int),
+                         seed: int): # pragma: no cover
         ip = wp.tid()
-        rng = wp.rand_init(1324, ip)
+        rng = wp.rand_init(seed, ip)
         
         index = len(random_nu_CPD) - 1
         # Find the index where ksi[ip] is less than random_nu_CPD[index]
