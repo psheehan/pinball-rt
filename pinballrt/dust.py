@@ -1,3 +1,4 @@
+from torch.autograd import grad as torch_grad
 import urllib
 import requests
 from .sources import Star
@@ -20,6 +21,7 @@ import torch
 import os
 import PyMieScatt
 from sklearn.preprocessing import MinMaxScaler
+
 
 class Dust:
     def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
@@ -260,7 +262,7 @@ class Dust:
         setattr(self, model+"_model", Generator(input_size=input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units, num_output_units=output_size))
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, num_hidden_layers=3, num_hidden_units=48, max_epochs=10, 
-            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, device="cpu"):
+            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, device="cpu", resume=False):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -285,14 +287,13 @@ class Dust:
         self.test_split = test_split
         self.learning = model
         self.device = torch.device(device)
+        self.input_size = 10
+
+        self.setup()
 
         # Set up the NN
 
-        if model == "random_nu":
-            self.input_size, output_size = 2, 1
-        elif model == "ml_step":
-            self.input_size, output_size = 12, 9
-
+        if model == "ml_step":
             if nu_range is None:
                 nu_range = (self.nu.value.min(), self.nu.value.max())
 
@@ -303,14 +304,13 @@ class Dust:
             self.log10_tau_cell_nu0_min = tau_range[0]
             self.log10_tau_cell_nu0_max = tau_range[1]
 
-        self.initialize_model(model=model, input_size=self.input_size, output_size=output_size, 
-                num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units)
+        if not resume:
+            self.initialize_model(model=model, input_size=self.input_size+len(self.labels), output_size=len(self.features), 
+                    num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units)
         self.gen_model = getattr(self, model+"_model").to(device)
-        self.disc_model = Discriminator(input_size=self.input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units).to(self.device)
+        self.disc_model = Discriminator(input_size=len(self.labels)+len(self.features), num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units).to(self.device)
 
         # Wrap the model in lightning
-
-        self.setup()
 
         self.g_optimizer = torch.optim.Adam(self.gen_model.parameters(), lr=0.0002, betas=(0.5,0.999))
         self.d_optimizer = torch.optim.Adam(self.disc_model.parameters(), lr=0.0002, betas=(0.5,0.999))
@@ -328,7 +328,8 @@ class Dust:
             d_vals_real, d_vals_fake = [], []
 
             for i, (x, l) in enumerate(self.train):
-                d_loss, d_proba_real, d_proba_fake = self.d_train(x, l)
+                for _ in range(5):
+                    d_loss, d_proba_real, d_proba_fake = self.d_train(x, l)
                 d_losses.append(d_loss)
                 g_losses.append(self.g_train(x, l))
 
@@ -497,6 +498,28 @@ class Dust:
 
         return df
     
+    def gradient_penalty(self, real_data, real_labels, generated_data, generated_labels):
+        batch_size = real_data.size(0)
+
+        # Calculate interpolation
+        alpha = torch.rand(real_data.shape[0], 1, requires_grad=True, device=self.device)
+        interpolated = alpha * real_data + (1 - alpha) * generated_data
+        interpolated_labels = alpha * real_labels + (1 - alpha) * generated_labels
+
+        # Calculate probabilities of interpolated examples
+        proba_interpolated = self.disc_model(interpolated, interpolated_labels)
+
+        # Calculate gradients of probabilities
+        gradients = torch_grad(outputs=proba_interpolated, inputs=[interpolated, interpolated_labels],
+                               grad_outputs=torch.ones(proba_interpolated.size(), device=self.device),
+                               create_graph=True, retain_graph=True, only_inputs=True)[0]
+
+        gradients = gradients.view(batch_size, -1)
+        gradients_norm = gradients.norm(2, dim=1)
+
+        return ((gradients_norm - 1)**2).mean()
+
+
     def d_train(self, x, labels):
         self.disc_model.zero_grad()
 
@@ -505,17 +528,18 @@ class Dust:
 
         d_labels_real = torch.ones(batch_size, 1, device=self.device)
         d_proba_real = self.disc_model(x, labels)
-        d_loss_real = self.loss_fn(d_proba_real, d_labels_real)
+        #d_loss_real = self.loss_fn(d_proba_real, d_labels_real)
 
-        input_z = create_noise(batch_size, self.input_size - len(self.labels)).to(self.device)
+        input_z = create_noise(batch_size, self.input_size).to(self.device)
         fake_labels = torch.rand(batch_size, labels.size(1), device=self.device)
         g_output = self.gen_model(input_z, fake_labels)
 
         d_proba_fake = self.disc_model(g_output, fake_labels)
         d_labels_fake = torch.zeros(batch_size, 1, device=self.device)
-        d_loss_fake = self.loss_fn(d_proba_fake, d_labels_fake)
+        #d_loss_fake = self.loss_fn(d_proba_fake, d_labels_fake)
 
-        d_loss = d_loss_real + d_loss_fake
+        #d_loss = d_loss_real + d_loss_fake
+        d_loss = d_proba_fake.mean() - d_proba_real.mean() + 0.1*self.gradient_penalty(x.data, labels.data, g_output.data, fake_labels.data)
         d_loss.backward()
         self.d_optimizer.step()
 
@@ -526,7 +550,7 @@ class Dust:
 
         batch_size = x.size(0)
 
-        input_z = create_noise(batch_size, self.input_size - len(self.labels)).to(self.device)
+        input_z = create_noise(batch_size, self.input_size).to(self.device)
         fake_labels = torch.rand(batch_size, labels.size(1), device=self.device)
 
         g_output = self.gen_model(input_z, fake_labels)
@@ -534,7 +558,8 @@ class Dust:
         d_proba_fake = self.disc_model(g_output, fake_labels)
 
         g_labels_real = torch.ones(batch_size, 1, device=self.device)
-        g_loss = self.loss_fn(d_proba_fake, g_labels_real)
+        #g_loss = self.loss_fn(d_proba_fake, g_labels_real)
+        g_loss = -d_proba_fake.mean()
 
         g_loss.backward()
         self.g_optimizer.step()
@@ -546,7 +571,7 @@ class Dust:
     def plot_learned_model(self):
         import matplotlib.pyplot as plt
 
-        samples = create_samples(getattr(self, self.learning+"_model"), create_noise(len(self.df), self.input_size - len(self.labels)).to(self.device), 
+        samples = create_samples(getattr(self, self.learning+"_model"), create_noise(len(self.df), self.input_size).to(self.device), 
                 torch.tensor(self.df.loc[:, self.labels].values, dtype=torch.float32).to(self.device)).detach().cpu().numpy()
 
         df_gen = pd.DataFrame(samples, columns=self.features)
@@ -561,8 +586,8 @@ class Dust:
                     ax[i,j].hist(self.df[key1], bins=50, histtype='step', density=True)
                     ax[i,j].hist(df_gen[key1], bins=50, histtype='step', density=True)
                 elif i > j:
-                    ax[i,j].scatter(self.df[key2], self.df[key1], marker='.', s=0.025)
-                    ax[i,j].scatter(df_gen[key2], df_gen[key1], marker='.', s=0.025)
+                    ax[i,j].scatter(self.df[key2], self.df[key1], marker='.', s=3.)
+                    ax[i,j].scatter(df_gen[key2], df_gen[key1], marker='.', s=3.)
                 elif i < j:
                     ax[i,j].set_axis_off()
 
@@ -712,7 +737,6 @@ def create_noise(batch_size, input_size):
 def create_samples(g_model, input_z, input_labels):
     g_output = g_model(input_z, input_labels)
     return g_output
-
 
 recipe_dict = {
     "draine":{
