@@ -20,7 +20,6 @@ import torch.nn as nn
 import torch
 import os
 import PyMieScatt
-from sklearn.preprocessing import MinMaxScaler
 
 
 class Dust:
@@ -218,11 +217,8 @@ class Dust:
             temperature = temperature[subset]
             
         nphotons = temperature.size(0)
-        ksi = torch.randn(int(nphotons), 1, device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
 
-        test_y = torch.transpose(torch.vstack((torch.log10(temperature), ksi)), 0, 1)
-
-        log10_nu = torch.clamp(self.random_nu_model(ksi, test_y).detach(), self.log10_nu_min, self.log10_nu_max)
+        log10_nu = create_samples(self.random_nu_model, create_noise(nphotons, self.random_nu_input_size), self.random_nu_scaler_labels(temperature))
         nu = wp.from_torch(10.**torch.flatten(log10_nu))
 
         return nu
@@ -261,7 +257,7 @@ class Dust:
     def initialize_model(self, model="random_nu", input_size=2, output_size=1, num_hidden_layers=3, num_hidden_units=48):
         setattr(self, model+"_model", Generator(input_size=input_size, num_hidden_layers=num_hidden_layers, num_hidden_units=num_hidden_units, num_output_units=output_size))
 
-    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, num_hidden_layers=3, num_hidden_units=48, max_epochs=10, 
+    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, input_size=10, num_hidden_layers=3, num_hidden_units=48, lambda_gp=0.1, batch_size=32, max_epochs=10, 
             tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, device="cpu", resume=False):
         """
         Learn a model for either the random_nu function or the ml_step function.
@@ -287,7 +283,9 @@ class Dust:
         self.test_split = test_split
         self.learning = model
         self.device = torch.device(device)
-        self.input_size = 10
+        self.input_size = input_size
+        self.lambda_gp = lambda_gp
+        self.batch_size = batch_size
 
         self.setup()
 
@@ -368,12 +366,14 @@ class Dust:
         self.features = ["log10_nu"]
         self.labels = ["log10_T"]
 
-        self.random_nu_scaler = MinMaxScaler()
-        data = self.random_nu_scaler.fit_transform(self.df.values)
-        self.df = pd.DataFrame(data, columns=self.df.columns)
-
         X = torch.tensor(self.df.loc[:, self.features].values, dtype=torch.float32)
         y = torch.tensor(self.df.loc[:, self.labels].values, dtype=torch.float32)
+
+        self.random_nu_scaler_features = MinMaxScaler()
+        self.random_nu_scaler_labels = MinMaxScaler()
+
+        X = self.random_nu_scaler_features.fit_transform(X)
+        y = self.random_nu_scaler_labels.fit_transform(y)
 
         self.dataset = TensorDataset(X, y)
 
@@ -383,6 +383,8 @@ class Dust:
 
         if os.path.exists("sim_results.csv"):
             df = pd.read_csv("sim_results.csv", index_col=0)
+
+            df = df.loc[np.random.choice(np.arange(len(df)), size=self.nsamples, replace=False)]
 
             self.log10_nu0_min = df['log10_nu0'].min()
             self.log10_nu0_max = df['log10_nu0'].max()
@@ -399,10 +401,6 @@ class Dust:
         df.loc[np.isnan(df["log10_tau"]), "log10_tau"] = -5.
         df.loc[df["log10_Eabs"] < -7., "log10_Eabs"] = -7.
 
-        self.scaler = MinMaxScaler()
-        data = self.scaler.fit_transform(df.values)
-        df = pd.DataFrame(data, columns=df.columns)
-
         self.df = df
         self.nsamples = len(df)
 
@@ -411,6 +409,12 @@ class Dust:
 
         X = torch.tensor(df.loc[:, self.features].values, dtype=torch.float32)
         y = torch.tensor(df.loc[:, self.labels].values, dtype=torch.float32)
+
+        self.ml_step_scaler_features = MinMaxScaler()
+        self.ml_step_scaler_labels = MinMaxScaler()
+
+        X = self.ml_step_scaler_features.fit_transform(X)
+        y = self.ml_step_scaler_labels.fit_transform(y)
 
         self.dataset = TensorDataset(X, y)
 
@@ -530,7 +534,7 @@ class Dust:
         d_proba_real = self.disc_model(x, labels)
         #d_loss_real = self.loss_fn(d_proba_real, d_labels_real)
 
-        input_z = create_noise(batch_size, self.input_size).to(self.device)
+        input_z = create_noise(batch_size, self.input_size, device=self.device)
         fake_labels = torch.rand(batch_size, labels.size(1), device=self.device)
         g_output = self.gen_model(input_z, fake_labels)
 
@@ -539,7 +543,7 @@ class Dust:
         #d_loss_fake = self.loss_fn(d_proba_fake, d_labels_fake)
 
         #d_loss = d_loss_real + d_loss_fake
-        d_loss = d_proba_fake.mean() - d_proba_real.mean() + 0.1*self.gradient_penalty(x.data, labels.data, g_output.data, fake_labels.data)
+        d_loss = d_proba_fake.mean() - d_proba_real.mean() + self.lambda_gp*self.gradient_penalty(x.data, labels.data, g_output.data, fake_labels.data)
         d_loss.backward()
         self.d_optimizer.step()
 
@@ -550,7 +554,7 @@ class Dust:
 
         batch_size = x.size(0)
 
-        input_z = create_noise(batch_size, self.input_size).to(self.device)
+        input_z = create_noise(batch_size, self.input_size, device=self.device)
         fake_labels = torch.rand(batch_size, labels.size(1), device=self.device)
 
         g_output = self.gen_model(input_z, fake_labels)
@@ -571,8 +575,9 @@ class Dust:
     def plot_learned_model(self):
         import matplotlib.pyplot as plt
 
-        samples = create_samples(getattr(self, self.learning+"_model"), create_noise(len(self.df), self.input_size).to(self.device), 
-                torch.tensor(self.df.loc[:, self.labels].values, dtype=torch.float32).to(self.device)).detach().cpu().numpy()
+        samples = create_samples(getattr(self, self.learning+"_model"), create_noise(len(self.df), self.input_size, device=self.device), 
+                getattr(self, self.learning+"_scaler_labels").transform(torch.tensor(self.df.loc[:, self.labels].values, dtype=torch.float32).to(self.device)))
+        samples = getattr(self, self.learning+"_scaler_features").inverse_transform(samples).detach().cpu().numpy()
 
         df_gen = pd.DataFrame(samples, columns=self.features)
         for label in self.labels:
@@ -607,7 +612,7 @@ class Dust:
         test_size = int(self.test_split * self.nsamples)
         train_size = self.nsamples - test_size
         self.train, self.test = random_split(self.dataset, [train_size, test_size], generator=torch.Generator().manual_seed(1))
-        self.train = DataLoader(self.train, batch_size=32, shuffle=False)
+        self.train = DataLoader(self.train, batch_size=self.batch_size, shuffle=False)
 
     def state_dict(self):
         state_dict = {
@@ -620,9 +625,13 @@ class Dust:
 
         if hasattr(self, "random_nu_model"):
             state_dict["random_nu_state_dict"] = self.random_nu_model.state_dict()
+            state_dict["random_nu_scaler_features_state_dict"] = self.random_nu_scaler_features.state_dict()
+            state_dict["random_nu_scaler_labels_state_dict"] = self.random_nu_scaler_labels.state_dict()
 
         if hasattr(self, "ml_step_model"):
             state_dict["ml_step_state_dict"] = self.ml_step_model.state_dict()
+            state_dict["ml_step_scaler_features_state_dict"] = self.ml_step_scaler_features.state_dict()
+            state_dict["ml_step_scaler_labels_state_dict"] = self.ml_step_scaler.state_dict()
 
             state_dict["log10_nu0_min"] = self.log10_nu0_min
             state_dict["log10_nu0_max"] = self.log10_nu0_max
@@ -677,16 +686,26 @@ def load(filename, device="cpu"):
     d = Dust(**state_dict["dust_properties"], interpolate=-1, device=device)
 
     if "random_nu_state_dict" in state_dict:
-        hidden_units = [state_dict['random_nu_state_dict'][key].shape[0] for key in state_dict['random_nu_state_dict'] if 'bias' in key][0:-1]
-        d.initialize_model(model="random_nu", input_size=2, output_size=1, num_hidden_units=hidden_units[0], num_hidden_layers=len(hidden_units))
+        hidden_units = [state_dict['random_nu_state_dict'][key].shape[0] for key in state_dict['random_nu_state_dict'] if 'bias' in key and 'bn' in key]
+        input_size = state_dict['random_nu_state_dict']['model.fc_g0.weight'].size(1)
+        d.initialize_model(model="random_nu", input_size=input_size, output_size=1, num_hidden_units=hidden_units[0], num_hidden_layers=len(hidden_units))
+        d.random_nu_input_size = input_size - 1
 
         d.random_nu_model.load_state_dict(state_dict['random_nu_state_dict'])
 
+        d.random_nu_scaler_features = MinMaxScaler(*state_dict['random_nu_scaler_labels_state_dict'])
+        d.random_nu_scaler_labels = MinMaxScaler(*state_dict['random_nu_scaler_labels_state_dict'])
+
     if "ml_step_state_dict" in state_dict:
-        hidden_units = [state_dict['ml_step_state_dict'][key].shape[0] for key in state_dict['ml_step_state_dict'] if 'bias' in key][0:-1]
-        d.initialize_model(model="ml_step", input_size=12, output_size=9, num_hidden_units=hidden_units[0], num_hidden_layers=len(hidden_units))
+        hidden_units = [state_dict['ml_step_state_dict'][key].shape[0] for key in state_dict['ml_step_state_dict'] if 'bias' in key and 'bn' in key]
+        input_size = state_dict['ml_step_state_dict']['model.fc_g0.weight'].size(1)
+        d.initialize_model(model="ml_step", input_size=input_size, output_size=9, num_hidden_units=hidden_units[0], num_hidden_layers=len(hidden_units))
+        d.random_nu_input_size = input_size - 3
 
         d.ml_step_model.load_state_dict(state_dict['ml_step_state_dict'])
+
+        d.ml_step_scaler_features = MinMaxScaler(*state_dict['ml_step_scaler_features_state_dict'])
+        d.ml_step_scaler_labels = MinMaxScaler(*state_dict['ml_step_scaler_labels_state_dict'])
 
         d.log10_nu0_min = state_dict["log10_nu0_min"]
         d.log10_nu0_max = state_dict["log10_nu0_max"]
@@ -730,13 +749,57 @@ class Discriminator(nn.Module):
         x = torch.cat([x, labels], dim=1)
         return self.model(x)
 
-def create_noise(batch_size, input_size):
-    return torch.randn(batch_size, input_size)
+def create_noise(batch_size, input_size, device=torch.device('cpu')):
+    return torch.randn(batch_size, input_size, device=device)
 
 
 def create_samples(g_model, input_z, input_labels):
     g_output = g_model(input_z, input_labels)
     return g_output
+
+class MinMaxScaler:
+    def __init__(self, feature_range=(0, 1), min_val=None, max_val=None):
+        self.feature_range = feature_range
+        self.min_val = min_val
+        self.max_val = max_val
+
+    def fit(self, X):
+        # Calculate min and max for each feature (column)
+        self.min_val = X.min(dim=0, keepdim=True).values
+        self.max_val = X.max(dim=0, keepdim=True).values
+        return self
+
+    def transform(self, X):
+        if self.min_val is None or self.max_val is None:
+            raise RuntimeError("MinMaxScaler has not been fitted yet. Call fit() first.")
+
+        # Apply the scaling formula
+        scaled_X = (X - self.min_val) / (self.max_val - self.min_val)
+
+        # Scale to the desired feature range
+        new_min, new_max = self.feature_range
+        scaled_X = scaled_X * (new_max - new_min) + new_min
+        return scaled_X
+
+    def fit_transform(self, X):
+        self.fit(X)
+        return self.transform(X)
+
+    def inverse_transform(self, X_scaled):
+        if self.min_val is None or self.max_val is None:
+            raise RuntimeError("MinMaxScaler has not been fitted yet. Call fit() first.")
+
+        new_min, new_max = self.feature_range
+
+        # Invert the scaling to the desired feature range
+        original_range_X = (X_scaled - new_min) / (new_max - new_min)
+
+        # Invert the original min-max scaling
+        original_X = original_range_X * (self.max_val - self.min_val) + self.min_val
+        return original_X
+
+    def state_dict(self):
+        return {"feature_range": self.feature_range, "min_val": self.min_val, "max_val": self.max_val}
 
 recipe_dict = {
     "draine":{
