@@ -379,7 +379,7 @@ class Grid:
                         planck_mean_opacity*\
                         self.mass.cgs.value))**0.25
 
-                temperature[temperature < 0.1] = 0.1
+                temperature[np.logical_or(temperature < 0.1, self.mass.value == 0)] = 0.1
 
                 if (np.abs(old_temperature - temperature) / old_temperature).max() < 1.0e-2:
                     converged = True
