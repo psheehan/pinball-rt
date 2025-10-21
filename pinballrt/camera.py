@@ -76,18 +76,20 @@ class Camera:
     def put_intensity_in_image(image_ix: wp.array(dtype=int),
                                image_iy: wp.array(dtype=int),
                                ray_intensity: wp.array2d(dtype=float),
-                               image_intensity: wp.array3d(dtype=float)): # pragma: no cover
+                               image_intensity: wp.array3d(dtype=float), 
+                               scale_factor: float): # pragma: no cover
 
         ir, inu = wp.tid()
 
         ix, iy = image_ix[ir], image_iy[ir]
 
-        image_intensity[ix, iy, inu] += ray_intensity[ir,inu]
+        image_intensity[ix, iy, inu] += ray_intensity[ir,inu] * scale_factor
 
     def raytrace(self, new_x, new_y, nx, ny, image_pixel_size, nu):
         with wp.ScopedDevice(self.grid.device):
             nrays = new_x.size
             pixel_size = image_pixel_size
+            intensity_scale_factor = 1.0
 
             intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
 
@@ -129,7 +131,7 @@ class Camera:
 
                 wp.launch(kernel=self.put_intensity_in_image, 
                         dim=(nrays, nu.size),
-                        inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
+                        inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity, intensity_scale_factor])
 
                 old_x = new_x[will_be_in_grid].copy()
                 old_y = new_y[will_be_in_grid].copy()
@@ -142,6 +144,7 @@ class Camera:
                 new_x = np.array(new_x)
                 new_y = np.array(new_y)
                 pixel_size = pixel_size / 2
+                intensity_scale_factor = (image_pixel_size / pixel_size)**2
                 nrays = len(new_x)
 
         return intensity
@@ -172,6 +175,6 @@ class Camera:
     
             wp.launch(kernel=self.put_intensity_in_image,
                         dim=(nrays, nu.size),
-                        inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity])
+                        inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity, 1.0])
 
         return intensity

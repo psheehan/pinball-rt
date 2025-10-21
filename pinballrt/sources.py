@@ -84,7 +84,7 @@ class Star:
         
         direction = np.tile(ez, (nrays, 1))
 
-        intensity = (np.tile(self.flux(nu), (nrays, 1)) * np.pi * ((self.radius.to(u.cm).value / (distance).to(u.cm).value) * u.radian)**2 / nrays).to(u.Jy).value
+        intensity = (np.tile(self.flux(nu.data)*np.pi*u.steradian, (nrays, 1)) / nrays).to(u.Jy).value * ((self.radius / distance).decompose()**2).value
         tau_intensity = np.zeros((nrays, nu.size), dtype=float)
 
         with wp.ScopedDevice(device):

@@ -27,10 +27,10 @@ def planck_function(nu: float,
     #k_B = 1.380658e-16
     #c_l = 2.99792458e10
     # nu in units of GHz
-    # output in Jy
+    # output in Jy/sr
 
     #return 2.0*h*nu*nu*nu/(c_l*c_l)*1.0/(wp.exp(h*nu/(k_B*temperature))-1.0);
-    return 1474.49946476 * nu * 1.0/(wp.exp(0.04799243*nu/temperature)-1.0);
+    return 1474.49946476 * nu**3.0 * 1.0/(wp.exp(0.04799243*nu/temperature)-1.0);
 
 @wp.kernel
 def log_uniform_interp(x: wp.array(dtype=float),
