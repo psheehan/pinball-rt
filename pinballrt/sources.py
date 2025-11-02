@@ -1,3 +1,4 @@
+from pinballrt.utils import EPSILON
 from .photons import PhotonList
 from astropy.modeling import models
 import astropy.units as u
@@ -23,7 +24,7 @@ class Star:
         self.y = y
         self.z = z
 
-    def set_blackbody_spectrum(self, nu=np.logspace(0., 8., 1000)*u.GHz):
+    def set_blackbody_spectrum(self, nu=np.logspace(0.5, 6.45, 1000)*u.GHz):
         self.nu = np.logspace(np.log10(nu.value.min()), np.log10(nu.value.max()), 1000) * nu.unit
 
         self.flux = models.BlackBody(temperature=self.temperature)
@@ -73,7 +74,7 @@ class Star:
 
         return photon_list
     
-    def emit_rays(self, nu, distance_unit, ez, nrays, dpc, device="cpu"):
+    def emit_rays(self, nu, distance_unit, ez, nrays, distance, device="cpu"):
         theta = np.pi*np.random.rand(nrays)
         phi = 2*np.pi*np.random.rand(nrays)
 
@@ -83,7 +84,7 @@ class Star:
         
         direction = np.tile(ez, (nrays, 1))
 
-        intensity = (np.tile(self.flux(nu), (nrays, 1)) * np.pi * ((self.radius.to(u.cm).value / (dpc*u.pc).to(u.cm).value) * u.radian)**2 / nrays).to(u.Jy).value
+        intensity = (np.tile(self.flux(nu.data)*np.pi*u.steradian, (nrays, 1)) / nrays).to(u.Jy).value * ((self.radius / distance).decompose()**2).value
         tau_intensity = np.zeros((nrays, nu.size), dtype=float)
 
         with wp.ScopedDevice(device):
@@ -101,6 +102,7 @@ class Star:
             ray_list.p = wp.zeros(nrays, dtype=float)
 
             ray_list.radius = wp.array(np.zeros(nrays), dtype=float)
+            ray_list.logradius = wp.array(np.zeros(nrays), dtype=float)
             ray_list.theta = wp.zeros(nrays, dtype=float)
             ray_list.phi = wp.zeros(nrays, dtype=float)
             ray_list.sin_theta = wp.zeros(nrays, dtype=float)
@@ -118,7 +120,7 @@ class Star:
             random_nu = wp.zeros(nphotons, dtype=float)
             wp.launch(self.random_nu_kernel,
                       dim=(nphotons,),
-                      inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int)])
+                      inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int), np.random.randint(0, 100000)])
 
         return random_nu
     
@@ -127,8 +129,10 @@ class Star:
                          random_nu_CPD: wp.array(dtype=float),
                          nu: wp.array(dtype=float),
                          random_nu: wp.array(dtype=float),
-                         iCPD: wp.array(dtype=int)):
+                         iCPD: wp.array(dtype=int),
+                         seed: int): # pragma: no cover
         ip = wp.tid()
+        rng = wp.rand_init(seed, ip)
         
         index = len(random_nu_CPD) - 1
         # Find the index where ksi[ip] is less than random_nu_CPD[index]
@@ -137,5 +141,10 @@ class Star:
                 index = i
                 break
 
-        random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
-                (random_nu_CPD[index] - random_nu_CPD[index-1]) + nu[index-1]
+        dCPD = random_nu_CPD[index] - random_nu_CPD[index-1]
+
+        if dCPD < EPSILON:
+            random_nu[ip] = (nu[index] - nu[index-1]) * wp.randf(rng) + nu[index-1]
+        else:
+            random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
+                    dCPD + nu[index-1]

@@ -11,7 +11,7 @@ import torch
 import time
 
 class Model:
-    def __init__(self, grid: Grid, ncells: int = 9, dx: u.Quantity = 1.0 * u.au, mirror: bool = False, ncores = 1, pool = SerialPool()):
+    def __init__(self, grid: Grid, grid_kwargs={}, ncores = 1, pool = SerialPool()):
         """
         Initialize the Model with a grid and optional parameters.
 
@@ -32,9 +32,9 @@ class Model:
         pool : schwimmbad.Pool, optional
             The pool to use for parallel processing (default is SerialPool()).
         """
-        self.grid_list = {"cpu":[grid(ncells=ncells, dx=dx, device='cpu') for _ in range(ncores)]}
+        self.grid_list = {"cpu":[grid(**grid_kwargs, device='cpu') for _ in range(ncores)]}
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = [grid(ncells=ncells, dx=dx, device=d) for d in wp.get_cuda_devices()]
+            self.grid_list["cuda"] = [grid(**grid_kwargs, device=d) for d in wp.get_cuda_devices()]
             self.grid = self.grid_list["cuda"][0]
         else:
             self.grid = self.grid_list["cpu"][0]
@@ -191,29 +191,37 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, nx, ny, pixel_size, lam, incl, pa, dpc, device="cpu"):
+    def make_image(self, npix=100, pixel_size=None, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, device="cpu"):
         """
         Create an image from the dust distribution.
 
         Parameters
         ----------
-        nx : int
-            The number of pixels in the x direction.
-        ny : int
-            The number of pixels in the y direction.
-        pixel_size : float
-            The size of each pixel in the image.
-        lam : array-like
+        npix : int or tuple, optional
+            The number of pixels in the image.
+        pixel_size : Quantity
+            The size of each pixel in the image. If none, will set the pixel size such that the image is
+            25% larger than the grid.
+        lam : array-like Quantity
             The wavelengths to simulate.
-        incl : float
+        incl : Quantity
             The inclination angle of the image.
-        pa : float
+        pa : Quantity
             The position angle of the image.
-        dpc : float
+        dpc : Quantity
             The distance to the image plane in parsecs.
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+
+        if isinstance(npix, int):
+            nx, ny = npix, npix
+        elif isinstance(npix, (list, tuple, np.ndarray)):
+            nx, ny = npix
+
+        if pixel_size is None:
+            pixel_size = ((1.25*self.grid.grid_size()*self.grid.distance_unit / distance).decompose()*u.radian).to(u.arcsec) / npix
+
         # First, run a scattering simulation to get the scattering phase function
 
         self.scattering_mc(100000, lam, device=device)
@@ -222,9 +230,9 @@ class Model:
 
         for dev in self.camera_list:
             for camera in self.camera_list[dev]:
-                camera.set_orientation(incl, pa, dpc)
+                camera.set_orientation(incl, pa, distance)
 
-        pixel_size = (pixel_size*u.arcsecond*dpc*u.pc).cgs.value
+        physical_pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
 
         image = xr.Dataset(
             #data_vars={
@@ -240,11 +248,14 @@ class Model:
         new_x, new_y = xr.broadcast(image.x, image.y)
         new_x, new_y = new_x.values.flatten(), new_y.values.flatten()
 
-        intensity = np.array(list(self.pool.map(lambda x: x[0].raytrace(x[1], x[2], nx, ny, image.pixel_size, image.nu).numpy(), 
-                        zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0)
+        intensity = np.array(list(self.pool.map(lambda x: x[0].raytrace(x[1], x[2], nx, ny, physical_pixel_size, image.nu).numpy(), 
+                        zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0) * (u.Jy / u.steradian) * \
+                        image.pixel_size**2
 
-        intensity += np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, dpc, 
-                        nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0)
+        source_intensity = np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, distance, 
+                        nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0) * u.Jy
+
+        intensity += source_intensity
 
         image = image.assign(intensity=(("x","y","lam"), intensity))
 
