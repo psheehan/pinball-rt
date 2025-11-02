@@ -58,6 +58,11 @@ class Camera:
         ray_list.image_iy = wp.array(image_iy, dtype=int)
         ray_list.pixel_too_large = wp.array(pixel_too_large, dtype=bool)
 
+        ray_list.density = wp.zeros(xflat.size, dtype=float)
+        ray_list.temperature = wp.zeros(xflat.size, dtype=float)
+        ray_list.amax = wp.zeros(xflat.size, dtype=float)
+        ray_list.p = wp.zeros(xflat.size, dtype=float)
+
         ray_list.radius = wp.array(np.zeros(xflat.shape), dtype=float)
         ray_list.theta = wp.zeros(xflat.shape, dtype=float)
         ray_list.phi = wp.zeros(xflat.shape, dtype=float)
@@ -114,6 +119,11 @@ class Camera:
                 ray_list.image_iy = wp.array(wp.to_torch(ray_list.image_iy)[will_be_in_grid], dtype=int)
                 ray_list.pixel_too_large = wp.array(wp.to_torch(ray_list.pixel_too_large)[will_be_in_grid], dtype=bool)
 
+                ray_list.density = wp.array(wp.to_torch(ray_list.density)[will_be_in_grid], dtype=float)
+                ray_list.temperature = wp.array(wp.to_torch(ray_list.temperature)[will_be_in_grid], dtype=float)
+                ray_list.amax = wp.array(wp.to_torch(ray_list.amax)[will_be_in_grid], dtype=float)
+                ray_list.p = wp.array(wp.to_torch(ray_list.p)[will_be_in_grid], dtype=float)
+
                 nrays = will_be_in_grid.sum()
                 iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
@@ -122,6 +132,7 @@ class Camera:
                         dim=(nrays,),
                         inputs=[ray_list, self.grid.grid, iray])
 
+                #print(nrays)
                 self.grid.propagate_rays(ray_list, nu.values, pixel_size)
 
                 wp.launch(kernel=self.put_intensity_in_image, 

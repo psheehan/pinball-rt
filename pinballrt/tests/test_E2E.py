@@ -15,7 +15,7 @@ def test_UniformCartesian_E2E(return_vals=False):
     """
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/yso.dst")
+    d = os.path.join(os.path.dirname(__file__), "data/amax.dst")
 
     # Set up the star.
 
@@ -30,7 +30,7 @@ def test_UniformCartesian_E2E(return_vals=False):
     model.add_density(density, d)
     model.add_star(star)
 
-    model.thermal_mc(nphotons=1000000, use_ml_step=True)
+    model.thermal_mc(nphotons=1000000, use_ml_step=False)
 
     image = model.make_image(256, 256, 0.1, np.array([1., 1000.])*u.micron, 45., 45., 1.)
 

@@ -50,7 +50,7 @@ class Model:
         self.ncores = ncores
         self.pool = pool
 
-    def add_density(self, density: u.Quantity, dust):
+    def add_density(self, density: u.Quantity, dust, amax=1.0, p=3.5):
         """
         Add density to the grid.
         
@@ -63,7 +63,7 @@ class Model:
         """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
-                grid.add_density(density, load(dust) if isinstance(dust, str) else dust)
+                grid.add_density(density, load(dust) if isinstance(dust, str) else dust, amax=amax, p=p)
 
     def add_star(self, star):
         """
