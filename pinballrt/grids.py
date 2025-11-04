@@ -335,8 +335,9 @@ class Grid:
         if not scattering and nabsorb > 0:
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
-                      inputs=[photon_list, new_frequency, self.dust.ml_kabs(wp.to_torch(photon_list.p)[iabsorb], wp.to_torch(photon_list.amax)[iabsorb], wp.to_torch(new_frequency)), 
-                              self.dust.ml_ksca(wp.to_torch(photon_list.p)[iabsorb], wp.to_torch(photon_list.amax)[iabsorb], wp.to_torch(new_frequency)), iabsorb])
+                      inputs=[photon_list, new_frequency, 
+                              self.dust.ml_kabs(photon_list=photon_list, nu=wp.to_torch(new_frequency), iphotons=iabsorb), 
+                              self.dust.ml_ksca(photon_list=photon_list, nu=wp.to_torch(new_frequency), iphotons=iabsorb), iabsorb])
         t2 = time.time()
         dust_interpolation_time = t2 - t1
     
@@ -475,7 +476,7 @@ class Grid:
 
         wp.launch(kernel=self.update_frequency,
                   dim=(nphotons,),
-                  inputs=[photon_list, frequency, self.dust.ml_kabs(wp.to_torch(photon_list.p)[iphotons], wp.to_torch(photon_list.amax)[iphotons], frequency), self.dust.ml_ksca(wp.to_torch(photon_list)[iphotons], wp.to_torch(photon_list.amax)[iphotons], frequency), iphotons])
+                  inputs=[photon_list, frequency, self.dust.ml_kabs(photon_list=photon_list, nu=frequency, iphotons=iphotons), self.dust.ml_ksca(photon_list=photon_list, nu=frequency, iphotons=iphotons), iphotons])
 
         wp.launch(kernel=self.ml_rotate_direction,
                   dim=(nphotons,),
@@ -518,8 +519,8 @@ class Grid:
             ml_step_time = 0.
 
             t1 = time.time()
-            photon_list.kabs = wp.from_torch(self.dust.ml_kabs(wp.to_torch(photon_list.p), wp.to_torch(photon_list.amax), wp.to_torch(photon_list.frequency), iphotons))
-            photon_list.ksca = wp.from_torch(self.dust.ml_ksca(wp.to_torch(photon_list.p), wp.to_torch(photon_list.amax), wp.to_torch(photon_list.frequency), iphotons))
+            photon_list.kabs = wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons))
+            photon_list.ksca = wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons))
             photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
@@ -688,8 +689,8 @@ class Grid:
             absorb_time = 0.
 
             t1 = time.time()
-            photon_list.kabs = wp.from_torch(self.dust.ml_kabs(wp.to_torch(photon_list.p), wp.to_torch(photon_list.amax), wp.to_torch(photon_list.frequency), iphotons))
-            photon_list.ksca = wp.from_torch(self.dust.ml_ksca(wp.to_torch(photon_list.p), wp.to_torch(photon_list.amax), wp.to_torch(photon_list.frequency), iphotons))
+            photon_list.kabs = wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons))
+            photon_list.ksca = wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons))
             photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
@@ -860,10 +861,8 @@ class Grid:
                       dim=(nrays,),
                       inputs=[ray_list, self.grid, iray])
 
-            ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), \
-                    iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
-            ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), \
-                    iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+            ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+            ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
 
             s = wp.zeros(nrays, dtype=float)
 
@@ -909,10 +908,8 @@ class Grid:
                               dim=(nrays,),
                               inputs=[ray_list, self.grid, iray])
 
-                    ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), \
-                            iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
-                    ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), \
-                            torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+                    ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+                    ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
 
     def propagate_rays_from_source(self, ray_list: PhotonList, frequency):
         with wp.ScopedDevice(self.device):
@@ -928,10 +925,8 @@ class Grid:
                       dim=(nrays,),
                       inputs=[ray_list, self.grid, iray])
 
-            ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), \
-                    iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
-            ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), \
-                    iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+            ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+            ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
 
             s = wp.zeros(nrays, dtype=float)
             
@@ -964,10 +959,8 @@ class Grid:
                               dim=(nrays,),
                               inputs=[ray_list, self.grid, iray])
 
-                    ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), torch.tensor(frequency[i], dtype=torch.float32).expand(iray_original.size(0)), \
-                            iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
-                    ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(wp.to_torch(ray_list.p), wp.to_torch(ray_list.amax), \
-                            torch.tensor(frequency[i], dtype=torch.float32).expand(iray_original.size(0)), iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+                    ray_list.kext = wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
+                    ray_list.ray_albedo = wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1))
 
 class UniformCartesianGrid(Grid):
     def __init__(self, ncells=9, dx=1.0*u.au, device="cpu"):

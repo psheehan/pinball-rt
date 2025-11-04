@@ -2,19 +2,16 @@ import urllib
 import requests
 from .sources import Star
 from .grids import UniformSphericalGrid
-from .utils import log_uniform_interp, log_uniform_interp_extra_dim
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
 import scipy.interpolate
-from scipy.stats import gaussian_kde
 from tqdm import trange
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
 import scipy.stats.qmc
 import scipy.integrate
-from scipy.interpolate import RegularGridInterpolator
 import warp as wp
 import numpy as np
 import torch.nn as nn
@@ -86,30 +83,11 @@ class Dust(pl.LightningDataModule):
         lam_unit = lam.unit
         amax_unit = amax.unit
 
-        if interpolate > 0:
-            f_kabs = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(kabs.value), kind="cubic")
-            f_ksca = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(ksca.value), kind="cubic")
-
-            log_grid = np.meshgrid(np.linspace(p.min(), p.max(), 30),
-                    np.linspace(np.log10(amax.value).min(), np.log10(amax.value).max(), 100),
-                    np.linspace(np.log10(lam.value).min(), np.log10(lam.value).max(), interpolate)[::-1], indexing='ij')
-            flat_log_grid = np.array(log_grid).reshape((3,-1)).T
-
-            kabs = 10.**scipy.interpolate.interpn((p, np.log10(amax.value), np.log10(lam.value)), np.log10(kabs.value), flat_log_grid, method="cubic")
-            ksca = 10.**scipy.interpolate.interpn((p, np.log10(amax.value), np.log10(lam.value)), np.log10(ksca.value), flat_log_grid, method="cubic")
-
-            kabs = kabs.reshape(log_grid[0].shape)
-            ksca = ksca.reshape(log_grid[0].shape)
-
-            lam = 10.**log_grid[2][0,0,:]
-            amax = 10.**log_grid[1][0,:,0]
-            p = 10.**log_grid[0][:,0,0]
-        else:
-            lam = lam.value
-            amax = amax.value
-            p = p
-            kabs = kabs.value
-            ksca = ksca.value
+        lam = lam.value
+        amax = amax.value
+        p = p
+        kabs = kabs.value
+        ksca = ksca.value
 
         if lam[1] > lam[0]:
             lam = lam[::-1]
@@ -146,13 +124,6 @@ class Dust(pl.LightningDataModule):
         self.random_nu_CPD /= self.random_nu_CPD[:,:,:,-1:]
         self.drandom_nu_CPD_dT = np.gradient(self.random_nu_CPD, self.temperature, axis=0)
 
-        """
-        vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
-                models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
-
-        self.pmo = np.pi / (const.sigma_sb.cgs.value * self.temperature**4) * vectorized_bb(self.temperature)
-        """
-
     def to_device(self, device):
         with wp.ScopedDevice(device):
             self.nu_wp = wp.array(self.nu.value, dtype=float)
@@ -165,81 +136,94 @@ class Dust(pl.LightningDataModule):
             self.random_nu_model.to(device)
         if hasattr(self, "ml_step_model"):
             self.ml_step_model.to(device)
+        if hasattr(self, "kabs_model"):
+            self.kabs_model.to(device)
+        if hasattr(self, "ksca_model"):
+            self.ksca_model.to(device)
+        if hasattr(self, "pmo_model"):
+            self.pmo_model.to(device)
 
-    def interpolate_kabs(self, nu):
-        return np.interp(nu, self.nu, self.kabs)
+    def interpolate_kabs(self, p, amax, nu):
+        samples = np.vstack((p, np.log10(amax), np.log10(nu))).T
 
-    def interpolate_ksca(self, nu):
-        return np.interp(nu, self.nu, self.ksca)
+        interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.kabs), samples, method="cubic")
 
-    def interpolate_kabs_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+        return 10.**interpolated
 
-        kabs = wp.zeros(len(frequency), dtype=float)
-        wp.launch(log_uniform_interp, dim=len(frequency), inputs=[frequency, self.nu_wp, self.kabs_wp, kabs])
-        return kabs
+    def ml_kabs(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
 
-    def ml_kabs(self, p, amax, nu, iphotons=None):
-        if iphotons == None:
-            iphotons = torch.arange(p.size(0))
-
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)[iphotons,:]
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
 
         return 10.**self.kabs_model(samples).detach().flatten()
+    
+    def interpolate_ksca(self, p, amax, nu):
+        samples = np.vstack((p, np.log10(amax), np.log10(nu))).T
 
-    def interpolate_ksca_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+        interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.ksca), samples, method="cubic")
 
-        ksca = wp.zeros(len(frequency), dtype=float)
-        wp.launch(log_uniform_interp, dim=len(frequency), inputs=[frequency, self.nu_wp, self.ksca_wp, ksca])
-        return ksca
+        return 10.**interpolated
 
-    def ml_ksca(self, p, amax, nu, iphotons=None):
-        if iphotons == None:
-            iphotons = torch.arange(p.size(0))
+    def ml_ksca(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
 
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)[iphotons,:]
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
 
         return 10.**self.ksca_model(samples).detach().flatten()
 
-    def interpolate_kext(self, nu):
-        return np.interp(nu, self.nu, self.kext)
-    
-    def interpolate_kext_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+    def interpolate_kext(self, p, amax, nu):
+        return self.interpolate_kabs(p, amax, nu) + self.interpolate_ksca(p, amax, nu)
 
-        kext = wp.zeros((len(photon_list.in_grid), len(frequency)), dtype=float)
-        wp.launch(log_uniform_interp_extra_dim, dim=(len(photon_list.in_grid), len(frequency)), inputs=[frequency, self.nu_wp, self.kext_wp, kext])
-        return kext
+    def ml_kext(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
 
-    def ml_kext(self, p, amax, nu, iphotons=None):
-        if iphotons == None:
-            iphotons = torch.arange(p.size(0))
-
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)[iphotons,:]
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
 
         return 10.**self.kabs_model(samples).detach().flatten() + \
                 10.**self.ksca_model(samples).detach().flatten()
 
-    def interpolate_albedo(self, nu):
-        return np.interp(nu, self.nu, self.albedo)
+    def interpolate_albedo(self, p, amax, nu):
+        kabs = self.interpolate_kabs(p, amax, nu)
+        ksca = self.interpolate_ksca(p, amax, nu)
 
-    def interpolate_albedo_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+        return ksca / (kabs + ksca)
 
-        albedo = wp.zeros((len(photon_list.in_grid), len(frequency)), dtype=float)
-        wp.launch(log_uniform_interp_extra_dim, dim=(len(photon_list.in_grid), len(frequency)), inputs=[frequency, self.nu_wp, self.albedo_wp, albedo])
-        return albedo
+    def ml_albedo(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
 
-    def ml_albedo(self, p, amax, nu, iphotons=None):
-        if iphotons == None:
-            iphotons = torch.arange(p.size(0))
-
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)[iphotons,:]
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
 
         kabs = 10.**self.kabs_model(samples).detach().flatten()
         ksca = 10.**self.ksca_model(samples).detach().flatten()
@@ -439,7 +423,7 @@ class Dust(pl.LightningDataModule):
 
                 samples = np.vstack((p, log10_amax, log10_nu)).T
 
-                interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.kabs), samples, method="cubic")
+                interpolated = np.log10(self.interpolate_kabs(p, 10.**log10_amax, 10.**log10_nu))
                 nned = self.kabs_model(torch.tensor(samples, dtype=torch.float32)).detach().numpy()
 
                 plt.plot(log10_lam, interpolated)
@@ -453,7 +437,7 @@ class Dust(pl.LightningDataModule):
 
                 samples = np.vstack((p, log10_amax, log10_nu)).T
 
-                interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.ksca), samples, method="cubic")
+                interpolated = np.log10(self.interpolate_ksca(p, 10.**log10_amax, 10.**log10_nu))
                 nned = self.ksca_model(torch.tensor(samples, dtype=torch.float32)).detach().numpy()
 
                 plt.plot(log10_lam, interpolated)
