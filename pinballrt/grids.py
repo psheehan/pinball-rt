@@ -51,7 +51,7 @@ class Grid:
 
             self.shape = (self.grid.n1, self.grid.n2, self.grid.n3)
 
-    def add_density(self, _density, dust, amax=1.0, p=3.5):
+    def add_density(self, _density, dust, amax=1.0*u.micron, p=3.5):
         with wp.ScopedDevice(self.device):
             self.grid.density = wp.array3d((_density*dust.kmean).to(1./self.distance_unit).value, dtype=float)
 
@@ -65,9 +65,9 @@ class Grid:
                 self.grid.amax = wp.array3d(amax, dtype=float)
             elif isinstance(amax, u.Quantity):
                 if len(amax.shape) == 0:
-                    self.grid.amax = wp.array3d(np.ones(_density.shape)*amax.to(u.um).value, dtype=float)
+                    self.grid.amax = wp.array3d(np.ones(_density.shape)*amax.to(u.cm).value, dtype=float)
                 else:
-                    self.grid.amax = wp.array3d(amax.to(u.um).value, dtype=float)
+                    self.grid.amax = wp.array3d(amax.to(u.cm).value, dtype=float)
 
             if isinstance(p, (int, float)):
                 self.grid.p = wp.array3d(np.ones(_density.shape)*p, dtype=float)

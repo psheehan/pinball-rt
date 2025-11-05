@@ -50,7 +50,7 @@ class Model:
         self.ncores = ncores
         self.pool = pool
 
-    def add_density(self, density: u.Quantity, dust, amax=1.0, p=3.5):
+    def add_density(self, density: u.Quantity, dust, amax=1.0*u.micron, p=3.5):
         """
         Add density to the grid.
         
@@ -60,6 +60,12 @@ class Model:
             The density to add to the grid.
         dust : Dust
             The dust distribution to use.
+        amax : astropy.units.Quantity
+            The maximum dust size of the dust in the grid. Can be specified as a single value to be constant over
+            the grid, or as an array with a spatially varying value.
+        p : float or array-like
+            The dust grain size distribution power-law slope. Can be specified as a single value to be constant over
+            the grid, or as an array with a spatially varying value.
         """
         for device in self.grid_list:
             for grid in self.grid_list[device]:

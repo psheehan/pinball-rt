@@ -38,7 +38,9 @@ Note that the density should be given a unit (via astropy.units) so that there i
 
 .. code-block:: python
     
-   model.add_density(density, d)
+   model.add_density(density, d, amax=1.0*u.cm, p=3.0)
+
+Note that pinball Dust objects store dust opacities for a range of different properties. In this example we use a spatially constant maximum dust grain size and the grain size distribution power law index, but these properties can also be specified as arrays with varying values. 
 
 We also need a source of photons. In this example, we'll use a star with a blackbody spectrum:
 
