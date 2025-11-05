@@ -1053,13 +1053,24 @@ class DustOpticalConstants:
             
             kabsgrid[:,i] = self.kabs*normfunc[i]
             kscagrid[:,i] = self.ksca*normfunc[i]
-        
-        norm = scipy.integrate.trapezoid(normfunc,x=a)
-        
-        self.kabs = scipy.integrate.trapezoid(kabsgrid,x=a)/norm
-        self.ksca = scipy.integrate.trapezoid(kscagrid,x=a)/norm
-        self.kext = self.kabs + self.ksca
-        self.albedo = self.ksca / self.kext
+
+        self.kabs, self.ksca = [], []
+        for p in self.p:
+            kabs_temp, ksca_temp = [], []
+
+            for amax in self.amax:
+                normfunc = a**(3-p)
+                normfunc[a > amax] = 0.
+                norm = scipy.integrate.trapz(normfunc, x=a)
+
+                kabs_temp.append(scipy.integrate.trapz(kabsgrid*normfunc,x=a, axis=1)/norm)
+                ksca_temp.append(scipy.integrate.trapz(kscagrid*normfunc,x=a, axis=1)/norm)
+
+            self.kabs.append(kabs_temp)
+            self.ksca.append(ksca_temp)
+                
+        self.kabs = np.array(self.kabs)
+        self.ksca = np.array(self.ksca)
 
     def calculate_opacity(self, a, coat_volume_fraction=0.0, nang=1000):
         self.kabs = np.zeros(self.lam.size) * a.unit**2 / u.g
