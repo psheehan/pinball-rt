@@ -30,7 +30,7 @@ def test_E2E(grid_class, grid_kwargs, return_vals=False):
 
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/amax.dst")
+    d = os.path.join(os.path.dirname(__file__), "data/yso.dst")
 
     # Set up the star.
 
