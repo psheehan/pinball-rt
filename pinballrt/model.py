@@ -2,6 +2,7 @@ import astropy.constants as const
 import astropy.units as u
 from .grids import Grid
 from .dust import load, Dust
+from .gas import Gas
 from .camera import Camera
 from schwimmbad import SerialPool
 import xarray as xr
@@ -50,7 +51,8 @@ class Model:
         self.ncores = ncores
         self.pool = pool
 
-    def add_density(self, density: u.Quantity, dust):
+    def set_physical_properties(self, density=None, dust=None, amax=None, p=None, gases=None, abundances=None, 
+                                velocity=None, microturbulence=None):
         """
         Add density to the grid.
         
@@ -63,7 +65,9 @@ class Model:
         """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
-                grid.add_density(density, load(dust) if isinstance(dust, str) else dust)
+                grid.set_physical_properties(density=density, dust=load(dust) if isinstance(dust, str) else dust,
+                                               amax=amax, p=p, gases=gases, abundances=abundances,
+                                               velocity=velocity, microturbulence=microturbulence)
 
     def add_star(self, star):
         """
@@ -191,7 +195,7 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, npix=100, pixel_size=None, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, device="cpu"):
+    def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, device="cpu"):
         """
         Create an image from the dust distribution.
 
@@ -221,6 +225,26 @@ class Model:
 
         if pixel_size is None:
             pixel_size = ((1.25*self.grid.grid_size()*self.grid.distance_unit / distance).decompose()*u.radian).to(u.arcsec) / npix
+
+        # Check whether spectral is wavelength or frequency
+
+        if channels.unit.is_equivalent(u.micron):
+            lam = channels.to(u.micron)
+            nu = (const.c / channels).to(u.GHz)
+        elif channels.unit.is_equivalent(u.GHz):
+            nu = channels.to(u.GHz)
+            lam = (const.c / nu).to(u.micron)
+        elif channels.unit.is_equivalent(u.km / u.s):
+            if rest_frequency is None:
+                raise ValueError("rest_frequency must be provided when channels are in velocity units.")
+            nu = (rest_frequency * (1 - channels / const.c)).to(u.GHz)
+            lam = (const.c / nu).to(u.micron)
+        else:
+            raise ValueError("Either lam or nu must be provided.")
+
+        # Check which lines from the gas should be included
+
+        self.grid.select_lines(lam)
 
         # First, run a scattering simulation to get the scattering phase function
 

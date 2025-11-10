@@ -52,6 +52,7 @@ class Camera:
         ray_list = PhotonList()
         ray_list.position = wp.array(position, dtype=wp.vec3)
         ray_list.direction = wp.array(direction, dtype=wp.vec3)
+        ray_list.direction_frame = wp.array(direction, dtype=wp.vec3)
         ray_list.indices = wp.zeros(xflat.shape+(3,), dtype=int)
         ray_list.intensity = wp.array2d(intensity, dtype=float)
         ray_list.tau_intensity = wp.array2d(tau_intensity, dtype=float)

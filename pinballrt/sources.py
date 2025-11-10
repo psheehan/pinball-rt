@@ -51,6 +51,7 @@ class Star:
         phi = 2*np.pi*np.random.rand(nphotons)
 
         direction = cost[:,np.newaxis]*r_hat + (sint*np.cos(phi))[:,np.newaxis]*phi_hat + (sint*np.sin(phi))[:,np.newaxis]*theta_hat
+        direction_frame = cost[:,np.newaxis]*r_hat + (sint*np.cos(phi))[:,np.newaxis]*phi_hat + (sint*np.sin(phi))[:,np.newaxis]*theta_hat
 
         if wavelength == "random":
             t1 = time.time()
@@ -69,6 +70,7 @@ class Star:
             photon_list = PhotonList()
             photon_list.position = wp.array(position, dtype=wp.vec3)
             photon_list.direction = wp.array(direction, dtype=wp.vec3)
+            photon_list.direction_frame = wp.array(direction_frame, dtype=wp.vec3)
             photon_list.frequency = wp.array(frequency, dtype=float)
             photon_list.energy = wp.array(photon_energy, dtype=float)
 
@@ -91,6 +93,7 @@ class Star:
             ray_list = PhotonList()
             ray_list.position = wp.array(position, dtype=wp.vec3)
             ray_list.direction = wp.array(direction, dtype=wp.vec3)
+            ray_list.direction_frame = wp.array(direction, dtype=wp.vec3)
             ray_list.indices = wp.zeros(position.shape, dtype=int)
             ray_list.intensity = wp.array2d(intensity, dtype=float)
             ray_list.tau_intensity = wp.array2d(tau_intensity, dtype=float)
