@@ -46,6 +46,9 @@ class GridStruct:
     alpha_line: wp.array4d(dtype=float)
     inv_gamma: wp.array4d(dtype=float)
 
+    include_dust: bool
+    include_gas: bool
+
 class Grid:
     def __init__(self, _w1, _w2, _w3, device='cpu'):
         self.device = device
@@ -928,34 +931,37 @@ class Grid:
 
         tau_cell = 0.
         intensity_abs = 0.
+        intensity_sca = 0.
         alpha_ext = 0.
         alpha_sca = 0.
 
-        tau_cell = tau_cell + s[ir]*ray_list.kext[iray,inu]*grid.density[ix,iy,iz]
-        alpha_ext = alpha_ext + ray_list.kext[iray,inu]*grid.density[ix,iy,iz]
-        alpha_sca = alpha_sca + ray_list.kext[iray,inu]*ray_list.ray_albedo[iray,inu]*grid.density[ix,iy,iz]
-        intensity_abs = intensity_abs + ray_list.kext[iray,inu] * (1. - ray_list.ray_albedo[iray,inu]) * \
-                grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
+        if grid.include_dust:
+            tau_cell = tau_cell + s[ir]*ray_list.kext[iray,inu]*grid.density[ix,iy,iz]
+            alpha_ext = alpha_ext + ray_list.kext[iray,inu]*grid.density[ix,iy,iz]
+            alpha_sca = alpha_sca + ray_list.kext[iray,inu]*ray_list.ray_albedo[iray,inu]*grid.density[ix,iy,iz]
+            intensity_abs = intensity_abs + ray_list.kext[iray,inu] * (1. - ray_list.ray_albedo[iray,inu]) * \
+                    grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
 
-        albedo_total = alpha_sca / alpha_ext
+            albedo_total = alpha_sca / alpha_ext
 
-        if alpha_ext > 0.:
-            intensity_abs = intensity_abs * (1.0 - wp.exp(-tau_cell)) / alpha_ext
+            if alpha_ext > 0.:
+                intensity_abs = intensity_abs * (1.0 - wp.exp(-tau_cell)) / alpha_ext
 
-        intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * scattering[inu,ix,iy,iz]
+                intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * scattering[inu,ix,iy,iz]
 
         intensity_line = float(0.)
-        vector_velocity = wp.vec3(grid.velocity[0,ix,iy,iz], grid.velocity[1,ix,iy,iz], grid.velocity[2,ix,iy,iz])
-        for itrans in range(grid.nlines):
-            # Need to add doppler shift here based on cell velocity along ray direction
-            profile = wp.exp(-(ray_list.frequency[inu] * (1.0 + wp.dot(ray_list.direction[ir],vector_velocity)) - grid.line_nu[itrans])**2. * (grid.inv_gamma[itrans,ix,iy,iz]**2.))
+        if grid.include_gas:
+            vector_velocity = wp.vec3(grid.velocity[0,ix,iy,iz], grid.velocity[1,ix,iy,iz], grid.velocity[2,ix,iy,iz])
+            for itrans in range(grid.nlines):
+                # Need to add doppler shift here based on cell velocity along ray direction
+                profile = wp.exp(-(ray_list.frequency[inu] * (1.0 + wp.dot(ray_list.direction[ir],vector_velocity)) - grid.line_nu[itrans])**2. * (grid.inv_gamma[itrans,ix,iy,iz]**2.))
 
-            alpha_this_line = grid.alpha_line[itrans,ix,iy,iz] * profile
+                alpha_this_line = grid.alpha_line[itrans,ix,iy,iz] * profile
 
-            tau_cell = tau_cell + s[ir] * alpha_this_line
-            alpha_ext = alpha_ext + alpha_this_line
+                tau_cell = tau_cell + s[ir] * alpha_this_line
+                alpha_ext = alpha_ext + alpha_this_line
 
-            intensity_line = intensity_line + alpha_this_line * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
+                intensity_line = intensity_line + alpha_this_line * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
 
         intensity_cell = intensity_abs + intensity_sca + intensity_line
 

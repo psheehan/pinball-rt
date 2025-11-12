@@ -195,7 +195,8 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, device="cpu"):
+    def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, include_dust=True, 
+                   include_gas=True, include_sources=True, device="cpu"):
         """
         Create an image from the dust distribution.
 
@@ -226,6 +227,9 @@ class Model:
         if pixel_size is None:
             pixel_size = ((1.25*self.grid.grid_size()*self.grid.distance_unit / distance).decompose()*u.radian).to(u.arcsec) / npix
 
+        self.grid.grid.include_dust = include_dust
+        self.grid.grid.include_gas = include_gas
+
         # Check whether spectral is wavelength or frequency
 
         if channels.unit.is_equivalent(u.micron):
@@ -244,11 +248,13 @@ class Model:
 
         # Check which lines from the gas should be included
 
-        self.grid.select_lines(lam)
+        if include_gas:
+            self.grid.select_lines(lam)
 
         # First, run a scattering simulation to get the scattering phase function
 
-        self.scattering_mc(100000, lam, device=device)
+        if include_dust:
+            self.scattering_mc(100000, lam, device=device)
 
         # Now set up the image proper.
 
@@ -275,8 +281,9 @@ class Model:
         intensity = np.array(list(self.pool.map(lambda x: x[0].raytrace(x[1], x[2], nx, ny, image.pixel_size, image.nu).numpy(), 
                         zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0)
 
-        intensity += np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, distance, 
-                        nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0)
+        if include_sources:
+            intensity += np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, distance, 
+                            nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0)
 
         image = image.assign(intensity=(("x","y","lam"), intensity))
 
