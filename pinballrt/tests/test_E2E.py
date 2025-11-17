@@ -28,10 +28,6 @@ def test_E2E(grid_class, grid_kwargs, return_vals=False):
     torch.manual_seed(1)
     np.random.seed(1)
 
-    # Set up the dust.
-
-    d = os.path.join(os.path.dirname(__file__), "data/yso.dst")
-
     # Set up the star.
 
     star = Star()
@@ -42,7 +38,7 @@ def test_E2E(grid_class, grid_kwargs, return_vals=False):
 
     density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
 
-    model.add_density(density, d)
+    model.add_density(density, "diana_wice.dst")
     model.add_star(star)
 
     model.thermal_mc(nphotons=1000000, use_ml_step=False)

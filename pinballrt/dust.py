@@ -285,8 +285,8 @@ class Dust(pl.LightningDataModule):
         return nu
 
     def planck_mean_opacity(self, p, amax, temperature):
-        vectorized_bb = np.vectorize(lambda p, a, T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.ml_kabs(torch.tensor(p).expand(self.nu.size), 
-                torch.tensor(a).expand(self.nu.size), torch.tensor(self.nu.value)) * \
+        vectorized_bb = np.vectorize(lambda p, a, T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.ml_kabs(torch.tensor(p, dtype=torch.float32).expand(self.nu.size), 
+                torch.tensor(a, dtype=torch.float32).expand(self.nu.size), torch.tensor(self.nu.value, dtype=torch.float32)) * \
                 models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value) * np.pi / (const.sigma_sb.cgs.value * T**4))
 
         return vectorized_bb(p, amax, temperature)
@@ -340,8 +340,8 @@ class Dust(pl.LightningDataModule):
         elif model == "pmo":
             self.pmo_model = nn.Sequential(*all_layers)
 
-    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False, 
-            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, overwrite=False):
+    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, batch_size=100, plot=False, 
+            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, overwrite=False, nworkers=1):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -367,6 +367,8 @@ class Dust(pl.LightningDataModule):
         self.valid_split = valid_split
         self.learning = model
         self.overwrite = overwrite
+        self.batch_size = batch_size
+        self.nworkers = nworkers
 
         # Set up the NN
 
@@ -773,16 +775,16 @@ class Dust(pl.LightningDataModule):
         self.train, self.val = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=100)
+        return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val, batch_size=100)
+        return DataLoader(self.val, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def test_dataloader(self):
-        return DataLoader(self.test, batch_size=100)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def predict_dataloader(self):
-        return DataLoader(self.test, batch_size=100)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def state_dict(self):
         state_dict = {
