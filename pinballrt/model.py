@@ -232,7 +232,7 @@ class Model:
             for camera in self.camera_list[dev]:
                 camera.set_orientation(incl, pa, distance)
 
-        pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
+        physical_pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
 
         image = xr.Dataset(
             #data_vars={
@@ -248,11 +248,14 @@ class Model:
         new_x, new_y = xr.broadcast(image.x, image.y)
         new_x, new_y = new_x.values.flatten(), new_y.values.flatten()
 
-        intensity = np.array(list(self.pool.map(lambda x: x[0].raytrace(x[1], x[2], nx, ny, image.pixel_size, image.nu).numpy(), 
-                        zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0)
+        intensity = np.array(list(self.pool.map(lambda x: x[0].raytrace(x[1], x[2], nx, ny, physical_pixel_size, image.nu).numpy(), 
+                        zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0) * (u.Jy / u.steradian) * \
+                        image.pixel_size**2
 
-        intensity += np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, distance, 
-                        nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0)
+        source_intensity = np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, distance, 
+                        nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0) * u.Jy
+
+        intensity += source_intensity
 
         image = image.assign(intensity=(("x","y","lam"), intensity))
 
