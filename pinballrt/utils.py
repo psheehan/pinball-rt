@@ -1,3 +1,4 @@
+import numpy as np
 import warp as wp
 import torch
 
@@ -57,3 +58,13 @@ def log_uniform_interp_extra_dim(x: wp.array(dtype=float),
 
     f[ip, inu] = (x[inu] - xp[index]) * (fp[index+1] - fp[index]) / \
         (xp[index+1] - xp[index]) + fp[index]
+
+def calculate_Qvalue(array1, array2, percentile=99.0, clip=None):
+    if clip is not None:
+        array1 = np.clip(array1, clip, None)
+        array2 = np.clip(array2, clip, None)
+
+    R = np.maximum(array1/array2, array2/array1)
+    Q = np.percentile(R, percentile)
+    
+    return Q

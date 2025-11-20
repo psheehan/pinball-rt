@@ -191,7 +191,7 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, npix=100, pixel_size=None, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, device="cpu"):
+    def make_image(self, npix=100, pixel_size=None, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, nphotons=100000, device="cpu"):
         """
         Create an image from the dust distribution.
 
@@ -224,7 +224,7 @@ class Model:
 
         # First, run a scattering simulation to get the scattering phase function
 
-        self.scattering_mc(100000, lam, device=device)
+        self.scattering_mc(nphotons, lam, device=device)
 
         # Now set up the image proper.
 

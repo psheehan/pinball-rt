@@ -692,7 +692,7 @@ class Grid:
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
-            photon_list.absorb = wp.array(np.repeat(False, nphotons), dtype=bool)
+            photon_list.absorb = wp.array(np.random.rand(nphotons) > photon_list.albedo.numpy(), dtype=bool)
 
             photon_list.total_tau_abs = wp.zeros(nphotons, dtype=float)
 
