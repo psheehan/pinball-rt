@@ -35,3 +35,20 @@ def test_learn_random_nu():
 
     n_samples = 1000
     d.learn(model="random_nu", nsamples=n_samples, max_epochs=10)
+
+def test_learn_ml_step():
+    """
+    Test the learn_ml_step method of the Dust class.
+    """
+    # Load the dust file.
+
+    d = load('yso.dst')
+
+    # Copy the pre-existing sim_results.csv to the current directory for training.
+
+    os.system(f"cp {os.path.join(os.path.dirname(__file__), 'data/sim_results.csv')} sim_results.csv")
+
+    # Test the learn_ml_step method.
+
+    n_samples = 1000
+    d.learn(model="ml_step", nsamples=n_samples, max_epochs=10)
