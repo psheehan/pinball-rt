@@ -54,12 +54,12 @@ def test_E2E(grid_class, grid_kwargs, return_vals=False):
         Q = calculate_Qvalue(temperature, model.grid.grid.temperature.numpy(), percentile=99.0)
         assert Q < 1.02, f"Temperature difference exceeds tolerance: {Q}"
 
+        scattering = np.load(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_scattering.npz"))['scattering']
         if grid_class == LogUniformSphericalGrid:
             scattering = np.median(scattering, axis=(2,3))
             model_scattering = np.median(model.grid.scattering.numpy(), axis=(2,3))
         else:
             model_scattering = model.grid.scattering.numpy()
-        scattering = np.load(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_scattering.npz"))['scattering']
         Q = calculate_Qvalue(scattering, model_scattering, percentile=99.0, clip=0.1)
         assert Q < 1.12, f"scattering difference exceeds tolerance: {Q}"
 
