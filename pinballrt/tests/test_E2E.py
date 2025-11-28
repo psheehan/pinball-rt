@@ -20,7 +20,7 @@ test_data = [
 ]
 
 @pytest.mark.parametrize("grid_class,grid_kwargs,percentile", test_data)
-def test_E2E(grid_class, grid_kwargs, percentile=99.0, return_vals=False):
+def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
     """
     Test the end-to-end functionality of the UniformCartesianGrid model running all the way through.
     """
