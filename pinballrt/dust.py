@@ -2,19 +2,16 @@ import urllib
 import requests
 from .sources import Star
 from .grids import UniformSphericalGrid
-from .utils import log_uniform_interp, log_uniform_interp_extra_dim
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
 import scipy.interpolate
-from scipy.stats import gaussian_kde
 from tqdm import trange
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
 import scipy.stats.qmc
 import scipy.integrate
-from scipy.interpolate import RegularGridInterpolator
 import warp as wp
 import numpy as np
 import torch.nn as nn
@@ -28,7 +25,7 @@ import psutil
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
-                 amin=None, amax=None, p=None, with_dhs=False, fmax=0.8, nf=50, interpolate=10000, 
+                 amin=None, amax=None, p=None, with_dhs=False, fmax=0.8, nf=50, interpolate=1000, 
                  device="cpu"):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
@@ -84,22 +81,24 @@ class Dust(pl.LightningDataModule):
 
         kunit = kabs.unit
         lam_unit = lam.unit
+        amax_unit = amax.unit
 
-        if interpolate > 0:
-            f_kabs = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(kabs.value), kind="cubic")
-            f_ksca = scipy.interpolate.interp1d(np.log10(lam.value), np.log10(ksca.value), kind="cubic")
+        lam = lam.value
+        amax = amax.value
+        p = p
+        kabs = kabs.value
+        ksca = ksca.value
 
-            lam = 10.**np.linspace(np.log10(lam.value).min(), np.log10(lam.value).max(), interpolate)[::-1]
-            kabs = 10.**f_kabs(np.log10(lam))
-            ksca = 10.**f_ksca(np.log10(lam))
-        else:
-            lam = lam.value
-            kabs = kabs.value
-            ksca = ksca.value
+        if lam[1] > lam[0]:
+            lam = lam[::-1]
+            kabs = np.flip(kabs, axis=-1)
+            ksca = np.flip(ksca, axis=-1)
 
         self.nu = (const.c / (lam * lam_unit)).decompose().to(u.GHz)
         self.kmean = np.mean(kabs) * kunit
         self.lam = lam * lam_unit
+        self.amax = amax * amax_unit
+        self.p = p
         self.kabs = kabs / self.kmean.value
         self.ksca = ksca / self.kmean.value
         self.kext = (kabs + ksca) / self.kmean.value
@@ -110,23 +109,20 @@ class Dust(pl.LightningDataModule):
 
         with wp.ScopedDevice(device):
             self.nu_wp = wp.array(self.nu.value, dtype=float)
-            self.kabs_wp = wp.array(self.kabs, dtype=float)
-            self.ksca_wp = wp.array(self.ksca, dtype=float)
-            self.kext_wp = wp.array(self.kext, dtype=float)
-            self.albedo_wp = wp.array(self.albedo, dtype=float)
+            self.amax_wp = wp.array(self.amax.value, dtype=float)
+            self.p_wp = wp.array(self.p, dtype=float)
+            self.kabs_wp = wp.array3d(self.kabs, dtype=float)
+            self.ksca_wp = wp.array3d(self.ksca, dtype=float)
+            self.kext_wp = wp.array3d(self.kext, dtype=float)
+            self.albedo_wp = wp.array3d(self.albedo, dtype=float)
 
-        self.temperature = np.logspace(-1.,4.,1000)
+        self.temperature = np.logspace(-1.,4.,999)
         self.log_temperature = np.log10(self.temperature)
 
         random_nu_PDF = np.array([kabs * models.BlackBody(temperature=T*u.K)(self.nu) for T in self.temperature])
-        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(random_nu_PDF, self.nu, axis=1, initial=0.)
-        self.random_nu_CPD /= self.random_nu_CPD[:,-1:]
+        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(random_nu_PDF, self.nu, axis=-1, initial=0.)
+        self.random_nu_CPD /= self.random_nu_CPD[:,:,:,-1:]
         self.drandom_nu_CPD_dT = np.gradient(self.random_nu_CPD, self.temperature, axis=0)
-
-        vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
-                models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
-
-        self.pmo = np.pi / (const.sigma_sb.cgs.value * self.temperature**4) * vectorized_bb(self.temperature)
 
     def to_device(self, device):
         with wp.ScopedDevice(device):
@@ -140,50 +136,99 @@ class Dust(pl.LightningDataModule):
             self.random_nu_model.to(device)
         if hasattr(self, "ml_step_model"):
             self.ml_step_model.to(device)
+        if hasattr(self, "kabs_model"):
+            self.kabs_model.to(device)
+        if hasattr(self, "ksca_model"):
+            self.ksca_model.to(device)
+        if hasattr(self, "pmo_model"):
+            self.pmo_model.to(device)
 
-    def interpolate_kabs(self, nu):
-        return np.interp(nu, self.nu, self.kabs)
+    def interpolate_kabs(self, p, amax, nu):
+        samples = np.vstack((p, np.log10(amax), np.log10(nu))).T
 
-    def interpolate_ksca(self, nu):
-        return np.interp(nu, self.nu, self.ksca)
+        interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.kabs), samples, method="cubic")
 
-    def interpolate_kabs_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+        return 10.**interpolated
 
-        kabs = wp.zeros(len(frequency), dtype=float)
-        wp.launch(log_uniform_interp, dim=len(frequency), inputs=[frequency, self.nu_wp, self.kabs_wp, kabs])
-        return kabs
+    def ml_kabs(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
 
-    def interpolate_ksca_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
 
-        ksca = wp.zeros(len(frequency), dtype=float)
-        wp.launch(log_uniform_interp, dim=len(frequency), inputs=[frequency, self.nu_wp, self.ksca_wp, ksca])
-        return ksca
-
-    def interpolate_kext(self, nu):
-        return np.interp(nu, self.nu, self.kext)
+        return 10.**self.kabs_model(samples).detach().flatten()
     
-    def interpolate_kext_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+    def interpolate_ksca(self, p, amax, nu):
+        samples = np.vstack((p, np.log10(amax), np.log10(nu))).T
 
-        kext = wp.zeros((len(photon_list.in_grid), len(frequency)), dtype=float)
-        wp.launch(log_uniform_interp_extra_dim, dim=(len(photon_list.in_grid), len(frequency)), inputs=[frequency, self.nu_wp, self.kext_wp, kext])
-        return kext
+        interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.ksca), samples, method="cubic")
 
-    def interpolate_albedo(self, nu):
-        return np.interp(nu, self.nu, self.albedo)
+        return 10.**interpolated
 
-    def interpolate_albedo_wp(self, photon_list, iphotons, frequency=None):
-        if frequency is None:
-            frequency = photon_list.frequency
+    def ml_ksca(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
 
-        albedo = wp.zeros((len(photon_list.in_grid), len(frequency)), dtype=float)
-        wp.launch(log_uniform_interp_extra_dim, dim=(len(photon_list.in_grid), len(frequency)), inputs=[frequency, self.nu_wp, self.albedo_wp, albedo])
-        return albedo
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
+
+        return 10.**self.ksca_model(samples).detach().flatten()
+
+    def interpolate_kext(self, p, amax, nu):
+        return self.interpolate_kabs(p, amax, nu) + self.interpolate_ksca(p, amax, nu)
+
+    def ml_kext(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
+
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
+
+        return 10.**self.kabs_model(samples).detach().flatten() + \
+                10.**self.ksca_model(samples).detach().flatten()
+
+    def interpolate_albedo(self, p, amax, nu):
+        kabs = self.interpolate_kabs(p, amax, nu)
+        ksca = self.interpolate_ksca(p, amax, nu)
+
+        return ksca / (kabs + ksca)
+
+    def ml_albedo(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
+
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
+
+        kabs = 10.**self.kabs_model(samples).detach().flatten()
+        ksca = 10.**self.ksca_model(samples).detach().flatten()
+
+        return ksca / (kabs + ksca)
 
     def absorb(self, temperature):
         nphotons = frequency.numpy().size
@@ -198,14 +243,19 @@ class Dust(pl.LightningDataModule):
 
         return direction, frequency
 
-    def random_nu_manual(self, temperature, ksi=None):
+    def random_nu_manual(self, p, amax, temperature, ksi=None):
         if ksi is None:
             nphotons = temperature.size
             ksi = np.random.rand(nphotons)
 
         iT = ((np.log10(temperature) - self.log_temperature[0]) / (self.log_temperature[1] - self.log_temperature[0])).astype(int)
+        ip = np.searchsorted(self.p, p)
+        iamax = np.searchsorted(self.amax, amax)
 
-        random_nu_CPD = self.random_nu_CPD[iT,:]
+        random_nu_CPD = scipy.interpolate.interpn((self.temperature, self.p, self.amax.value, self.nu.value), self.random_nu_CPD, 
+                                                  np.hstack((np.repeat(np.vstack((temperature, p, amax.value)).T, self.nu.size, axis=0), 
+                                                  np.tile(self.nu.value, p.size)[:, np.newaxis])))
+        random_nu_CPD = random_nu_CPD.reshape((p.size, self.nu.size))
 
         i = np.argmax(ksi[:,np.newaxis] < random_nu_CPD, axis=1)
 
@@ -213,31 +263,38 @@ class Dust(pl.LightningDataModule):
                 (random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i] - random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i-1]) + \
                 self.nu[i-1]
 
-        return frequency
+        return frequency.value
 
     def random_nu(self, photon_list, subset=None):
+        p = wp.to_torch(photon_list.p)
+        amax = wp.to_torch(photon_list.amax)
         temperature = wp.to_torch(photon_list.temperature)
         if subset is not None:
+            p = p[subset]
+            amax = amax[subset]
             temperature = temperature[subset]
             
         nphotons = temperature.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
 
-        test_x = torch.transpose(torch.vstack((torch.log10(temperature), ksi)), 0, 1)
+        test_x = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(temperature), ksi)), 0, 1)
 
         log10_nu = torch.clamp(self.random_nu_model(test_x).detach(), self.log10_nu_min, self.log10_nu_max)
         nu = wp.from_torch(10.**torch.flatten(log10_nu))
 
         return nu
 
-    def planck_mean_opacity(self, temperature, grid):
-        """
-        vectorized_bb = np.vectorize(lambda T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.kabs * \
-                models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value))
+    def planck_mean_opacity(self, p, amax, temperature):
+        vectorized_bb = np.vectorize(lambda p, a, T: self.kmean.cgs.value * scipy.integrate.trapezoid(self.ml_kabs(torch.tensor(p, dtype=torch.float32).expand(self.nu.size), 
+                torch.tensor(a, dtype=torch.float32).expand(self.nu.size), torch.tensor(self.nu.value, dtype=torch.float32)) * \
+                models.BlackBody(temperature=T*u.K)(self.nu).cgs.value, self.nu.to(u.Hz).value) * np.pi / (const.sigma_sb.cgs.value * T**4))
 
-        return np.pi / (const.sigma_sb.cgs.value * temperature**4) * vectorized_bb(temperature)
-        """
-        return np.interp(temperature, self.temperature, self.pmo)
+        return vectorized_bb(p, amax, temperature)
+
+    def ml_planck_mean_opacity(self, p, amax, temperature):
+        samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(temperature))), 0, 1)
+
+        return 10.**self.pmo_model(samples).detach().flatten()
 
     def ml_step(self, photon_list, s, iphotons):
         nphotons = iphotons.size(0)
@@ -276,9 +333,15 @@ class Dust(pl.LightningDataModule):
             self.random_nu_model = nn.Sequential(*all_layers)
         elif model == "ml_step":
             self.ml_step_model = nn.Sequential(*all_layers)
+        elif model == "kabs":
+            self.kabs_model = nn.Sequential(*all_layers)
+        elif model == "ksca":
+            self.ksca_model = nn.Sequential(*all_layers)
+        elif model == "pmo":
+            self.pmo_model = nn.Sequential(*all_layers)
 
-    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False, 
-            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None):
+    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, batch_size=100, plot=False, 
+            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, overwrite=False, nworkers=1):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -303,11 +366,14 @@ class Dust(pl.LightningDataModule):
         self.test_split = test_split
         self.valid_split = valid_split
         self.learning = model
+        self.overwrite = overwrite
+        self.batch_size = batch_size
+        self.nworkers = nworkers
 
         # Set up the NN
 
         if model == "random_nu":
-            input_size, output_size = 2, 1
+            input_size, output_size = 4, 1
         elif model == "ml_step":
             input_size, output_size = 12, 9
 
@@ -320,6 +386,8 @@ class Dust(pl.LightningDataModule):
             self.log10_T_max = temperature_range[1]
             self.log10_tau_cell_nu0_min = tau_range[0]
             self.log10_tau_cell_nu0_max = tau_range[1]
+        elif model in ["kabs", "ksca","pmo"]:
+            input_size, output_size = 3, 1
 
         self.initialize_model(model=model, input_size=input_size, output_size=output_size, hidden_units=hidden_units)
 
@@ -332,6 +400,7 @@ class Dust(pl.LightningDataModule):
 
         # Test the model.
 
+        self.overwrite = False
         self.trainer.test(model=self.dustLM, datamodule=self)
 
         # Plot the result
@@ -340,7 +409,7 @@ class Dust(pl.LightningDataModule):
             import matplotlib.pyplot as plt
 
             if model == "random_nu":
-                y_pred = trainer.predict(dustLM, datamodule=self)
+                y_pred = self.trainer.predict(self.dustLM, datamodule=self)
                 y_pred = torch.cat(y_pred)
                 y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
 
@@ -348,6 +417,47 @@ class Dust(pl.LightningDataModule):
                     count, bins, patches = plt.hist(y_true, 100, histtype='step')
                     plt.hist(y_pred, bins, histtype='step')
                     plt.savefig("predicted_vs_actual.png")
+            elif model == "kabs":
+                log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 100)
+                log10_lam = np.log10((const.c / (10.**log10_nu * u.GHz)).to(u.cm).value)
+                log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
+                p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
+
+                samples = np.vstack((p, log10_amax, log10_nu)).T
+
+                interpolated = np.log10(self.interpolate_kabs(p, 10.**log10_amax, 10.**log10_nu))
+                nned = self.kabs_model(torch.tensor(samples, dtype=torch.float32)).detach().numpy()
+
+                plt.plot(log10_lam, interpolated)
+                plt.plot(log10_lam, nned)
+                plt.show()
+            elif model == "ksca":
+                log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 100)
+                log10_lam = np.log10((const.c / (10.**log10_nu * u.GHz)).to(u.cm).value)
+                log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
+                p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
+
+                samples = np.vstack((p, log10_amax, log10_nu)).T
+
+                interpolated = np.log10(self.interpolate_ksca(p, 10.**log10_amax, 10.**log10_nu))
+                nned = self.ksca_model(torch.tensor(samples, dtype=torch.float32)).detach().numpy()
+
+                plt.plot(log10_lam, interpolated)
+                plt.plot(log10_lam, nned)
+                plt.show()
+            elif model == "pmo":
+                p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
+                log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
+                log10_temperature = np.linspace(np.log10(self.temperature.min()), np.log10(self.temperature.max()), 100)
+
+                samples = np.vstack((p, log10_amax, log10_temperature)).T
+
+                interpolated = np.log10(self.planck_mean_opacity(p, 10.**log10_amax, 10.**log10_temperature))
+                nned = self.pmo_model(torch.tensor(samples, dtype=torch.float32)).detach().numpy()
+
+                plt.plot(log10_temperature, interpolated)
+                plt.plot(log10_temperature, nned)
+                plt.show()
             else:
                 self.plot_ml_step()
 
@@ -356,22 +466,86 @@ class Dust(pl.LightningDataModule):
             self.prepare_data_random_nu()
         elif self.learning == "ml_step":
             self.prepare_data_ml_step()
+        elif self.learning == "kabs":
+            self.prepare_data_kabs()
+        elif self.learning == "ksca":
+            self.prepare_data_ksca()
+        elif self.learning == "pmo":
+            self.prepare_data_pmo()
 
     def prepare_data_random_nu(self):
-        sampler = scipy.stats.qmc.LatinHypercube(d=2)
+        if hasattr(self, "dataset") and not self.overwrite:
+            return
+
+        sampler = scipy.stats.qmc.LatinHypercube(d=4)
         samples = sampler.random(self.nsamples)
 
-        logT = 5*samples[:,0] - 1.
-        ksi = samples[:,1]
-        X = torch.tensor(np.vstack((logT, ksi)).T, dtype=torch.float32)
+        samples[:,0] = samples[:,0] * (self.p.max() - self.p.min()) + self.p.min()
+        samples[:,1] = samples[:,1] * (np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value)
+        samples[:,2] = samples[:,2] * (np.log10(self.temperature.max()) - np.log10(self.temperature.min())) + np.log10(self.temperature.min())
 
-        y = np.concatenate([self.random_nu_manual(10.**X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch in DataLoader(X, batch_size=1000)])
-        y = torch.tensor(np.log10(y.value), dtype=torch.float32)
+        X = torch.tensor(samples, dtype=torch.float32)
+        y = torch.tensor(np.log10(self.random_nu_manual(samples[:,0], 10.**samples[:,1]*self.amax.unit, 10.**samples[:,2], ksi=samples[:,3])), dtype=torch.float32)
+        print(y.min(), y.max())
+
+        self.dataset = TensorDataset(X, y)
+
+    def prepare_data_kabs(self):
+        if hasattr(self, "dataset") and not self.overwrite:
+            return
+
+        sampler = scipy.stats.qmc.LatinHypercube(d=3)
+        samples = sampler.random(self.nsamples)
+
+        samples[:,0] = samples[:,0] * (self.p.max() - self.p.min()) + self.p.min()
+        samples[:,1] = samples[:,1] * (np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value)
+        samples[:,2] = samples[:,2] * (np.log10(self.nu.max().value) - np.log10(self.nu.min().value)) + np.log10(self.nu.min().value)
+
+        log10_kabs = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.kabs), samples, method="cubic")
+
+        X = torch.tensor(samples, dtype=torch.float32)
+        y = torch.tensor(log10_kabs, dtype=torch.float32)
+
+        self.dataset = TensorDataset(X, y)
+
+    def prepare_data_ksca(self):
+        if hasattr(self, "dataset") and not self.overwrite:
+            return
+
+        sampler = scipy.stats.qmc.LatinHypercube(d=3)
+        samples = sampler.random(self.nsamples)
+
+        samples[:,0] = samples[:,0] * (self.p.max() - self.p.min()) + self.p.min()
+        samples[:,1] = samples[:,1] * (np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value)
+        samples[:,2] = samples[:,2] * (np.log10(self.nu.max().value) - np.log10(self.nu.min().value)) + np.log10(self.nu.min().value)
+
+        log10_ksca = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.ksca), samples, method="cubic")
+
+        X = torch.tensor(samples, dtype=torch.float32)
+        y = torch.tensor(log10_ksca, dtype=torch.float32)
+
+        self.dataset = TensorDataset(X, y)
+
+    def prepare_data_pmo(self, device='cpu'):
+        if hasattr(self, "dataaset") and not self.overwrite:
+            return
+
+        sampler = scipy.stats.qmc.LatinHypercube(d=3)
+        samples = sampler.random(self.nsamples)
+
+        samples[:,0] = samples[:,0] * (self.p.max() - self.p.min()) + self.p.min()
+        samples[:,1] = samples[:,1] * (np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value)
+        samples[:,2] = samples[:,2] * (np.log10(self.temperature.max()) - np.log10(self.temperature.min())) + np.log10(self.temperature.min())
+
+        log10_pmo = np.log10(self.planck_mean_opacity(samples[:,0], 10.**samples[:,1], 10.**samples[:,2]))
+
+        X = torch.tensor(samples, dtype=torch.float32)
+        y = torch.tensor(log10_pmo, dtype=torch.float32)
 
         self.dataset = TensorDataset(X, y)
 
     def prepare_data_ml_step(self, device='cpu'):
-        if hasattr(self, "dataset"):
+        if hasattr(self, "dataset") and not self.overwrite:
             return
 
         if os.path.exists("sim_results.csv"):
@@ -592,7 +766,7 @@ class Dust(pl.LightningDataModule):
         plt.show()
 
     def setup(self, stage=None):
-        if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
+        if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test") and not self.overwrite:
             return
         test_size = int(self.test_split * self.nsamples)
         valid_size = int((self.nsamples - test_size)*self.valid_split)
@@ -601,25 +775,36 @@ class Dust(pl.LightningDataModule):
         self.train, self.val = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=100, num_workers=2)
+        return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val, batch_size=100, num_workers=2)
+        return DataLoader(self.val, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def test_dataloader(self):
-        return DataLoader(self.test, batch_size=100, num_workers=2)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def predict_dataloader(self):
-        return DataLoader(self.test, batch_size=100, num_workers=2)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.nworkers, persistent_workers=True)
 
     def state_dict(self):
         state_dict = {
             "dust_properties":{
                 "lam": self.lam,
+                "amax": self.amax,
+                "p": self.p,
                 "kabs": self.kabs*self.kmean,
                 "ksca": self.ksca*self.kmean,
             },
         }
+
+        if hasattr(self, "kabs_model"):
+            state_dict["kabs_state_dict"] = self.kabs_model.state_dict()
+
+        if hasattr(self, "ksca_model"):
+            state_dict["ksca_state_dict"] = self.ksca_model.state_dict()
+
+        if hasattr(self, "pmo_model"):
+            state_dict["pmo_state_dict"] = self.pmo_model.state_dict()
 
         if hasattr(self, "random_nu_model"):
             state_dict["random_nu_state_dict"] = self.random_nu_model.state_dict()
@@ -679,9 +864,27 @@ def load(filename, device="cpu"):
 
     d = Dust(**state_dict["dust_properties"], interpolate=-1, device=device)
 
+    if "kabs_state_dict" in state_dict:
+        hidden_units = [state_dict['kabs_state_dict'][key].shape[0] for key in state_dict['kabs_state_dict'] if 'bias' in key][0:-1]
+        d.initialize_model(model="kabs", input_size=3, output_size=1, hidden_units=hidden_units)
+
+        d.kabs_model.load_state_dict(state_dict['kabs_state_dict'])
+
+    if "ksca_state_dict" in state_dict:
+        hidden_units = [state_dict['ksca_state_dict'][key].shape[0] for key in state_dict['ksca_state_dict'] if 'bias' in key][0:-1]
+        d.initialize_model(model="ksca", input_size=3, output_size=1, hidden_units=hidden_units)
+
+        d.ksca_model.load_state_dict(state_dict['ksca_state_dict'])
+
+    if "pmo_state_dict" in state_dict:
+        hidden_units = [state_dict['pmo_state_dict'][key].shape[0] for key in state_dict['pmo_state_dict'] if 'bias' in key][0:-1]
+        d.initialize_model(model="pmo", input_size=3, output_size=1, hidden_units=hidden_units)
+
+        d.pmo_model.load_state_dict(state_dict['pmo_state_dict'])
+
     if "random_nu_state_dict" in state_dict:
         hidden_units = [state_dict['random_nu_state_dict'][key].shape[0] for key in state_dict['random_nu_state_dict'] if 'bias' in key][0:-1]
-        d.initialize_model(model="random_nu", input_size=2, output_size=1, hidden_units=hidden_units)
+        d.initialize_model(model="random_nu", input_size=4, output_size=1, hidden_units=hidden_units)
 
         d.random_nu_model.load_state_dict(state_dict['random_nu_state_dict'])
 
@@ -852,13 +1055,24 @@ class DustOpticalConstants:
             
             kabsgrid[:,i] = self.kabs*normfunc[i]
             kscagrid[:,i] = self.ksca*normfunc[i]
-        
-        norm = scipy.integrate.trapezoid(normfunc,x=a)
-        
-        self.kabs = scipy.integrate.trapezoid(kabsgrid,x=a)/norm
-        self.ksca = scipy.integrate.trapezoid(kscagrid,x=a)/norm
-        self.kext = self.kabs + self.ksca
-        self.albedo = self.ksca / self.kext
+
+        self.kabs, self.ksca = [], []
+        for p in self.p:
+            kabs_temp, ksca_temp = [], []
+
+            for amax in self.amax:
+                normfunc = a**(3-p)
+                normfunc[a > amax] = 0.
+                norm = scipy.integrate.trapz(normfunc, x=a)
+
+                kabs_temp.append(scipy.integrate.trapz(kabsgrid*normfunc,x=a, axis=1)/norm)
+                ksca_temp.append(scipy.integrate.trapz(kscagrid*normfunc,x=a, axis=1)/norm)
+
+            self.kabs.append(kabs_temp)
+            self.ksca.append(ksca_temp)
+                
+        self.kabs = np.array(self.kabs)
+        self.ksca = np.array(self.ksca)
 
     def calculate_opacity(self, a, coat_volume_fraction=0.0, nang=1000):
         self.kabs = np.zeros(self.lam.size) * a.unit**2 / u.g

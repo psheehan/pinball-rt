@@ -96,6 +96,11 @@ class Star:
             ray_list.tau_intensity = wp.array2d(tau_intensity, dtype=float)
             ray_list.pixel_too_large = wp.zeros(nrays, dtype=bool)
 
+            ray_list.density = wp.zeros(nrays, dtype=float)
+            ray_list.temperature = wp.zeros(nrays, dtype=float)
+            ray_list.amax = wp.zeros(nrays, dtype=float)
+            ray_list.p = wp.zeros(nrays, dtype=float)
+
             ray_list.radius = wp.array(np.zeros(nrays), dtype=float)
             ray_list.logradius = wp.array(np.zeros(nrays), dtype=float)
             ray_list.theta = wp.zeros(nrays, dtype=float)
