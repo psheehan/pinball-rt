@@ -1,5 +1,5 @@
 from pinballrt.dust import load
-from pinballrt.sources import Star
+from pinballrt.sources import BlackbodyStar
 from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
 from pinballrt.utils import calculate_Qvalue
@@ -31,8 +31,7 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
 
     # Set up the star.
 
-    star = Star()
-    star.set_blackbody_spectrum()
+    star = BlackbodyStar()
 
     # Set up the grid.
     model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
@@ -40,7 +39,7 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
     density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
 
     model.add_density(density, d)
-    model.add_star(star)
+    model.add_source(star)
 
     model.thermal_mc(nphotons=100000, use_ml_step=False, Qthresh=1.045, Delthresh=1.02)
 

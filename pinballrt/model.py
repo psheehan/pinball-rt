@@ -65,18 +65,18 @@ class Model:
             for grid in self.grid_list[device]:
                 grid.add_density(density, load(dust) if isinstance(dust, str) else dust)
 
-    def add_star(self, star):
+    def add_sources(self, sources):
         """
-        Add a star to the grid.
+        Add sources to the grid.
 
         Parameters
         ----------
-        star : Star
-            The star to add to the grid.
+        sources : list of Source objects
+            The sources to add to the grid.
         """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
-                grid.add_star(star)
+                grid.add_sources(sources)
 
     def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", return_timing=False, nbatch=1):
         """

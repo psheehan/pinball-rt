@@ -155,26 +155,27 @@ class Camera:
     
             # Also propagate rays from any sources in the grid.
     
-            ray_list = self.grid.star.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, distance, device=self.grid.device)
-            iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
-    
-            wp.launch(kernel=self.grid.photon_loc,
-                        dim=(nrays,),
-                        inputs=[ray_list, self.grid.grid, iray])
-            
-            self.grid.propagate_rays_from_source(ray_list, nu.values)
-    
-            ximage = np.dot(ray_list.position.numpy(), self.ey)
-            yimage = np.dot(ray_list.position.numpy(), self.ex)
-    
-            image_ix = (nx * (ximage + x.values.max()) / (2 * x.values.max()) + 0.5).astype(int)
-            image_iy = (ny * (yimage + y.values.max()) / (2 * y.values.max()) + 0.5).astype(int)
-    
-            ray_list.image_ix = wp.array(image_ix, dtype=int)
-            ray_list.image_iy = wp.array(image_iy, dtype=int)
-    
-            wp.launch(kernel=self.put_intensity_in_image,
-                        dim=(nrays, nu.size),
-                        inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity, 1.0])
+            for source in self.grid.sources:
+                ray_list = source.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, distance, device=self.grid.device)
+                iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
+
+                wp.launch(kernel=self.grid.photon_loc,
+                            dim=(nrays,),
+                            inputs=[ray_list, self.grid.grid, iray])
+
+                self.grid.propagate_rays_from_source(ray_list, nu.values)
+
+                ximage = np.dot(ray_list.position.numpy(), self.ey)
+                yimage = np.dot(ray_list.position.numpy(), self.ex)
+
+                image_ix = (nx * (ximage + x.values.max()) / (2 * x.values.max()) + 0.5).astype(int)
+                image_iy = (ny * (yimage + y.values.max()) / (2 * y.values.max()) + 0.5).astype(int)
+
+                ray_list.image_ix = wp.array(image_ix, dtype=int)
+                ray_list.image_iy = wp.array(image_iy, dtype=int)
+
+                wp.launch(kernel=self.put_intensity_in_image,
+                            dim=(nrays, nu.size),
+                            inputs=[ray_list.image_ix, ray_list.image_iy, ray_list.intensity, intensity, 1.0])
 
         return intensity

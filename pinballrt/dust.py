@@ -1,6 +1,6 @@
 import urllib
 import requests
-from .sources import Star
+from .sources import BlackbodyStar
 from .grids import UniformSphericalGrid
 from .utils import log_uniform_interp, log_uniform_interp_extra_dim
 from torch.utils.data import DataLoader, TensorDataset, random_split
@@ -471,7 +471,7 @@ class Dust(pl.LightningDataModule):
 
         # Set up the star.
 
-        star = Star()
+        star = BlackbodyStar()
         star.set_blackbody_spectrum(self.nu)
 
         # Set up the grid.

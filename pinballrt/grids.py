@@ -78,20 +78,43 @@ class Grid:
 
             self.dust.to_device(wp.device_to_torch(wp.get_device()))
 
-    def add_star(self, star):
-        self.star = star
+    def add_sources(self, sources):
+        """
+        Add sources to the model.
+
+        Parameters
+        ----------
+        sources : list of Source objects
+            The sources to add to the model.
+        """
+        if not hasattr(self, 'sources'):
+            self.sources = []
+
+        if isinstance(sources, list):
+            self.sources += sources
+        else:
+            self.sources += [sources]
 
     def base_emit(self, nphotons, wavelength="random", scattering=False, timing={}):
         with wp.ScopedDevice(self.device):
             if scattering:
-                nphotons_per_source = int(nphotons / 2)
+                nphotons_per_source = int(nphotons / (len(self.sources)+1))
             else:
-                nphotons_per_source = nphotons
+                nphotons_per_source = int(nphotons / len(self.sources))
 
             t1 = time.time()
-            photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device, timing=timing)
+            for i in range(len(self.sources)):
+                tmp_photon_list = self.sources[i].emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device, timing=timing)
+
+                if i == 0:
+                    photon_list = tmp_photon_list
+                else:
+                    photon_list.position = wp.array(np.concatenate((photon_list.position.numpy(), tmp_photon_list.position.numpy()), axis=0), dtype=wp.vec3)
+                    photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), tmp_photon_list.direction.numpy()), axis=0), dtype=wp.vec3)
+                    photon_list.frequency = wp.array(np.concatenate((photon_list.frequency.numpy(), tmp_photon_list.frequency.numpy()), axis=0), dtype=float)
+                    photon_list.energy = wp.array(np.concatenate((photon_list.energy.numpy(), tmp_photon_list.energy.numpy()), axis=0), dtype=float)
             t2 = time.time()
-            timing["Star emission time"] = t2 - t1
+            timing["Source emission time"] = t2 - t1
 
             cell_coords = []
             if scattering:

@@ -8,7 +8,7 @@ import warp as wp
 import numpy as np
 import time
         
-class Star:
+class BlackbodyStar:
     x: float
     y: float
     z: float
@@ -16,7 +16,8 @@ class Star:
     luminosity: float
     radius: float
 
-    def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, x=0., y=0., z=0.):
+    def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, x=0., y=0., z=0., 
+                 nu=np.logspace(0.5, 6.45, 1000)*u.GHz):
         self.temperature = temperature
         self.luminosity = luminosity
         self.radius = (self.luminosity / (4.*np.pi*const.sigma_sb*self.temperature**4))**0.5
@@ -24,7 +25,6 @@ class Star:
         self.y = y
         self.z = z
 
-    def set_blackbody_spectrum(self, nu=np.logspace(0.5, 6.45, 1000)*u.GHz):
         self.nu = np.logspace(np.log10(nu.value.min()), np.log10(nu.value.max()), 1000) * nu.unit
 
         self.flux = models.BlackBody(temperature=self.temperature)
