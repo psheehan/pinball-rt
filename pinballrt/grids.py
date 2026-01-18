@@ -1,5 +1,6 @@
 import torch
 from .photons import PhotonList
+from .sources import GridSource
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -51,6 +52,8 @@ class Grid:
 
             self.shape = (self.grid.n1, self.grid.n2, self.grid.n3)
 
+        self.grid_source = GridSource(self)
+
     def add_density(self, _density, dust, amax=1.0, p=3.5):
         with wp.ScopedDevice(self.device):
             self.grid.density = wp.array3d((_density*dust.kmean).to(1./self.distance_unit).value, dtype=float)
@@ -99,12 +102,14 @@ class Grid:
         with wp.ScopedDevice(self.device):
             if scattering:
                 nphotons_per_source = int(nphotons / (len(self.sources)+1))
+                source_list = self.sources + [self.grid_source]
             else:
                 nphotons_per_source = int(nphotons / len(self.sources))
+                source_list = self.sources
 
             t1 = time.time()
-            for i in range(len(self.sources)):
-                tmp_photon_list = self.sources[i].emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device, timing=timing)
+            for i in range(len(source_list)):
+                tmp_photon_list = source_list[i].emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device, timing=timing)
 
                 if i == 0:
                     photon_list = tmp_photon_list
@@ -115,33 +120,6 @@ class Grid:
                     photon_list.energy = wp.array(np.concatenate((photon_list.energy.numpy(), tmp_photon_list.energy.numpy()), axis=0), dtype=float)
             t2 = time.time()
             timing["Source emission time"] = t2 - t1
-
-            cell_coords = []
-            if scattering:
-                ksi = np.random.rand(nphotons_per_source)
-                if self.luminosity.sum() == 0:
-                    self.luminosity += EPSILON
-                cum_lum = np.cumsum(self.luminosity.flatten()).reshape(self.shape) / self.luminosity.sum()
-
-                for i in range(nphotons_per_source):
-                    cell_coords += [np.where(cum_lum[cum_lum > ksi[i]].min() == cum_lum)]
-                cell_coords = wp.array2d(np.array(cell_coords)[:,:,0], dtype=int)
-
-                new_position = wp.array(np.zeros((nphotons_per_source,3)), dtype=wp.vec3)
-                wp.launch(kernel=self.random_location_in_cell, 
-                          dim=(nphotons_per_source,), 
-                          inputs=[new_position, cell_coords, self.grid, np.random.randint(0, 100000)])
-
-                photon_list.position = wp.array(np.concatenate((photon_list.position.numpy(), new_position.numpy()), axis=0), dtype=wp.vec3)
-
-                new_direction = wp.array(np.zeros((nphotons_per_source, 3)), dtype=wp.vec3)
-                wp.launch(kernel=self.random_direction,
-                          dim=(nphotons_per_source,),
-                          inputs=[new_direction, torch.arange(nphotons_per_source, dtype=torch.int32, device=wp.device_to_torch(wp.get_device())), np.random.randint(0, 100000)])
-                photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), new_direction.numpy()), axis=0), dtype=wp.vec3)
-
-                photon_list.frequency = wp.array(np.concatenate([photon_list.frequency.numpy(), np.repeat((const.c / wavelength).to(u.GHz).value, nphotons_per_source)]), dtype=float)
-                photon_list.energy = wp.array(np.concatenate([photon_list.energy.numpy(), np.repeat(self.total_lum/nphotons_per_source, nphotons_per_source).astype(np.float32)]), dtype=float)
 
             return photon_list
     
@@ -405,18 +383,6 @@ class Grid:
             timing["PMO time"] = pmo_time
 
             self.grid.temperature = wp.array3d(temperature, dtype=float)
-
-    def initialize_luminosity_array(self, wavelength):
-        with wp.ScopedDevice(self.device):
-            nu = (const.c / wavelength).to(u.GHz)
-            self.luminosity = np.zeros(self.shape)
-
-            for i in range(self.shape[0]):
-                for j in range(self.shape[1]):
-                    for k in range(self.shape[2]):
-                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.density.numpy()[i,j,k]*self.volume.cpu().numpy()[i,j,k]*self.dust.interpolate_kabs(nu)*self.distance_unit**2*models.BlackBody(temperature=self.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
-
-            self.total_lum = self.luminosity.sum()
 
     @wp.kernel
     def check_do_ml_step(photon_list: PhotonList,
