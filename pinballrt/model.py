@@ -1,7 +1,7 @@
 import astropy.constants as const
 import astropy.units as u
 
-from .sources import GridSource
+from .sources import DiffuseSource, EnergySource
 from .grids import Grid
 from .dust import load, Dust
 from .camera import Camera
@@ -99,7 +99,7 @@ class Model:
         """
         for grid in self.grid_list[device]:
                 for source in grid.sources:
-                    if isinstance(source, GridSource):
+                    if isinstance(source, DiffuseSource):
                         source.initialize_luminosity_array(wavelength="random")
 
         told = self.grid.grid.temperature.numpy().copy()
@@ -181,7 +181,7 @@ class Model:
 
             for grid in self.grid_list[device]:
                 for source in grid.sources + [grid.grid_source]:
-                    if isinstance(source, GridSource):
+                    if isinstance(source, DiffuseSource):
                         source.initialize_luminosity_array(wavelength=wavelength)
 
             t1 = time.time()
@@ -191,6 +191,11 @@ class Model:
             iter_timing["Total Time"] = t2 - t1
 
             total_scattering = torch.mean(torch.cat([torch.unsqueeze(grid.scattering, 0) for grid in self.grid_list[device]]), axis=0) / (4.*np.pi * self.grid.volume.to(device))
+
+            for source in grid.sources:
+                if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
+                    total_scattering[i] += (source.luminosity * (self.grid.distance_unit**2 * u.Jy) * source.density / (4.*np.pi * u.steradian * (self.grid.grid.density.numpy() * self.grid.dust.interpolate_kext(wavelength) * self.grid.distance_unit**-1))).value
+
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:
                     grid.scattering[i] = total_scattering[i].clone().to(wp.device_to_torch(grid.device))

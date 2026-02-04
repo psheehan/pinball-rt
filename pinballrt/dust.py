@@ -160,6 +160,10 @@ class Dust(pl.LightningDataModule):
         return ksca
 
     def interpolate_kext(self, nu):
+        if nu.unit.is_equivalent(u.GHz):
+            nu = nu.to(u.GHz).value
+        elif nu.unit.is_equivalent(u.cm):
+            nu = (const.c / nu).decompose().to(u.GHz)
         return np.interp(nu, self.nu, self.kext)
     
     def interpolate_kext_wp(self, photon_list, iphotons, frequency=None):

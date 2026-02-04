@@ -8,31 +8,24 @@ import warp as wp
 import numpy as np
 import torch
 import time
-        
-class BlackbodyStar:
-    x: float
-    y: float
-    z: float
-    temperature: float
-    luminosity: float
-    radius: float
 
-    def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, x=0., y=0., z=0., 
-                 nu=np.logspace(0.5, 6.45, 1000)*u.GHz):
-        self.temperature = temperature
+class SphericalSource:
+    def __init__(self, luminosity, frequency, intensity, x=0., y=0., z=0.):
         self.luminosity = luminosity
-        self.radius = (self.luminosity / (4.*np.pi*const.sigma_sb*self.temperature**4))**0.5
         self.x = x
         self.y = y
         self.z = z
 
-        self.nu = np.logspace(np.log10(nu.value.min()), np.log10(nu.value.max()), 1000) * nu.unit
+        self.nu = frequency
+        if hasattr(intensity, '__call__'):
+            self.intensity = intensity
+        else:
+            self.log10_intensity_func = np.interp1d(np.log10(frequency.to(u.GHz).value), np.log10(intensity.value), kind='linear')
+            self.intensity = lambda nu: 10**self.log10_intensity_func(np.log10(nu.to(u.GHz).value)) * intensity.unit
 
-        self.flux = models.BlackBody(temperature=self.temperature)
-        
-        self.Bnu = self.flux(self.nu)
+        self.radius = (self.luminosity / (4.*np.pi**2*u.steradian*scipy.integrate.trapezoid(self.intensity(self.nu), self.nu)))**0.5
 
-        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.Bnu, self.nu, initial=0.)
+        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.intensity(self.nu), self.nu, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
 
     def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
@@ -64,7 +57,7 @@ class BlackbodyStar:
         if simulation == "thermal":
             photon_energy = np.repeat(self.luminosity.to(u.L_sun).value / nphotons, nphotons)
         elif simulation == "scattering":
-            photon_energy = np.repeat((4.*np.pi**2*u.steradian*self.radius**2*models.BlackBody(temperature=self.temperature)(frequency[0]*u.GHz)).to(distance_unit**2 * u.Jy).value / nphotons, nphotons)
+            photon_energy = np.repeat((4.*np.pi**2*u.steradian*self.radius**2*self.intensity(frequency[0]*u.GHz)).to(distance_unit**2 * u.Jy).value / nphotons, nphotons)
 
         with wp.ScopedDevice(device):
             photon_list = PhotonList()
@@ -72,6 +65,7 @@ class BlackbodyStar:
             photon_list.direction = wp.array(direction, dtype=wp.vec3)
             photon_list.frequency = wp.array(frequency, dtype=float)
             photon_list.energy = wp.array(photon_energy, dtype=float)
+            photon_list.in_grid = wp.ones(nphotons, dtype=bool)
 
         return photon_list
     
@@ -85,7 +79,7 @@ class BlackbodyStar:
         
         direction = np.tile(ez, (nrays, 1))
 
-        intensity = (np.tile(self.flux(nu.data)*np.pi, (nrays, 1)) / nrays).to(u.Jy / u.steradian).value * ((self.radius / physical_pixel_size).decompose()**2).value
+        intensity = (np.tile(self.intensity(nu.data)*np.pi, (nrays, 1)) / nrays).to(u.Jy / u.steradian).value * ((self.radius / physical_pixel_size).decompose()**2).value
         tau_intensity = np.zeros((nrays, nu.size), dtype=float)
 
         with wp.ScopedDevice(device):
@@ -114,40 +108,105 @@ class BlackbodyStar:
 
         with wp.ScopedDevice(device):
             random_nu = wp.zeros(nphotons, dtype=float)
-            wp.launch(self.random_nu_kernel,
+            wp.launch(random_nu_kernel,
                       dim=(nphotons,),
                       inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int), np.random.randint(0, 100000)])
 
         return random_nu
-    
-    @wp.kernel
-    def random_nu_kernel(ksi: wp.array(dtype=float),
-                         random_nu_CPD: wp.array(dtype=float),
-                         nu: wp.array(dtype=float),
-                         random_nu: wp.array(dtype=float),
-                         iCPD: wp.array(dtype=int),
-                         seed: int): # pragma: no cover
-        ip = wp.tid()
-        rng = wp.rand_init(seed, ip)
         
-        index = len(random_nu_CPD) - 1
-        # Find the index where ksi[ip] is less than random_nu_CPD[index]
-        for i in range(len(random_nu_CPD)):
-            if ksi[ip] < random_nu_CPD[i]:
-                index = i
-                break
+class BlackbodyStar(SphericalSource):
+    def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, x=0., y=0., z=0., 
+                 nu=np.logspace(0.5, 6.45, 1000)*u.GHz):
+        self.temperature = temperature
+        self.luminosity = luminosity
+        self.radius = (self.luminosity / (4.*np.pi*const.sigma_sb*self.temperature**4))**0.5
+        self.x = x
+        self.y = y
+        self.z = z
 
-        dCPD = random_nu_CPD[index] - random_nu_CPD[index-1]
+        self.nu = np.logspace(np.log10(nu.value.min()), np.log10(nu.value.max()), 1000) * nu.unit
+        self.intensity = models.BlackBody(temperature=self.temperature)
+        
+        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.intensity(self.nu), self.nu, initial=0.)
+        self.random_nu_CPD /= self.random_nu_CPD[-1]
 
-        if dCPD < EPSILON:
-            random_nu[ip] = (nu[index] - nu[index-1]) * wp.randf(rng) + nu[index-1]
-        else:
-            random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
-                    dCPD + nu[index-1]
+class ExternalSource(SphericalSource):
+    def __init__(self, grid, intensity, frequency=None):
+        radius = grid.grid_size()*grid.distance_unit / 2.
 
-class GridSource:
-    def __init__(self, grid):
+        if frequency is None:
+            frequency = np.logspace(np.log10(grid.dust.nu.value.min()), np.log10(grid.dust.nu.value.max()), 1000) * grid.dust.nu.unit
         self.grid = grid
+
+        super().__init__(luminosity=4.*np.pi**2*u.steradian*radius**2*scipy.integrate.trapezoid(intensity(frequency), frequency),
+                         frequency=frequency,
+                         intensity=intensity,
+                         x=0., y=0., z=0.)
+
+    def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
+        photon_list = super().emit(nphotons, distance_unit, wavelength, simulation, device, timing)
+
+        # Flip directions to point inward
+        photon_list.direction = wp.array2d(-photon_list.direction.numpy(), dtype=wp.vec3)
+
+        # Check the distance to the outer wall of the grid and move photons just inside
+        s = wp.zeros(nphotons, dtype=float)
+
+        wp.launch(kernel=self.grid.outer_wall_distance,
+                dim=(nphotons,),
+                inputs=[photon_list, self.grid.grid, s])
+        s = wp.to_torch(s)
+        will_be_in_grid = s < torch.inf
+        iwill_be_in_grid = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))[will_be_in_grid]
+        wp.launch(kernel=self.grid.move,
+                    dim=iwill_be_in_grid.shape,
+                    inputs=[photon_list, s, iwill_be_in_grid])
+
+        with wp.ScopedDevice(device):
+            photon_list.position = wp.array(wp.to_torch(photon_list.position), dtype=wp.vec3)
+            photon_list.direction = wp.array(wp.to_torch(photon_list.direction), dtype=wp.vec3)
+            photon_list.frequency = wp.array(wp.to_torch(photon_list.frequency), dtype=float)
+            photon_list.energy = wp.array(wp.to_torch(photon_list.energy), dtype=float)
+            photon_list.in_grid = wp.from_torch(will_be_in_grid)
+
+        return photon_list
+
+class DiffuseSource:
+    def __init__(self, grid, spectrum, density, frequency=None):
+        self.grid = grid
+        if density.ndim == 3:
+            self.density = density
+        else:
+            self.density = np.tile(density, self.grid.shape)
+
+        if callable(spectrum):
+            if frequency is None:
+                self.frequency = np.logspace(np.log10(self.grid.dust.nu.value.min()), np.log10(self.grid.dust.nu.value.max()), 1000) * self.grid.dust.nu.unit
+            else:
+                self.frequency = frequency
+            self.spectrum = spectrum(self.frequency)
+            self.intensity = spectrum
+        else:
+            if frequency is None:
+                raise ValueError("Frequency array must be provided if spectrum is not callable.")
+            self.frequency = frequency
+            self.spectrum = spectrum
+            self.log10_intensity_func = np.interp1d(np.log10(self.frequency.to(u.GHz).value), np.log10(self.spectrum.value), kind='linear')
+            self.intensity = lambda nu: 10**self.log10_intensity_func(np.log10(nu.to(u.GHz).value)) * self.spectrum.unit
+
+        self.total_luminosity = ((self.grid.volume*self.grid.distance_unit**3 * density).sum() *scipy.integrate.trapezoid(self.intensity(self.frequency), self.frequency)).to(u.L_sun)
+
+        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.intensity(self.frequency), self.frequency, initial=0.)
+        self.random_nu_CPD /= self.random_nu_CPD[-1]
+
+    def initialize_luminosity_array(self, wavelength):
+        if wavelength == "random":
+            self.luminosity = self.total_luminosity.to(u.L_sun) * self.density / self.density.sum()
+            self.total_lum = self.total_luminosity.to(u.L_sun)
+        else:
+            frequency = (const.c / wavelength).to(u.GHz)
+            self.luminosity = (self.density * self.grid.volume * self.grid.distance_unit**3 * self.intensity(frequency)).to(self.grid.distance_unit**2 * u.Jy).value
+            self.total_lum = self.luminosity.sum()
 
     def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
         ksi = np.random.rand(nphotons)
@@ -183,17 +242,36 @@ class GridSource:
                 photon_list.frequency = wp.array(np.repeat((const.c / wavelength).to(u.GHz).value, nphotons), dtype=float)
             
             photon_list.energy = wp.array(np.repeat(self.total_lum/nphotons, nphotons).astype(np.float32), dtype=float)
+            photon_list.in_grid = wp.ones(nphotons, dtype=bool)
 
         return photon_list
 
-    def initialize_luminosity_array(self, wavelength):
-        nu = (const.c / wavelength).to(u.GHz)
-        self.luminosity = np.zeros(self.grid.shape)
+    def random_nu(self, nphotons, cell_coords):
+        ksi = np.random.rand(nphotons)
 
-        for i in range(self.grid.shape[0]):
-            for j in range(self.grid.shape[1]):
-                for k in range(self.grid.shape[2]):
-                    self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.interpolate_kabs(nu)*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
+        random_nu = wp.zeros(nphotons, dtype=float)
+        wp.launch(random_nu_kernel,
+                    dim=(nphotons,),
+                    inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.frequency.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int), np.random.randint(0, 100000)])
+
+        return random_nu
+
+class GridSource(DiffuseSource):
+    def __init__(self, grid):
+        self.grid = grid
+
+    def initialize_luminosity_array(self, wavelength):
+        if wavelength == "random":
+            self.luminosity = (4*const.sigma_sb.cgs*self.grid.dust.planck_mean_opacity(self.grid.grid.temperature.numpy(), self.grid)*u.cm**2/u.g * \
+                    self.mass * self.grid.grid.temperature.numpy()*u.K**4).to(u.L_sun)
+        else:
+            nu = (const.c / wavelength).to(u.GHz)
+            self.luminosity = np.zeros(self.grid.shape)
+
+            for i in range(self.grid.shape[0]):
+                for j in range(self.grid.shape[1]):
+                    for k in range(self.grid.shape[2]):
+                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.interpolate_kabs(nu)*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
 
         self.total_lum = self.luminosity.sum()
 
@@ -212,70 +290,44 @@ class GridSource:
 
         return self.grid.dust.random_nu(photon_list)
 
-class DistributionOfBlackbodyStars(GridSource):
-    def __init__(self, grid, temperature=2000.*u.K, total_luminosity=1.0*const.L_sun, number_density=10*u.au**-3):
-        self.grid = grid
-        self.temperature = temperature
-        self.total_luminosity = total_luminosity
-        if number_density.size == 1:
-            self.number_density = np.tile(number_density, self.grid.shape)
-        else:
-            self.number_density = number_density
-            
-        self.nstars = (self.number_density * (self.grid.volume*self.grid.distance_unit**3).to(u.pc**3)).decompose()
-
-        luminosity_per_star = self.total_luminosity / self.nstars.sum()
-        self.stellar_radius = (luminosity_per_star / (4.*np.pi*const.sigma_sb*self.temperature**4))**0.5
-
-        self.nu = np.logspace(np.log10(self.grid.dust.nu.value.min()), np.log10(self.grid.dust.nu.value.max()), 1000) * self.grid.dust.nu.unit
-
-        self.flux = models.BlackBody(temperature=self.temperature)
-        
-        self.Bnu = self.flux(self.nu)
-
-        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.Bnu, self.nu, initial=0.)
-        self.random_nu_CPD /= self.random_nu_CPD[-1]
+class EnergySource(GridSource):
+    def __init__(self, grid, energy_density):
+        super().__init__(grid)
+        self.energy_density = energy_density
+        self.luminosity = energy_density * self.grid.volume * self.grid.distance_unit**3
+        self.total_lum = self.luminosity.sum()
 
     def initialize_luminosity_array(self, wavelength):
-        if wavelength == "random":
-            self.luminosity = self.total_luminosity.to(u.L_sun) * self.number_density / self.number_density.sum()
-            self.total_lum = self.total_luminosity.to(u.L_sun)
-        else:
-            frequency = (const.c / wavelength).to(u.GHz)
-            self.luminosity = self.nstars * (4.*np.pi**2*u.steradian*self.stellar_radius**2*models.BlackBody(temperature=self.temperature)(frequency)).to(self.grid.distance_unit**2 * u.Jy).value
-            self.total_lum = self.luminosity.sum()
+        return
 
-    def random_nu(self, nphotons, cell_coords):
-        ksi = np.random.rand(nphotons)
+    def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
+        photon_list = super().emit(nphotons, distance_unit, wavelength, simulation, device, timing)
 
-        random_nu = wp.zeros(nphotons, dtype=float)
-        wp.launch(self.random_nu_kernel,
-                    dim=(nphotons,),
-                    inputs=[wp.array(ksi, dtype=float), wp.array(self.random_nu_CPD, dtype=float), wp.array(self.nu.value, dtype=float), random_nu, wp.array(np.arange(len(self.random_nu_CPD)), dtype=int), np.random.randint(0, 100000)])
+        self.grid.grid.energy = wp.array3d(self.luminosity.to(u.L_sun).value + self.grid.grid.energy.numpy(), dtype=float)
 
-        return random_nu
+        return photon_list
     
-    @wp.kernel
-    def random_nu_kernel(ksi: wp.array(dtype=float),
-                         random_nu_CPD: wp.array(dtype=float),
-                         nu: wp.array(dtype=float),
-                         random_nu: wp.array(dtype=float),
-                         iCPD: wp.array(dtype=int),
-                         seed: int): # pragma: no cover
-        ip = wp.tid()
-        rng = wp.rand_init(seed, ip)
-        
-        index = len(random_nu_CPD) - 1
-        # Find the index where ksi[ip] is less than random_nu_CPD[index]
-        for i in range(len(random_nu_CPD)):
-            if ksi[ip] < random_nu_CPD[i]:
-                index = i
-                break
+@wp.kernel
+def random_nu_kernel(ksi: wp.array(dtype=float),
+                        random_nu_CPD: wp.array(dtype=float),
+                        nu: wp.array(dtype=float),
+                        random_nu: wp.array(dtype=float),
+                        iCPD: wp.array(dtype=int),
+                        seed: int): # pragma: no cover
+    ip = wp.tid()
+    rng = wp.rand_init(seed, ip)
+    
+    index = len(random_nu_CPD) - 1
+    # Find the index where ksi[ip] is less than random_nu_CPD[index]
+    for i in range(len(random_nu_CPD)):
+        if ksi[ip] < random_nu_CPD[i]:
+            index = i
+            break
 
-        dCPD = random_nu_CPD[index] - random_nu_CPD[index-1]
+    dCPD = random_nu_CPD[index] - random_nu_CPD[index-1]
 
-        if dCPD < EPSILON:
-            random_nu[ip] = (nu[index] - nu[index-1]) * wp.randf(rng) + nu[index-1]
-        else:
-            random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
-                    dCPD + nu[index-1]
+    if dCPD < EPSILON:
+        random_nu[ip] = (nu[index] - nu[index-1]) * wp.randf(rng) + nu[index-1]
+    else:
+        random_nu[ip] = (ksi[ip] - random_nu_CPD[index-1]) * (nu[index] - nu[index-1]) / \
+                dCPD + nu[index-1]

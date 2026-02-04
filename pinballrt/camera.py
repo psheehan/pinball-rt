@@ -1,5 +1,6 @@
 from .photons import PhotonList
 from .grids import LogUniformSphericalGrid
+from .sources import SphericalSource, ExternalSource
 import astropy.units as u
 import astropy.constants as const
 import warp as wp
@@ -94,7 +95,6 @@ class Camera:
             intensity = wp.array3d(np.zeros((nx, ny, nu.size), dtype=np.float32), dtype=float)
 
             while nrays > 0:
-                print(nrays)
                 ray_list = self.emit_rays(new_x, new_y, nu, nx, ny, image_pixel_size)
 
                 s = wp.zeros(new_x.shape, dtype=float)
@@ -111,23 +111,20 @@ class Camera:
                           dim=iwill_be_in_grid.shape,
                           inputs=[ray_list, s, iwill_be_in_grid])
 
-                ray_list.position = wp.array(wp.to_torch(ray_list.position)[will_be_in_grid], dtype=wp.vec3)
-                ray_list.direction = wp.array(wp.to_torch(ray_list.direction)[will_be_in_grid], dtype=wp.vec3)
-                ray_list.intensity = wp.array(wp.to_torch(ray_list.intensity)[will_be_in_grid], dtype=float)
-                ray_list.tau_intensity = wp.array(wp.to_torch(ray_list.tau_intensity)[will_be_in_grid], dtype=float)
-                ray_list.image_ix = wp.array(wp.to_torch(ray_list.image_ix)[will_be_in_grid], dtype=int)
-                ray_list.image_iy = wp.array(wp.to_torch(ray_list.image_iy)[will_be_in_grid], dtype=int)
-                ray_list.pixel_too_large = wp.array(wp.to_torch(ray_list.pixel_too_large)[will_be_in_grid], dtype=bool)
-
-                nrays = will_be_in_grid.sum()
                 iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
-                indices = wp.zeros((nrays, 3), dtype=int)
+                ray_list.in_grid = wp.from_torch(will_be_in_grid)
+
                 wp.launch(kernel=self.grid.photon_loc,
-                        dim=(nrays,),
-                        inputs=[ray_list, self.grid.grid, iray])
+                        dim=iwill_be_in_grid.shape,
+                        inputs=[ray_list, self.grid.grid, iwill_be_in_grid])
 
                 self.grid.propagate_rays(ray_list, nu.values, pixel_size)
+
+                for source in self.grid.sources:
+                    if not isinstance(source, ExternalSource):
+                        continue
+                    ray_list.intensity = wp.array2d(ray_list.intensity.numpy() + source.intensity(nu)[np.newaxis, :].to(u.Jy / u.steradian).value * np.exp(-ray_list.tau_intensity.numpy()), dtype=float)
 
                 wp.launch(kernel=self.put_intensity_in_image, 
                         dim=(nrays, nu.size),
@@ -156,6 +153,8 @@ class Camera:
             # Also propagate rays from any sources in the grid.
     
             for source in self.grid.sources:
+                if not isinstance(source, SphericalSource) or isinstance(source, ExternalSource):
+                    continue
                 ray_list = source.emit_rays(nu, self.grid.distance_unit, self.ez, nrays, distance, device=self.grid.device)
                 iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
