@@ -9,34 +9,7 @@ import numpy as np
 import time
 import tqdm
 
-from .utils import EPSILON, equal, equal_zero, planck_function
-
-@wp.struct
-class GridStruct:
-    w1: wp.array(dtype=float)
-    logw1: wp.array(dtype=float)
-    w2: wp.array(dtype=float)
-    w3: wp.array(dtype=float)
-    n1: int
-    n2: int
-    n3: int
-
-    sin_w2: wp.array(dtype=float)
-    cos_w2: wp.array(dtype=float)
-    tan_w2: wp.array(dtype=float)
-    neg_mu: wp.array(dtype=float)
-    sin_tol_w2: wp.array(dtype=float)
-    cos_tol_w2: wp.array(dtype=float)
-    sin_w3: wp.array(dtype=float)
-    cos_w3: wp.array(dtype=float)
-
-    mirror_symmetry: bool
-
-    density: wp.array3d(dtype=float)
-    temperature: wp.array3d(dtype=float)
-    energy: wp.array3d(dtype=float)
-    amax: wp.array3d(dtype=float)
-    p: wp.array3d(dtype=float)
+from .utils import GridStruct, EPSILON, equal, equal_zero, planck_function
 
 class Grid:
     def __init__(self, _w1, _w2, _w3, device='cpu'):

@@ -1,5 +1,6 @@
 from pinballrt.utils import EPSILON
 from .photons import PhotonList
+from .utils import GridStruct
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -208,20 +209,43 @@ class DiffuseSource:
             self.luminosity = (self.density * self.grid.volume * self.grid.distance_unit**3 * self.intensity(frequency)).to(self.grid.distance_unit**2 * u.Jy).value
             self.total_lum = self.luminosity.sum()
 
+    @wp.kernel
+    def random_cell_from_cum_lum(grid: GridStruct,
+                                 cum_lum: wp.array3d(dtype=float),
+                                 cell_coords: wp.array2d(dtype=int),
+                                 seed: int):
+        
+        ip = wp.tid()
+
+        rng = wp.rand_init(seed, ip)
+
+        ksi = wp.randf(rng)
+
+        for i in range(grid.n1):
+            for j in range(grid.n2):
+                for k in range(grid.n3):
+                    if ksi < cum_lum[i, j, k]:
+                        cell_coords[ip][0] = i
+                        cell_coords[ip][1] = j
+                        cell_coords[ip][2] = k
+                        break
+                if ksi < cum_lum[i, j, k]:
+                    break
+            if ksi < cum_lum[i, j, k]:
+                break
+
     def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
-        ksi = np.random.rand(nphotons)
         if self.luminosity.sum() == 0:
             self.luminosity += EPSILON
         cum_lum = np.cumsum(self.luminosity.flatten()).reshape(self.grid.shape) / self.luminosity.sum()
-
-        cell_coords = []
-        for i in range(nphotons):
-            cell_coords += [np.where(cum_lum[cum_lum > ksi[i]].min() == cum_lum)]
         
         with wp.ScopedDevice(device):
             photon_list = PhotonList()
 
-            cell_coords = wp.array2d(np.array(cell_coords)[:,:,0], dtype=int)
+            cell_coords = wp.array2d(np.zeros((nphotons, 3)), dtype=int)
+            wp.launch(kernel=self.random_cell_from_cum_lum,
+                        dim=(nphotons,),
+                        inputs=[self.grid.grid, wp.array3d(cum_lum, dtype=float), cell_coords, np.random.randint(0, 100000)])
             
             photon_list.position = wp.array(np.zeros((nphotons,3)), dtype=wp.vec3)
             wp.launch(kernel=self.grid.random_location_in_cell, 
