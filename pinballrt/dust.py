@@ -476,7 +476,6 @@ class Dust(pl.LightningDataModule):
         # Set up the star.
 
         star = BlackbodyStar()
-        star.set_blackbody_spectrum(self.nu)
 
         # Set up the grid.
 
@@ -485,7 +484,7 @@ class Dust(pl.LightningDataModule):
         density = np.ones(grid.shape) * 1e-16 * u.g / u.cm**3
 
         grid.add_density(density, self)
-        grid.add_star(star)
+        grid.add_sources(star)
 
         # Emit the photons
 
