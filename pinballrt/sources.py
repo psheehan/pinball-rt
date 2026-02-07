@@ -1,3 +1,22 @@
+"""
+One critical component of Monte Carlo radiative transfer are sources of photons to be propagated through the model. Sources are added by
+initializing a source object and adding it to the model using the :meth:`add_sources<pinballrt.model.Model.add_sources>` method. For example:
+
+.. code-block:: python
+
+   from pinballrt import Model
+   from pinballrt.sources import BlackbodyStar
+   
+   star = BlackbodyStar()
+
+   model = Model()
+   model.add_sources(star)
+
+Multiple sources can be added in a single call by providing a list of sources: :code:`model.add_sources([star1, star2])`. 
+pinball-rt implements four different types of sources (and one special instance of those types), which are described in 
+the following sections.
+"""
+
 from pinballrt.utils import EPSILON
 from .photons import PhotonList
 from .utils import GridStruct
@@ -11,7 +30,42 @@ import torch
 import time
 
 class SphericalSource:
+    r"""
+    Sphercal sources, e.g. stars, emit photons from the surface of a sphere in a random outward direction. They can be 
+    created using the `SphericalSource` class, which takes the total luminosity of the source as well as the spectrum of the source
+    as input. The spectrum must be specified with astropy units that can be converted to units of `u.Jy / u.steradian`. For example:
+
+    .. code-block:: python
+
+        from pinballrt.sources import SphericalSource
+        import astropy.units as u
+        from astropy.modeling import models
+
+        frequency = np.logspace(9, 15, 100) * u.Hz
+        spectrum = models.BlackBody(temperature=5000*u.K)(frequency)
+
+        star = SphericalSource(luminosity=1.0e4*u.Lsun, frequency, spectrum)
+
+    The radius of the spherical source is determined by solving
+
+    .. math:: L = 4 \pi^2 R^2 \int I_{\nu} d\nu
+
+    where :math:`L` is the luminosity of the source, :math:`R` is the radius of the source, and :math:`I_\nu` is the specific intensity of 
+    the source at frequency :math:`\nu`, and is provided as the spectrum above.
+    """
     def __init__(self, luminosity, frequency, intensity, x=0., y=0., z=0.):
+        """
+        Parameters
+        ----------
+        luminosity : `astropy.units.Quantity`
+            The total luminosity of the source.
+        frequency : `astropy.units.Quantity`
+            The frequency array over which the intensity is defined.
+        intensity : `astropy.units.Quantity` or callable
+            The intensity as a function of frequency. If callable, it should take a frequency array as input and return the intensity at those frequencies in units that are compatible with Jy / steradian.
+        x, y, z : float
+            The position of the center of the source in the simulation grid.
+        """
         self.luminosity = luminosity
         self.x = x
         self.y = y
@@ -118,6 +172,25 @@ class SphericalSource:
 class BlackbodyStar(SphericalSource):
     def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, x=0., y=0., z=0., 
                  nu=np.logspace(0.5, 6.45, 1000)*u.GHz):
+        r"""
+        A spherical blackbody star emitting photons isotropically from its surface. BlackbodyStar is a special case of 
+        a :meth:`SphericalSource<pinballrt.sources.SphericalSource>` where the intensity is given by the Planck function 
+        for a specified temperature. The radius of the star is determined by the luminosity and temperature as described 
+        in the :meth:`SphericalSource` class, but using the known solution that
+        
+        .. math:: \int B_{\nu} d\nu = \sigma_{SB} T^4 / \pi.
+
+        Parameters
+        ----------
+        temperature : `astropy.units.Quantity`
+            The temperature of the blackbody star.
+        luminosity : `astropy.units.Quantity`
+            The total luminosity of the star.
+        x, y, z : float
+            The position of the center of the star in the simulation grid.
+        nu : `astropy.units.Quantity`
+            The frequency array over which the blackbody intensity is defined.
+        """
         self.temperature = temperature
         self.luminosity = luminosity
         self.radius = (self.luminosity / (4.*np.pi*const.sigma_sb*self.temperature**4))**0.5
@@ -133,6 +206,43 @@ class BlackbodyStar(SphericalSource):
 
 class ExternalSource(SphericalSource):
     def __init__(self, grid, intensity, frequency=None):
+        """
+        An external isotropic radiation source surrounding the simulation grid. External sources emit photons inward from 
+        a sphere just beyond the outer boundary of the grid. It can be specified in terms of the specific intensity as a 
+        function of frequency, which can be expressed either as a function, e.g.
+
+        .. code-block:: python
+
+            from astropy.modeling import models
+            from pinballrt.sources import ExternalSource
+            import astropy.units as u
+
+            source = ExternalSource(grid, intensity=models.BlackBody(temperature=10*u.K))
+
+        (where the :meth:`models.BlackBody` class is callable and returns the intensity at the specified frequencies) or 
+        as an array of intensities at specified frequencies, e.g.
+
+        .. code-block:: python
+
+            from astropy.modeling import models
+            from pinballrt.sources import ExternalSource
+            import astropy.units as u
+            import numpy as np
+
+            frequency = np.logspace(9, 15, 100) * u.Hz
+            intensity = models.BlackBody(temperature=10*u.K)(frequency)
+
+            source = ExternalSource(grid, intensity, frequency)
+
+        Parameters
+        ----------
+        grid : `pinballrt.sources.Grid`
+            The simulation grid.
+        intensity : `astropy.units.Quantity` or callable
+            The intensity as a function of frequency. If callable, it should take a frequency array as input and return the intensity at those frequencies in units that are compatible with Jy / steradian.
+        frequency : `astropy.units.Quantity`, optional
+            The frequency array over which the intensity is defined. If not provided, it will be generated based on the grid's dust properties.
+        """
         radius = grid.grid_size()*grid.distance_unit / 2.
 
         if frequency is None:
@@ -174,6 +284,43 @@ class ExternalSource(SphericalSource):
 
 class DiffuseSource:
     def __init__(self, grid, spectrum, density, frequency=None):
+        r"""
+        A diffuse source emitting photons from within the simulation grid. Diffuse sources emit photons from random locations 
+        withing the grid, with a probability of emission from each cell proportional to the luminosity of that cell. 
+        The luminosity of each cell is determined by the product of the density, the spectrum, and the cell volume. 
+        The spectrum can be specified as a function or as an array of values at specified frequencies, similar to the 
+        `ExternalSource` class, and should be in units such that when multiplied by the density and cell volume, the 
+        result can be converted to ergs / s / Hz. For example, a uniform distribution of single-temperature blackbody stars could
+        be created with:
+
+        .. code-block:: python
+
+            from pinballrt.sources import DiffuseSource
+            import astropy.units as u
+            import numpy as np
+
+            spectrum = lambda nu: 4*np.pi**2 * u.steradian * (0.035*u.R_sun)**2 * models.BlackBody(2000.*u.K)(nu)
+            density = u.g / u.cm**3
+
+            diffuse_source = DiffuseSource(model.grid, spectrum, density)
+
+        One could, of course, specify a more complex spectrum, for example a distribution of blackbody stars with some 
+        mass function would mathematically be:
+
+        .. math:: I_{\nu} = \int 4 \pi^2 R(M)^2 B_{\nu}(T(M)) \frac{dN}{dM} dM
+
+        Parameters
+        ----------
+        grid : `pinballrt.sources.Grid`
+            The simulation grid.
+        spectrum : `astropy.units.Quantity` or callable
+            The spectrum as a function of frequency. If callable, it should take a frequency array as input and return the spectrum at those frequencies in units such that when
+            multiplied by the density and cell volume that are compatible with ergs / s / Hz.
+        density : `astropy.units.Quantity`
+            The density distribution of the diffuse source within the grid. It should be specified in units such that when the spectrum, density, and cell volume are multiplied, the result is in ergs / s / Hz.
+        frequency : `astropy.units.Quantity`, optional
+            The frequency array over which the spectrum is defined. If not provided, it will be generated based on the grid's dust properties.
+        """
         self.grid = grid
         if density.ndim == 3:
             self.density = density
@@ -316,6 +463,28 @@ class GridSource(DiffuseSource):
 
 class EnergySource(GridSource):
     def __init__(self, grid, energy_density):
+        """
+        A diffuse energy source that directly injects energy into the grid based on a specified energy density, and then the grid
+        reradiates that energy away based on the temperature and dust properties in the cell. They should be specified in terms of
+        the luminosity per volume that is being injected into the grid, in units convertible to ergs / s / cm^3. For example, a 
+        uniform energy density could be created with:
+
+        .. code-block:: python
+
+            from pinballrt.sources import EnergySource
+            import astropy.units as u
+
+            energy_density = 1e-15 * u.erg / u.s / u.cm**3
+
+            energy_source = EnergySource(model.grid, energy_density)
+
+        Parameters
+        ----------
+        grid : `pinballrt.sources.Grid`
+            The simulation grid.
+        energy_density : `astropy.units.Quantity`
+            The energy density distribution of the source within the grid. It should be specified in units such that when multiplied by the cell volume, the result is compatible with ergs / s.
+        """
         super().__init__(grid)
         self.energy_density = energy_density
         self.luminosity = energy_density * self.grid.volume * self.grid.distance_unit**3
