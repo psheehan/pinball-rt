@@ -465,21 +465,21 @@ class Grid:
 
         wp.launch(kernel=self.ml_deposited_energy,
                   dim=(nphotons,),
-                  inputs=[photon_list, deposited_energy, iphotons])
+                  inputs=[photon_list, wp.from_torch(deposited_energy), iphotons])
 
         wp.launch(kernel=self.update_frequency,
                   dim=(nphotons,),
-                  inputs=[photon_list, frequency, self.dust.interpolate_kabs_wp(photon_list, iphotons, frequency), self.dust.interpolate_ksca_wp(photon_list, iphotons, frequency), iphotons])
+                  inputs=[photon_list, wp.from_torch(frequency), self.dust.interpolate_kabs_wp(photon_list, iphotons, wp.from_torch(frequency)), self.dust.interpolate_ksca_wp(photon_list, iphotons, wp.from_torch(frequency)), iphotons])
 
         wp.launch(kernel=self.ml_rotate_direction,
                   dim=(nphotons,),
-                  inputs=[photon_list, yaw, pitch, roll, iphotons])
+                  inputs=[photon_list, wp.from_torch(yaw), wp.from_torch(pitch), wp.from_torch(roll), iphotons])
 
         wp.launch(kernel=self.ml_new_tau,
                   dim=(nphotons,),
-                  inputs=[photon_list, tau, s, iphotons])
+                  inputs=[photon_list, wp.from_torch(tau), s, iphotons])
         
-        return direction_yaw, direction_pitch, direction_roll
+        return wp.from_torch(direction_yaw), wp.from_torch(direction_pitch), wp.from_torch(direction_roll)
 
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}):
         with wp.ScopedDevice(self.device):
