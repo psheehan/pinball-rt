@@ -264,7 +264,7 @@ class Dust(pl.LightningDataModule):
         test_x = self.ml_step_model.condition(self.ml_step_y_scaler.transform(test_y)).sample(test_y.size(0)).detach()
         test_x = self.ml_step_x_scaler.inverse_transform(test_x)
 
-        return 10.**test_x[:,0], 10.**test_x[:,1], 10.**test_x[:,2], test_x[:,3], test_x[:,4], test_x[:,5], test_x[:,6], test_x[:,7], test_x[:,8]
+        return 10.**test_x[:,0], 10.**test_x[:,1], 10.**test_x[:,2], test_x[:,3], test_x[:,4], torch.zeros(test_x.size(0)), test_x[:,5], test_x[:,6], torch.zeros(test_x.size(0))
 
     def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
         if model == 'ml_step':
@@ -307,7 +307,7 @@ class Dust(pl.LightningDataModule):
         if model == "random_nu":
             input_size, output_size = 2, 1
         elif model == "ml_step":
-            input_size, output_size = 9, 3
+            input_size, output_size = 7, 3
 
             if nu_range is None:
                 nu_range = (self.nu.value.min(), self.nu.value.max())
@@ -420,7 +420,7 @@ class Dust(pl.LightningDataModule):
                     temperature_range=(self.log10_T_min, self.log10_T_max), nu_range=(self.log10_nu0_min, self.log10_nu0_max))
             df.to_csv("sim_results.csv")
 
-        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
+        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
         targets = ["log10_nu0", "log10_T", "log10_tau_cell_nu0"]
 
         df.loc[df["log10_tau"] < -5., "log10_tau"] = -5.
@@ -496,19 +496,18 @@ class Dust(pl.LightningDataModule):
         grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step)
 
         # Calculate roll, pitch, and yaw for the position relative to where it started.
+        # Also calculate roll, pitch, and yaw for the direction relative to the radial vector where it exits.
 
         ypr = []
-        for (direction0, direction) in zip(initial_direction, photon_list.direction.numpy()):
-            rot, _ = Rotation.align_vectors(direction, direction0)
-            ypr.append(rot.as_euler('zyx'))
-        ypr = np.array(ypr)
-
-        # Calculate roll, pitch, and yaw for the direction relative to the radial vector where it exits.
-
         direction_ypr = []
-        for (position, direction) in zip(photon_list.position.numpy(), photon_list.direction.numpy()):
-            rot, _ = Rotation.align_vectors(direction, position)
-            direction_ypr.append(rot.as_euler('zyx'))
+        for (direction0, position, direction) in zip(initial_direction, photon_list.position.numpy(), photon_list.direction.numpy()):
+            rot, _ = Rotation.align_vectors(position, direction0)
+            ypr.append(rot.as_euler('ZYX'))
+            
+            rot, _ = Rotation.align_vectors(rot.inv().apply(direction), direction0)
+            direction_ypr.append(rot.as_euler('ZYX'))
+
+        ypr = np.array(ypr)
         direction_ypr = np.array(direction_ypr)
 
         # Store the results in a pandas DataFrame
@@ -521,11 +520,8 @@ class Dust(pl.LightningDataModule):
                        "log10_tau":np.log10(photon_list.tau.numpy().copy()),
                        "yaw":ypr[:,0],
                        "pitch":ypr[:,1],
-                       "roll":ypr[:,2],
-                       #"direction_theta":np.acos((photon_list.position.numpy() * photon_list.direction.numpy()).sum(axis=1))})
                        "direction_yaw":direction_ypr[:,0],
-                       "direction_pitch":direction_ypr[:,1],
-                       "direction_roll":direction_ypr[:,2]})
+                       "direction_pitch":direction_ypr[:,1]})
 
         return df
 
@@ -553,7 +549,7 @@ class Dust(pl.LightningDataModule):
 
             predict = True
 
-        features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"])
+        features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
         targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
         columns = np.concatenate((targets, features))
 
@@ -700,7 +696,7 @@ def load(filename, device="cpu"):
     if "ml_step_state_dict" in state_dict:
         hidden_units = [state_dict['ml_step_state_dict'][key].size(0) for key in state_dict['ml_step_state_dict'] if 'sig_net' in key and '0.weight' in key]
 
-        d.initialize_model(model="ml_step", input_size=9, output_size=3, hidden_units=hidden_units)
+        d.initialize_model(model="ml_step", input_size=7, output_size=3, hidden_units=hidden_units)
 
         d.ml_step_model.load_state_dict(state_dict['ml_step_state_dict'])
 

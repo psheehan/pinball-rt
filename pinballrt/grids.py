@@ -431,10 +431,10 @@ class Grid:
 
     @wp.kernel
     def ml_rotate_direction(photon_list: PhotonList,
-                             yaw: wp.array(dtype=float),
-                             pitch: wp.array(dtype=float),
-                             roll: wp.array(dtype=float),
-                             iphotons: wp.array(dtype=int)): # pragma: no cover
+                            yaw: wp.array(dtype=float),
+                            pitch: wp.array(dtype=float),
+                            roll: wp.array(dtype=float),
+                            iphotons: wp.array(dtype=int)): # pragma: no cover
         """
         Rotate the direction of the photons based on the yaw, pitch, and roll angles.
         """
@@ -442,8 +442,10 @@ class Grid:
         ip = iphotons[i]
 
         rpy_quat = wp.quat_rpy(roll[i], pitch[i], yaw[i])
+        direction_quat = wp.quat_between_vectors(wp.vec3(1., 0., 0.), photon_list.direction[ip])
+        total_quat = direction_quat * rpy_quat
 
-        photon_list.direction[ip] = wp.quat_rotate(rpy_quat, photon_list.direction[ip])
+        photon_list.direction[ip] = wp.quat_rotate(total_quat, wp.vec3(1., 0., 0.))
 
     @wp.kernel
     def ml_new_tau(photon_list: PhotonList,
