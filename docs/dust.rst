@@ -13,12 +13,18 @@ dust
    .. autosummary::
 
       ~Dust.learn
+      ~Dust.fit
+      ~Dust.test_model
       ~Dust.run_dust_simulation
+      ~Dust.save
 
    .. rubric:: Methods Documentation
 
    .. automethod:: learn
+   .. automethod:: fit
+   .. automethod:: test_model
    .. automethod:: run_dust_simulation
+   .. automethod:: save
 
 .. autoclass:: DustOpticalConstants
    :show-inheritance:

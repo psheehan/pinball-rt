@@ -1,5 +1,7 @@
 import astropy.constants as const
 import astropy.units as u
+
+from .sources import DiffuseSource, EnergySource
 from .grids import Grid
 from .dust import load, Dust
 from .camera import Camera
@@ -71,20 +73,20 @@ class Model:
             for grid in self.grid_list[device]:
                 grid.add_density(density, load(dust) if isinstance(dust, str) else dust, amax=amax, p=p)
 
-    def add_star(self, star):
+    def add_sources(self, sources):
         """
-        Add a star to the grid.
+        Add sources to the grid.
 
         Parameters
         ----------
-        star : Star
-            The star to add to the grid.
+        sources : list of Source objects
+            The sources to add to the grid.
         """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
-                grid.add_star(star)
+                grid.add_sources(sources)
 
-    def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", return_timing=False):
+    def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", return_timing=False, nbatch=1):
         """
         Perform a thermal Monte Carlo simulation.
 
@@ -101,6 +103,11 @@ class Model:
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+        for grid in self.grid_list[device]:
+                for source in grid.sources:
+                    if isinstance(source, DiffuseSource):
+                        source.initialize_luminosity_array(wavelength="random")
+
         told = self.grid.grid.temperature.numpy().copy()
 
         timing = {}
@@ -114,8 +121,8 @@ class Model:
 
             t1 = time.time()
             result = self.pool.map(lambda grid: grid.propagate_photons(
-                    grid.emit(int(nphotons / self.ncores), timing=iter_timing), 
-                    use_ml_step=use_ml_step, timing=iter_timing), self.grid_list[device])
+                    grid.emit(int(nphotons / self.ncores / nbatch), timing=iter_timing), 
+                    use_ml_step=use_ml_step, timing=iter_timing), self.grid_list[device]*nbatch)
             success = [r for r in result]
             t2 = time.time()
             iter_timing["Total Time"] = t2 - t1
@@ -179,15 +186,22 @@ class Model:
             iter_timing = {}
 
             for grid in self.grid_list[device]:
-                grid.initialize_luminosity_array(wavelength=wavelength)
+                for source in grid.sources + [grid.grid_source]:
+                    if isinstance(source, DiffuseSource):
+                        source.initialize_luminosity_array(wavelength=wavelength)
 
             t1 = time.time()
             result = self.pool.map(lambda grid: grid.propagate_photons_scattering(grid.emit(int(nphotons / self.ncores), wavelength, scattering=True, timing=iter_timing), i, timing=iter_timing), self.grid_list[device])
             success = [r for r in result]
             t2 = time.time()
-            print("Time:", t2 - t1)
+            iter_timing["Total Time"] = t2 - t1
 
             total_scattering = torch.mean(torch.cat([torch.unsqueeze(grid.scattering, 0) for grid in self.grid_list[device]]), axis=0) / (4.*np.pi * self.grid.volume.to(device))
+
+            for source in grid.sources:
+                if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
+                    total_scattering[i] += (source.luminosity * (self.grid.distance_unit**2 * u.Jy) * source.density / (4.*np.pi * u.steradian * (self.grid.grid.density.numpy() * self.grid.dust.interpolate_kext(wavelength) * self.grid.distance_unit**-1))).value
+
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:
                     grid.scattering[i] = total_scattering[i].clone().to(wp.device_to_torch(grid.device))
@@ -197,7 +211,7 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, npix=100, pixel_size=None, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, device="cpu"):
+    def make_image(self, npix=100, pixel_size=None, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, nphotons=100000, device="cpu"):
         """
         Create an image from the dust distribution.
 
@@ -230,7 +244,7 @@ class Model:
 
         # First, run a scattering simulation to get the scattering phase function
 
-        self.scattering_mc(100000, lam, device=device)
+        self.scattering_mc(nphotons, lam, device=device)
 
         # Now set up the image proper.
 
@@ -255,14 +269,43 @@ class Model:
         new_x, new_y = new_x.values.flatten(), new_y.values.flatten()
 
         intensity = np.array(list(self.pool.map(lambda x: x[0].raytrace(x[1], x[2], nx, ny, physical_pixel_size, image.nu).numpy(), 
-                        zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0) * (u.Jy / u.steradian) * \
-                        image.pixel_size**2
+                        zip(self.camera_list[device], np.array_split(new_x, self.ncores), np.array_split(new_y, self.ncores))))).sum(axis=0) * (u.Jy / u.steradian)
 
-        source_intensity = np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, distance, 
-                        nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0) * u.Jy
+        source_intensity = np.array(list(self.pool.map(lambda camera: camera.raytrace_sources(image.x, image.y, nx, ny, image.nu, physical_pixel_size*self.grid.distance_unit, 
+                        nrays=int(1000/self.ncores)).numpy(), self.camera_list[device]))).mean(axis=0) * u.Jy/u.steradian
 
         intensity += source_intensity
 
-        image = image.assign(intensity=(("x","y","lam"), intensity))
+        image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian)))
 
         return image
+
+    def make_spectrum(self, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, nphotons=10000, device="cpu"):
+        """
+        Raytrace to make a spectrum.
+
+        Parameters
+        ----------
+        lam : array-like Quantity
+            The wavelengths to simulate.
+        incl : Quantity
+            The inclination angle of the image.
+        pa : Quantity
+            The position angle of the image.
+        distance : Quantity
+            The distance to the image plane in parsecs.
+        nphotons : int
+            The number of photons to simulate, per wavelength.
+        device : str, optional
+            The device to use for the simulation (default is "cpu").
+        Returns
+        -------
+        spectrum : xarray.Dataset
+            The resulting spectrum.
+        """
+        image = self.make_image(lam=lam, incl=incl, pa=pa, distance=distance, nphotons=nphotons, device=device)
+
+        spectrum = image.sum(dim=["x","y"])
+        spectrum = spectrum.assign(intensity=(("lam",), (spectrum.intensity.data * image.pixel_size**2).to(u.Jy)))
+
+        return spectrum

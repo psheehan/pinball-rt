@@ -23,12 +23,9 @@ dependencies = [
   "scipy",
   "tqdm",
   "xarray",
-  "KDEpy",
-  "interpn",
   "PyMieScatt @ git+https://github.com/bsumlin/PyMieScatt.git",
   "schwimmbad",
   "requests",
-  "psutil",
 ]
 
 [project.optional-dependencies]
