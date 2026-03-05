@@ -483,7 +483,7 @@ class Grid:
         
         return wp.from_torch(direction_yaw), wp.from_torch(direction_pitch), wp.from_torch(direction_roll)
 
-    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}):
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -525,7 +525,7 @@ class Grid:
 
             count = 0
             nphotons_done = 0
-            progress_bar = tqdm.tqdm(total=nphotons)
+            progress_bar = tqdm.tqdm(total=nphotons, position=position, leave=False)
             while nphotons > 0:
                 #print(nphotons)
                 count += 1

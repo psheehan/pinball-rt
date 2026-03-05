@@ -423,9 +423,7 @@ class Dust(pl.LightningDataModule):
         features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
         targets = ["log10_nu0", "log10_T", "log10_tau_cell_nu0"]
 
-        df.loc[df["log10_tau"] < -5., "log10_tau"] = -5.
-        df.loc[np.isnan(df["log10_tau"]), "log10_tau"] = -5.
-        df.loc[df["log10_Eabs"] < -7., "log10_Eabs"] = -7.
+        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
 
         data = df.loc[:, targets+features].values
         self.ml_step_x_scaler = StandardScaler()
@@ -445,7 +443,7 @@ class Dust(pl.LightningDataModule):
 
         self.dataset = TensorDataset(X, y)
 
-    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, use_ml_step=False):
+    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, use_ml_step=False, position=0):
         """
         Run a dust simulation that can be used to learn an ML-step model with the given parameters.
 
@@ -748,19 +746,21 @@ class RealNVP(nn.Module):
         super().__init__()
 
         self.d, self.c = input_size, conditional_size
-        self.k = int(self.d / 2) + self.d % 2
 
         self.sig_net = nn.Sequential(
-                    nn.Linear(self.k + self.c, hidden_units),
+                    nn.Linear(self.d + self.c, hidden_units),
                     nn.LeakyReLU(),
-                    nn.Linear(hidden_units, self.d - self.k),
+                    nn.Linear(hidden_units, self.d),
                     nn.Tanh())
 
         self.mu_net = nn.Sequential(
-                    nn.Linear(self.k + self.c, hidden_units),
+                    nn.Linear(self.d + self.c, hidden_units),
                     nn.LeakyReLU(),
-                    nn.Linear(hidden_units, self.d - self.k),
+                    nn.Linear(hidden_units, self.d),
         )
+
+        self.mask = torch.ones(self.d)
+        self.mask[::2] = 0
 
         base_mu, base_cov = torch.zeros(input_size), torch.eye(input_size)
         self.base_dist = MultivariateNormal(base_mu, base_cov)
@@ -770,57 +770,43 @@ class RealNVP(nn.Module):
         return self
 
     def forward(self, x, flip=False):
-        if self.d % 2 == 0 or (self.d % 2 == 1 and not flip):
-            x1, x2 = x[:, :self.k], x[:, self.k:self.d]
-        else:
-            x1, x2 = x[:, :self.k-1], x[:, self.k-1:self.d]
-
         if flip:
-            x2, x1 = x1, x2
-
+            mask = 1 - self.mask
+        else:
+            mask = self.mask
+        
         # forward
         if self.c > 0:
-            sig = self.sig_net(torch.cat([x1, self.y], dim=1))
-            mu = self.mu_net(torch.cat([x1, self.y], dim=1))
+            sig = (1 - mask) * self.sig_net(torch.cat([x * mask, self.y], dim=1))
+            mu = (1 - mask) * self.mu_net(torch.cat([x * mask, self.y], dim=1))
         else:
-            sig = self.sig_net(x1)
-            mu = self.mu_net(x1)
+            sig = (1 - mask) * self.sig_net(x * mask)
+            mu = (1 - mask) * self.mu_net(x * mask)
         #sig = softClampAsymAdvanced(sig, 2.0, 0.1)
 
-        z1, z2 = x1, x2 * torch.exp(sig) + mu
+        z = x * mask + (1 - mask) * (x * torch.exp(sig) + mu)
 
-        if flip:
-            z2, z1 = z1, z2
+        log_pz = self.base_dist.log_prob(z)
+        log_jacob = (sig * (1 - mask)).sum(-1)
 
-        z_hat = torch.cat([z1, z2], dim=-1)
-
-        log_pz = self.base_dist.log_prob(z_hat)
-        log_jacob = sig.sum(-1)
-
-        return z_hat, log_pz, log_jacob
+        return z, log_pz, log_jacob
 
     def inverse(self, Z, flip=False):
-        if self.d % 2 == 0 or (self.d % 2 == 1 and not flip):
-            z1, z2 = Z[:, :self.k], Z[:, self.k:self.d]
-        else:
-            z1, z2 = Z[:, :self.k-1], Z[:, self.k-1:self.d]
-
         if flip:
-            z2, z1 = z1, z2
+            mask = 1 - self.mask
+        else:
+            mask = self.mask
 
-        x1 = z1
         if self.c > 0:
-            sig = self.sig_net(torch.cat([z1, self.y], dim=1))
-            mu = self.mu_net(torch.cat([z1, self.y], dim=1))
+            sig = (1 - mask) * self.sig_net(torch.cat([Z * mask, self.y], dim=1))
+            mu = (1 - mask) * self.mu_net(torch.cat([Z * mask, self.y], dim=1))
         else:
-            sig = self.sig_net(z1)
-            mu = self.mu_net(z1)
+            sig = self.sig_net(Z * mask)
+            mu = self.mu_net(Z * mask)
         #sig = softClampAsymAdvanced(sig, 2.0, 0.1)
-        x2 = (z2 - mu) * torch.exp(-sig)
+        x = Z * mask + (1 - mask) * (Z - mu) * torch.exp(-sig)
 
-        if flip:
-            x2, x1 = x1, x2
-        return torch.cat([x1, x2], -1)
+        return x
 
 
 class TrainableLOFTLayer(nn.Module):
