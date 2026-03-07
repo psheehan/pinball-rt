@@ -20,6 +20,8 @@ import torch
 import os
 import PyMieScatt
 
+import interpn
+
 from torch.distributions.multivariate_normal import MultivariateNormal
 
 class Dust(pl.LightningDataModule):
@@ -118,11 +120,6 @@ class Dust(pl.LightningDataModule):
         self.temperature = np.logspace(-1.,4.,999)
         self.log_temperature = np.log10(self.temperature)
 
-        random_nu_PDF = np.array([kabs * models.BlackBody(temperature=T*u.K)(self.nu) for T in self.temperature])
-        self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(random_nu_PDF, self.nu, axis=-1, initial=0.)
-        self.random_nu_CPD /= self.random_nu_CPD[:,:,:,-1:]
-        self.drandom_nu_CPD_dT = np.gradient(self.random_nu_CPD, self.temperature, axis=0)
-
     def to_device(self, device):
         with wp.ScopedDevice(device):
             self.nu_wp = wp.array(self.nu.value, dtype=float)
@@ -155,6 +152,11 @@ class Dust(pl.LightningDataModule):
             amax = wp.to_torch(photon_list.amax)
             if nu is None:
                 nu = wp.to_torch(photon_list.frequency)
+
+                if iphotons is not None:
+                    nu = nu[iphotons]
+                    p = p[iphotons]
+                    amax = amax[iphotons]
             else:
                 if nu.size(0) != p.size(0):
                     p = p[iphotons]
@@ -162,7 +164,9 @@ class Dust(pl.LightningDataModule):
 
         samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
 
-        return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
+        kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
+
+        return kabs
     
     def interpolate_ksca(self, p, amax, nu):
         samples = np.vstack((p, np.log10(amax), np.log10(nu))).T
@@ -177,6 +181,11 @@ class Dust(pl.LightningDataModule):
             amax = wp.to_torch(photon_list.amax)
             if nu is None:
                 nu = wp.to_torch(photon_list.frequency)
+
+                if iphotons is not None:
+                    nu = nu[iphotons]
+                    p = p[iphotons]
+                    amax = amax[iphotons]
             else:
                 if nu.size(0) != p.size(0):
                     p = p[iphotons]
@@ -184,7 +193,9 @@ class Dust(pl.LightningDataModule):
 
         samples = torch.transpose(torch.vstack((p, torch.log10(amax), torch.log10(nu))), 0, 1)
 
-        return 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
+        ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
+
+        return ksca
 
     def interpolate_kext(self, p, amax, nu):
         if nu.unit.is_equivalent(u.GHz):
@@ -246,32 +257,57 @@ class Dust(pl.LightningDataModule):
 
         return direction, frequency
 
-    def random_nu_manual(self, p, amax, temperature, ksi=None):
+    def random_nu_manual(self, p, amax, temperature, ksi=None, batch_size=100000):
         if ksi is None:
             nphotons = temperature.size
             ksi = np.random.rand(nphotons)
 
-        iT = ((np.log10(temperature) - self.log_temperature[0]) / (self.log_temperature[1] - self.log_temperature[0])).astype(int)
-        ip = np.searchsorted(self.p, p)
-        iamax = np.searchsorted(self.amax, amax)
+        if not hasattr(self, "random_nu_CPD"):
+            random_nu_PDF = np.array([self.kabs * models.BlackBody(temperature=T*u.K)(self.nu) for T in self.temperature])
+            self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(random_nu_PDF, self.nu, axis=-1, initial=0.)
+            self.random_nu_CPD /= self.random_nu_CPD[:,:,:,-1:]
+            self.drandom_nu_CPD_dT = np.gradient(self.random_nu_CPD, self.temperature, axis=0)
 
-        random_nu_CPD = scipy.interpolate.interpn((self.temperature, self.p, self.amax.value, self.nu.value), self.random_nu_CPD, 
-                                                  np.hstack((np.repeat(np.vstack((temperature, p, amax.value)).T, self.nu.size, axis=0), 
-                                                  np.tile(self.nu.value, p.size)[:, np.newaxis])))
-        random_nu_CPD = random_nu_CPD.reshape((p.size, self.nu.size))
+        count = 0
 
-        i = np.argmax(ksi[:,np.newaxis] < random_nu_CPD, axis=1)
+        dims = (self.temperature.size, self.p.size, self.amax.size, self.nu.size)
+        starts = np.array([np.log10(self.temperature.min()), self.p.min(), np.log10(self.amax.min().value), np.log10(self.nu.min().value)])
+        steps = np.array([(np.log10(self.temperature[1]) - np.log10(self.temperature[0])), self.p[1] - self.p[0], (np.log10(self.amax[1].value) - np.log10(self.amax[0].value)), (np.log10(self.nu[1].value) - np.log10(self.nu[0].value))])
 
-        frequency = (ksi - random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i-1]) * (self.nu[i] - self.nu[i-1]) / \
-                (random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i] - random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i-1]) + \
-                self.nu[i-1]
+        interpolator = interpn.MulticubicRegular.new(dims, starts, steps, self.random_nu_CPD)
 
-        return frequency.value
+        frequency = []
+        while count < temperature.size:
+            n = min(batch_size, temperature.size - count)
+            p_batch = p[count:count+n]
+            amax_batch = amax[count:count+n]
+            temperature_batch = temperature[count:count+n]
+            ksi_batch = ksi[count:count+n]
+
+            samples = np.vstack([np.repeat(np.array([np.log10(temperature_batch), p_batch, np.log10(amax_batch.value)]), self.nu.size, axis=1), 
+                                 np.tile(np.log10(self.nu.value), p_batch.size)])
+
+            random_nu_CPD = interpolator.eval(samples)
+            random_nu_CPD = random_nu_CPD.reshape((p_batch.size, self.nu.size))
+
+            i = np.argmax(ksi_batch[:,np.newaxis] < random_nu_CPD, axis=1)
     
-    def random_nu_ml(self, temperature):
+            frequency_batch = (ksi_batch - random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i-1]) * (self.nu[i] - self.nu[i-1]) / \
+                    (random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i] - random_nu_CPD[np.arange(random_nu_CPD.shape[0]),i-1]) + \
+                    self.nu[i-1]
+            
+            frequency.append(frequency_batch)
+            
+            count += n
+
+        frequency = np.concatenate(frequency).value
+
+        return frequency
+    
+    def random_nu_ml(self, p, amax, temperature):
         nphotons = temperature.size
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        test_x = torch.transpose(torch.vstack((torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)), 0, 1)
+        test_x = torch.transpose(torch.vstack((torch.tensor(p, dtype=torch.float32), torch.log10(torch.tensor(amax, dtype=torch.float32)), torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)), 0, 1)
         test_x = self.random_nu_x_scaler.transform(test_x)
 
         log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
@@ -427,7 +463,6 @@ class Dust(pl.LightningDataModule):
         '''
         # Test the model.
 
-        self.overwrite = False
         self.trainer.test(model=self.dustLM, datamodule=self)
 
         # Plot the result
@@ -436,74 +471,25 @@ class Dust(pl.LightningDataModule):
             import matplotlib.pyplot as plt
 
             if self.current_model == "random_nu":
-                y_pred = self.trainer.predict(self.dustLM, datamodule=self)
-                y_pred = torch.cat(y_pred)
-                y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
-
-                with torch.no_grad():
-                    count, bins, patches = plt.hist(y_true, 100, histtype='step')
-                    plt.hist(y_pred, bins, histtype='step')
-                    plt.savefig("predicted_vs_actual.png")
-            elif self.current_model == "kabs":
-                log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 100)
-                log10_lam = np.log10((const.c / (10.**log10_nu * u.GHz)).to(u.cm).value)
-                log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
-                p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
-
-                samples = np.vstack((p, log10_amax, log10_nu)).T
-
-                interpolated = np.log10(self.interpolate_kabs(p, 10.**log10_amax, 10.**log10_nu))
-                nned = self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(torch.tensor(samples, dtype=torch.float32)))).detach().numpy()
-
-                plt.plot(log10_lam, interpolated)
-                plt.plot(log10_lam, nned)
-                plt.show()
-            elif self.current_model == "ksca":
-                log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 100)
-                log10_lam = np.log10((const.c / (10.**log10_nu * u.GHz)).to(u.cm).value)
-                log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
-                p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
-
-                samples = np.vstack((p, log10_amax, log10_nu)).T
-
-                interpolated = np.log10(self.interpolate_ksca(p, 10.**log10_amax, 10.**log10_nu))
-                nned = self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(torch.tensor(samples, dtype=torch.float32)))).detach().numpy()
-
-                plt.plot(log10_lam, interpolated)
-                plt.plot(log10_lam, nned)
-                plt.show()
+                self.plot_triangle_plots(model=self.current_model)
+            elif self.current_model in ["kabs", "ksca"]:
+                self.plot_opacity_model(model=self.current_model)
             elif self.current_model == "pmo":
-                p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
-                log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
-                log10_temperature = np.linspace(np.log10(self.temperature.min()), np.log10(self.temperature.max()), 100)
-
-                samples = np.vstack((p, log10_amax, log10_temperature)).T
-
-                interpolated = np.log10(self.planck_mean_opacity(p, 10.**log10_amax, 10.**log10_temperature))
-                nned = self.pmo_y_scaler.inverse_transform(self.pmo_model(self.pmo_x_scaler.transform(torch.tensor(samples, dtype=torch.float32)))).detach().numpy()
-
-                plt.plot(log10_temperature, interpolated)
-                plt.plot(log10_temperature, nned)
-                plt.show()
+                self.plot_pmo_model()
             else:
-                self.plot_ml_step()
+                #self.plot_ml_step()
+                self.plot_triangle_plots(model=self.current_model)
 
     def prepare_data(self):
-        if self.learning == "random_nu":
-            self.prepare_data_random_nu()
-        elif self.learning == "ml_step":
-            self.prepare_data_ml_step()
-        elif self.learning == "kabs":
-            self.prepare_data_kabs()
-        elif self.learning == "ksca":
-            self.prepare_data_ksca()
-        elif self.learning == "pmo":
-            self.prepare_data_pmo()
-
-    def prepare_data_random_nu(self):
         if hasattr(self, "dataset") and not self.overwrite:
             return
+        
+        if hasattr(self, f"prepare_data_{self.current_model}"):
+            getattr(self, f"prepare_data_{self.current_model}")()
+        else:
+            raise NotImplementedError(f"Data preparation for model {self.current_model} not implemented.")
 
+    def prepare_data_random_nu(self):
         sampler = scipy.stats.qmc.LatinHypercube(d=4)
         samples = sampler.random(self.nsamples)
 
@@ -513,7 +499,6 @@ class Dust(pl.LightningDataModule):
 
         X = torch.tensor(samples, dtype=torch.float32)
         y = torch.tensor(np.log10(self.random_nu_manual(samples[:,0], 10.**samples[:,1]*self.amax.unit, 10.**samples[:,2], ksi=samples[:,3])), dtype=torch.float32)
-        print(y.min(), y.max())
 
         X_scaler = StandardScaler()
         X_scaler.fit(X)
@@ -529,9 +514,6 @@ class Dust(pl.LightningDataModule):
         self.dataset = TensorDataset(X, y)
 
     def prepare_data_kabs(self):
-        if hasattr(self, "dataset") and not self.overwrite:
-            return
-
         sampler = scipy.stats.qmc.LatinHypercube(d=3)
         samples = sampler.random(self.nsamples)
 
@@ -558,9 +540,6 @@ class Dust(pl.LightningDataModule):
         self.dataset = TensorDataset(X, y)
 
     def prepare_data_ksca(self):
-        if hasattr(self, "dataset") and not self.overwrite:
-            return
-
         sampler = scipy.stats.qmc.LatinHypercube(d=3)
         samples = sampler.random(self.nsamples)
 
@@ -587,9 +566,6 @@ class Dust(pl.LightningDataModule):
         self.dataset = TensorDataset(X, y)
 
     def prepare_data_pmo(self, device='cpu'):
-        if hasattr(self, "dataaset") and not self.overwrite:
-            return
-
         sampler = scipy.stats.qmc.LatinHypercube(d=3)
         samples = sampler.random(self.nsamples)
 
@@ -616,9 +592,6 @@ class Dust(pl.LightningDataModule):
         self.dataset = TensorDataset(X, y)
 
     def prepare_data_ml_step(self, device='cpu'):
-        if hasattr(self, "dataset") and not self.overwrite:
-            return
-
         if os.path.exists("sim_results.csv"):
             df = pd.read_csv("sim_results.csv", index_col=0)
 
@@ -739,34 +712,110 @@ class Dust(pl.LightningDataModule):
 
     # DataModule functions
 
-    def plot_ml_step(self):
+    def plot_opacity_model(self, model="kabs"):
         import matplotlib.pyplot as plt
 
-        if self.trainer is None and hasattr(self, "ml_step_model"):
-            self.dustLM = DustLightningModule(getattr(self, "ml_step_model"))
+        log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 100)
+        log10_lam = np.log10((const.c / (10.**log10_nu * u.GHz)).to(u.cm).value)
+        log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
+        p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
+
+        print(f"log10_amax: {log10_amax[0]}, p: {p[0]}")
+
+        samples = np.vstack((p, log10_amax, log10_nu)).T
+
+        interpolated = np.log10(getattr(self, f"interpolate_{model}")(p, 10.**log10_amax, 10.**log10_nu))
+        nned = getattr(self, f'{model}_y_scaler').inverse_transform(getattr(self, f'{model}_model')(getattr(self, f'{model}_x_scaler').transform(torch.tensor(samples, dtype=torch.float32)))).detach().numpy()
+
+        plt.plot(log10_lam, interpolated)
+        plt.plot(log10_lam, nned)
+        plt.show()
+
+    def plot_pmo_model(self):
+        import matplotlib.pyplot as plt
+
+        p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
+        log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
+        log10_temperature = np.linspace(np.log10(self.temperature.min()), np.log10(self.temperature.max()), 100)
+
+        print(f"log10_amax: {log10_amax[0]}, p: {p[0]}, log10_temperature: {log10_temperature[0]}")
+
+        samples = np.vstack((p, log10_amax, log10_temperature)).T
+
+        interpolated = np.log10(self.planck_mean_opacity(p, 10.**log10_amax, 10.**log10_temperature))
+        nned = self.pmo_y_scaler.inverse_transform(self.pmo_model(self.pmo_x_scaler.transform(torch.tensor(samples, dtype=torch.float32)))).detach().numpy()
+
+        plt.plot(log10_temperature, interpolated)
+        plt.plot(log10_temperature, nned)
+        plt.show()
+
+    def plot_random_nu_model(self, nsamples=100000):
+        import matplotlib.pyplot as plt
+
+        T = np.repeat(10.**np.random.uniform(-1., 4., 1), nsamples)
+        amax = np.repeat(10.**np.random.uniform(-4., 1., 1), nsamples)
+        p = np.repeat(np.random.uniform(2.5, 4.5, 1), nsamples)
+        print(f"p: {p[0]}, amax: {amax[0]}, T: {T[0]}")
+
+        nu = self.random_nu_manual(p, amax*self.amax.unit, T)
+        nu2 = self.random_nu_ml(p, amax, T)
+
+        counts, bins, _ = plt.hist(nu, 100)
+        plt.hist(nu2, 100)
+
+        bb = models.BlackBody(temperature=T[0] * u.K)
+        pdf = bb(bins[1:]*u.GHz).value * self.interpolate_kabs(np.repeat(p[0], bins[1:].size), np.repeat(amax[0], bins[1:].size), bins[1:])
+        pdf *= counts.max() / pdf.max()
+
+        plt.plot(bins[1:], pdf, '-')
+
+        plt.show()
+
+    def plot_triangle_plots(self, model="ml_step", nsamples=200000, batch_size=100, num_workers=1):
+        import matplotlib.pyplot as plt
+
+        if self.trainer is None and hasattr(self, f"{model}_model"):
+            self.dustLM = DustLightningModule(getattr(self, f"{model}_model"))
 
             self.trainer = pl.Trainer()
 
-            self.learning = 'ml_step'
+            self.learning = model
+            self.current_model = model
+            self.nsamples = nsamples
             self.test_split = 0.1
             self.valid_split = 0.2
 
+            self.batch_size = batch_size
+            self.num_workers = num_workers
+
         if self.trainer is not None:
-            X_pred = self.trainer.predict(self.dustLM, datamodule=self)
-            X_pred = torch.cat(X_pred)
-            y_pred = torch.cat([batch[1] for batch in self.predict_dataloader()])
+            if model == "ml_step":
+                X_pred = self.trainer.predict(self.dustLM, datamodule=self)
+                X_pred = torch.cat(X_pred)
+                y_pred = torch.cat([batch[1] for batch in self.predict_dataloader()])
+            elif model == "random_nu":
+                y_pred = self.trainer.predict(self.dustLM, datamodule=self)
+                y_pred = torch.cat(y_pred)
+                X_pred = torch.cat([batch[0] for batch in self.predict_dataloader()])
 
             X_true = torch.cat([batch[0] for batch in self.predict_dataloader()])
             y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
 
             predict = True
 
-        features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
-        targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
+        if model == "ml_step":
+            features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
+            targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
+        elif model == "random_nu":
+            features = np.array(["p", "log10_amax", "log10_temperature", "ksi"])
+            targets = np.array(["log10_nu"])
+
+            y_true = torch.unsqueeze(y_true, 1)
+
         columns = np.concatenate((targets, features))
 
-        df_true = pd.DataFrame(torch.cat([self.ml_step_y_scaler.inverse_transform(y_true), self.ml_step_x_scaler.inverse_transform(X_true)], dim=1).numpy(), columns=np.concatenate((targets, features)))
-        df_pred = pd.DataFrame(torch.cat([self.ml_step_y_scaler.inverse_transform(y_pred), self.ml_step_x_scaler.inverse_transform(X_pred)], dim=1).numpy(), columns=np.concatenate((targets, features)))
+        df_true = pd.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_true), getattr(self, f"{model}_x_scaler").inverse_transform(X_true)], dim=1).numpy(), columns=np.concatenate((targets, features)))
+        df_pred = pd.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_pred), getattr(self, f"{model}_x_scaler").inverse_transform(X_pred)], dim=1).numpy(), columns=np.concatenate((targets, features)))
 
         fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
 
@@ -777,10 +826,10 @@ class Dust(pl.LightningDataModule):
                     if predict:
                         ax[i,j].hist(df_pred[key1], bins=50, histtype='step', density=True)
                 elif i > j:
-                    ax[i,j].scatter(df_true[key2], df_true[key1], marker='.', s=0.025, alpha=1.0)
+                    ax[i,j].scatter(df_true[key2], df_true[key1], marker='.', s=1.0, alpha=1.0)
 
                     if predict:
-                        ax[i,j].scatter(df_pred[key2], df_pred[key1], marker='.', s=0.025, alpha=1.0)
+                        ax[i,j].scatter(df_pred[key2], df_pred[key1], marker='.', s=1.0, alpha=1.0)
                 elif i < j:
                     ax[i,j].set_axis_off()
 
@@ -799,6 +848,9 @@ class Dust(pl.LightningDataModule):
         train_size = self.nsamples - test_size - valid_size
         train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
         self.train, self.valid = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
+
+        if self.overwrite:
+            self.overwrite = False
 
     def train_dataloader(self):
         return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
@@ -900,8 +952,12 @@ def load(filename, device="cpu"):
 
     for attr in ["kabs", "ksca", "pmo", "random_nu"]:
         if f"{attr}_state_dict" in state_dict:
+            if attr == "random_nu":
+                input_size = 4
+            else:
+                input_size = 3
             hidden_units = [state_dict[f'{attr}_state_dict'][key].shape[0] for key in state_dict[f'{attr}_state_dict'] if 'bias' in key][0:-1]
-            d.initialize_model(model=attr, input_size=3, output_size=1, hidden_units=hidden_units)
+            d.initialize_model(model=attr, input_size=input_size, output_size=1, hidden_units=hidden_units)
 
             getattr(d, f'{attr}_model').load_state_dict(state_dict[f'{attr}_state_dict'])
             setattr(d, f'{attr}_x_scaler', StandardScaler())
@@ -941,7 +997,7 @@ class MultiLayerPerceptron(nn.Module):
         for hidden_unit in hidden_units:
             layer = nn.Linear(input_size, hidden_unit)
             all_layers.append(layer)
-            all_layers.append(nn.LeakyReLU())
+            all_layers.append(nn.SiLU())
             input_size = hidden_unit
 
         all_layers.append(nn.Linear(hidden_units[-1], output_size))

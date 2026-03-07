@@ -447,7 +447,7 @@ class GridSource(DiffuseSource):
             for i in range(self.grid.shape[0]):
                 for j in range(self.grid.shape[1]):
                     for k in range(self.grid.shape[2]):
-                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(torch.tensor(self.grid.p.numpy()[i,j,k]).expand(nu.size), torch.tensor(self.grid.amax.numpy()[i,j,k]).expand(nu.size), torch.tensor(nu.value, dtype=torch.float32))*self.distance_unit**2*models.BlackBody(temperature=self.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
+                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(torch.tensor(self.grid.grid.p.numpy()[i,j,k]).expand(nu.size), torch.tensor(self.grid.grid.amax.numpy()[i,j,k]).expand(nu.size), torch.tensor(nu.value, dtype=torch.float32))*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
 
         self.total_lum = self.luminosity.sum()
 
