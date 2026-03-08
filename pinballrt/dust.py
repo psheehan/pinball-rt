@@ -140,11 +140,11 @@ class Dust(pl.LightningDataModule):
             self.pmo_model.to(device)
 
     def interpolate_kabs(self, p, amax, nu):
-        samples = np.vstack((p, np.log10(amax), np.log10(nu))).T
+        samples = np.vstack((p.flatten(), np.log10(amax).flatten(), np.log10(nu).flatten())).T
 
         interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.kabs), samples, method="cubic")
 
-        return 10.**interpolated
+        return 10.**interpolated.reshape(p.shape)
 
     def ml_kabs(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
         if photon_list is not None:
@@ -169,11 +169,11 @@ class Dust(pl.LightningDataModule):
         return kabs
     
     def interpolate_ksca(self, p, amax, nu):
-        samples = np.vstack((p, np.log10(amax), np.log10(nu))).T
+        samples = np.vstack((p.flatten(), np.log10(amax).flatten(), np.log10(nu).flatten())).T
 
         interpolated = scipy.interpolate.interpn((self.p, np.log10(self.amax.value), np.log10(self.nu.value)), np.log10(self.ksca), samples, method="cubic")
 
-        return 10.**interpolated
+        return 10.**interpolated.reshape(p.shape)
 
     def ml_ksca(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
         if photon_list is not None:
@@ -202,7 +202,7 @@ class Dust(pl.LightningDataModule):
             nu = nu.to(u.GHz).value
         elif nu.unit.is_equivalent(u.cm):
             nu = (const.c / nu).decompose().to(u.GHz)
-        return self.interpolate_kabs(p, amax, nu) + self.interpolate_ksca(p, amax, nu)
+        return self.interpolate_kabs(p, amax, nu.value) + self.interpolate_ksca(p, amax, nu.value)
 
     def ml_kext(self, p=None, amax=None, nu=None, photon_list=None, iphotons=None):
         if photon_list is not None:
@@ -358,6 +358,8 @@ class Dust(pl.LightningDataModule):
 
         test_y = torch.transpose(torch.vstack((torch.log10(wp.to_torch(photon_list.frequency)[iphotons]),
                               torch.log10(wp.to_torch(photon_list.temperature)[iphotons]),
+                              torch.log10(wp.to_torch(photon_list.amax)[iphotons]),
+                              torch.log10(wp.to_torch(photon_list.p)[iphotons]),
                               torch.log10(wp.to_torch(photon_list.density)[iphotons] * wp.to_torch(photon_list.kabs)[iphotons] * s[iphotons]),
                               )), 0, 1)
 
@@ -379,7 +381,8 @@ class Dust(pl.LightningDataModule):
             self.pmo_model = MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units)
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48),
-            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, overwrite=False):
+            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), 
+            nu_range=None, overwrite=False):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -414,7 +417,7 @@ class Dust(pl.LightningDataModule):
         if model == "random_nu":
             input_size, output_size = 4, 1
         elif model == "ml_step":
-            input_size, output_size = 7, 3
+            input_size, output_size = 7, 5
 
             if nu_range is None:
                 nu_range = (self.nu.value.min(), self.nu.value.max())
@@ -607,7 +610,7 @@ class Dust(pl.LightningDataModule):
             df.to_csv("sim_results.csv")
 
         features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
-        targets = ["log10_nu0", "log10_T", "log10_tau_cell_nu0"]
+        targets = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
 
         df.loc[df["log10_tau"] < -5., "log10_tau"] = -5.
         df.loc[np.isnan(df["log10_tau"]), "log10_tau"] = -5.
@@ -631,7 +634,7 @@ class Dust(pl.LightningDataModule):
 
         self.dataset = TensorDataset(X, y)
 
-    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, use_ml_step=False):
+    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), nu_range=None, use_ml_step=False):
         """
         Run a dust simulation that can be used to learn an ML-step model with the given parameters.
 
@@ -675,8 +678,11 @@ class Dust(pl.LightningDataModule):
 
         photon_list.temperature = wp.array(10.**np.random.uniform(temperature_range[0], temperature_range[1], nphotons), dtype=float)
 
+        photon_list.amax = wp.array(10.**np.random.uniform(np.log10(amax_range[0].to(u.cm).value), np.log10(amax_range[1].to(u.cm).value), nphotons), dtype=float)
+        photon_list.p = wp.array(np.random.uniform(p_range[0], p_range[1], nphotons), dtype=float)
+
         tau = 10.**np.random.uniform(tau_range[0], tau_range[1], nphotons)
-        photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.frequency.numpy()*u.GHz) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
+        photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.p.numpy(), photon_list.amax.numpy(), photon_list.frequency.numpy()) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
         grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step)
 
@@ -699,6 +705,8 @@ class Dust(pl.LightningDataModule):
 
         df = pd.DataFrame({"log10_nu0":np.log10(original_frequency),
                        "log10_T":np.log10(photon_list.temperature.numpy()),
+                       "log10_amax":np.log10(photon_list.amax.numpy()),
+                       "p":photon_list.p.numpy(),
                        "log10_tau_cell_nu0":np.log10(tau),
                        "log10_nu":np.log10(photon_list.frequency.numpy().copy()),
                        "log10_Eabs":np.log10(np.where(photon_list.deposited_energy.numpy() > 0, photon_list.deposited_energy.numpy(), photon_list.deposited_energy.numpy().min()/100)/photon_list.energy.numpy()),
@@ -805,7 +813,7 @@ class Dust(pl.LightningDataModule):
 
         if model == "ml_step":
             features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
-            targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
+            targets = np.array(["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"])
         elif model == "random_nu":
             features = np.array(["p", "log10_amax", "log10_temperature", "ksi"])
             targets = np.array(["log10_nu"])
@@ -968,7 +976,7 @@ def load(filename, device="cpu"):
     if "ml_step_state_dict" in state_dict:
         hidden_units = [state_dict['ml_step_state_dict'][key].size(0) for key in state_dict['ml_step_state_dict'] if 'sig_net' in key and '0.weight' in key]
 
-        d.initialize_model(model="ml_step", input_size=7, output_size=3, hidden_units=hidden_units)
+        d.initialize_model(model="ml_step", input_size=7, output_size=5, hidden_units=hidden_units)
 
         d.ml_step_model.load_state_dict(state_dict['ml_step_state_dict'])
 
