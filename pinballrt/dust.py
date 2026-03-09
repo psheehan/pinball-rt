@@ -723,10 +723,10 @@ class Dust(pl.LightningDataModule):
     def plot_opacity_model(self, model="kabs"):
         import matplotlib.pyplot as plt
 
-        log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 100)
+        log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 10)
         log10_lam = np.log10((const.c / (10.**log10_nu * u.GHz)).to(u.cm).value)
-        log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 100)
-        p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
+        log10_amax = np.repeat(np.random.uniform(0, 1, 1)*(np.log10(self.amax.max().value) - np.log10(self.amax.min().value)) + np.log10(self.amax.min().value), 10)
+        p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 10)
 
         print(f"log10_amax: {log10_amax[0]}, p: {p[0]}")
 
