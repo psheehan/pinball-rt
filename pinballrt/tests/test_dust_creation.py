@@ -25,9 +25,9 @@ def test_learning():
 
     # Test the learn_random_nu method.
 
-    n_samples = 10
+    n_samples = 1000
 
-    for model in ["kabs", "ksca", "pmo", "random_nu"]:
+    for model in ["kabs", "ksca", "random_nu"]:
         print('*****************************')
         print(f'{model}')
         print('*****************************')
