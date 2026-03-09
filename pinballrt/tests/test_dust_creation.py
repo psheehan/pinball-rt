@@ -28,6 +28,9 @@ def test_learning():
     n_samples = 1000
 
     for model in ["kabs", "ksca", "pmo", "random_nu"]:
+        print('*****************************')
+        print(f'{model}')
+        print('*****************************')
         d.learn(model=model, nsamples=n_samples, overwrite=True)
         d.fit(epochs=10)
         d.test_model(plot=True)
@@ -36,6 +39,11 @@ def test_learn_ml_step():
     """
     Test the learn_ml_step method of the Dust class.
     """
+    
+    print('*****************************')
+    print('ml_step')
+    print('*****************************')
+    
     # Load the dust file.
 
     d = load(os.path.join(os.path.dirname(__file__), "data/diana_wice.dst"))
