@@ -27,7 +27,7 @@ def test_learning():
 
     n_samples = 1000
 
-    for model in ["kabs"]:
+    for model in ["ksca"]:
         print('*****************************')
         print(f'{model}')
         print('*****************************')
