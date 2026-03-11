@@ -21,13 +21,15 @@ def test_learning():
     Test the learn_random_nu method of the Dust class.
     """
 
-    d = load(os.path.join(os.path.dirname(__file__), 'data/diana_wice.dst'))
+    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
+
+    d = Dust(lam=data["lam"]*u.cm, kabs=data["kabs"]*u.cm**2/u.g, ksca=data["ksca"]*u.cm**2/u.g, amax=data["amax"]*u.cm, p=data["p"], interpolate=0)
 
     # Test the learn_random_nu method.
 
     n_samples = 1000
 
-    for model in ["kabs", "ksca", "pmo"]:
+    for model in ["kabs","ksca","pmo","random_nu"]:
         print('*****************************')
         print(f'{model}')
         print('*****************************')
