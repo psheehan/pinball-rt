@@ -27,7 +27,7 @@ def test_learning():
 
     n_samples = 1000
 
-    for model in ["pmo"]:
+    for model in ["random_nu"]:
         print('*****************************')
         print(f'{model}')
         print('*****************************')
