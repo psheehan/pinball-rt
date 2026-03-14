@@ -264,7 +264,7 @@ class Dust(pl.LightningDataModule):
         test_x = self.ml_step_model.condition(self.ml_step_y_scaler.transform(test_y)).sample(test_y.size(0)).detach()
         test_x = self.ml_step_x_scaler.inverse_transform(test_x)
 
-        return 10.**test_x[:,0], 10.**test_x[:,1], 10.**test_x[:,2], test_x[:,3], test_x[:,4], torch.zeros(test_x.size(0)), test_x[:,5], test_x[:,6], torch.zeros(test_x.size(0))
+        return 10.**torch.clamp(test_x[:,0], self.log10_nu0_min, self.log10_nu0_max), 10.**test_x[:,1], 10.**test_x[:,2], test_x[:,3], test_x[:,4], torch.zeros(test_x.size(0)), test_x[:,5], test_x[:,6], torch.zeros(test_x.size(0))
 
     def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
         if model == 'ml_step':
@@ -525,7 +525,31 @@ class Dust(pl.LightningDataModule):
 
     # DataModule functions
 
-    def plot_ml_step(self):
+    def plot_specific_ml_step(self, tau=1.5, temperature=100.0*u.K, nu=1e3*u.GHz, nsamples=1000, 
+                              plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])):
+        
+        df = self.run_dust_simulation(nphotons=nsamples, tau_range=(tau,tau), temperature_range=(np.log10(temperature.value), np.log10(temperature.value)), nu_range=(nu, nu), use_ml_step=False)
+
+        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+
+        features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
+        targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
+
+        X = self.ml_step_x_scaler.transform(torch.tensor(df.loc[:, features].values, dtype=torch.float32))
+        y = self.ml_step_y_scaler.transform(torch.tensor(df.loc[:, targets].values, dtype=torch.float32))
+
+        self.dataset = TensorDataset(X, y)
+        self.nsamples = nsamples
+        self.test_split = 0.98
+        self.valid_split = 0.01
+        self.batch_size = 10000
+
+        if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
+            del self.train, self.valid, self.test
+
+        self.plot_ml_step(plot_columns=plot_columns)
+
+    def plot_ml_step(self, plot_columns='all'):
         import matplotlib.pyplot as plt
 
         if self.trainer is None and hasattr(self, "ml_step_model"):
@@ -534,8 +558,9 @@ class Dust(pl.LightningDataModule):
             self.trainer = pl.Trainer()
 
             self.learning = 'ml_step'
-            self.test_split = 0.1
-            self.valid_split = 0.2
+            self.test_split = 0.98
+            self.valid_split = 0.01
+            self.batch_size = 10000
 
         if self.trainer is not None:
             X_pred = self.trainer.predict(self.dustLM, datamodule=self)
@@ -549,12 +574,19 @@ class Dust(pl.LightningDataModule):
 
         features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
         targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
-        columns = np.concatenate((targets, features))
+        if plot_columns == 'all':
+            columns = np.concatenate((targets, features))
+        else:
+            columns = np.array(plot_columns)
 
         df_true = pd.DataFrame(torch.cat([self.ml_step_y_scaler.inverse_transform(y_true), self.ml_step_x_scaler.inverse_transform(X_true)], dim=1).numpy(), columns=np.concatenate((targets, features)))
         df_pred = pd.DataFrame(torch.cat([self.ml_step_y_scaler.inverse_transform(y_pred), self.ml_step_x_scaler.inverse_transform(X_pred)], dim=1).numpy(), columns=np.concatenate((targets, features)))
+        print(df_pred.head())
 
         fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
+
+        if len(columns) == 1:
+            ax = np.array([[ax]])
 
         for i, key1 in enumerate(columns):
             for j, key2 in enumerate(columns):
