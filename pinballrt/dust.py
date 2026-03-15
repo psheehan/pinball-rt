@@ -1,6 +1,6 @@
 import urllib
 import requests
-from .sources import Star
+from .sources import BlackbodyStar
 from .grids import UniformSphericalGrid
 from .utils import log_uniform_interp, log_uniform_interp_extra_dim
 from torch.utils.data import DataLoader, TensorDataset, random_split
@@ -160,6 +160,10 @@ class Dust(pl.LightningDataModule):
         return ksca
 
     def interpolate_kext(self, nu):
+        if nu.unit.is_equivalent(u.GHz):
+            nu = nu.to(u.GHz).value
+        elif nu.unit.is_equivalent(u.cm):
+            nu = (const.c / nu).decompose().to(u.GHz)
         return np.interp(nu, self.nu, self.kext)
     
     def interpolate_kext_wp(self, photon_list, iphotons, frequency=None):
@@ -463,8 +467,7 @@ class Dust(pl.LightningDataModule):
 
         # Set up the star.
 
-        star = Star()
-        star.set_blackbody_spectrum(self.nu)
+        star = BlackbodyStar()
 
         # Set up the grid.
 
@@ -473,7 +476,7 @@ class Dust(pl.LightningDataModule):
         density = np.ones(grid.shape) * 1e-16 * u.g / u.cm**3
 
         grid.add_density(density, self)
-        grid.add_star(star)
+        grid.add_sources(star)
 
         # Emit the photons
 

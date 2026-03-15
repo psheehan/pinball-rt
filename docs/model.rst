@@ -10,7 +10,7 @@ model
    .. autosummary::
 
       ~Model.add_density
-      ~Model.add_star
+      ~Model.add_sources
       ~Model.make_image
       ~Model.scattering_mc
       ~Model.thermal_mc
@@ -18,7 +18,7 @@ model
    .. rubric:: Methods Documentation
 
    .. automethod:: add_density
-   .. automethod:: add_star
+   .. automethod:: add_sources
    .. automethod:: make_image
    .. automethod:: scattering_mc
    .. automethod:: thermal_mc

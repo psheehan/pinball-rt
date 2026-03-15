@@ -1,5 +1,7 @@
 import astropy.constants as const
 import astropy.units as u
+
+from .sources import DiffuseSource, EnergySource
 from .grids import Grid
 from .dust import load, Dust
 from .camera import Camera
@@ -65,18 +67,18 @@ class Model:
             for grid in self.grid_list[device]:
                 grid.add_density(density, load(dust) if isinstance(dust, str) else dust)
 
-    def add_star(self, star):
+    def add_sources(self, sources):
         """
-        Add a star to the grid.
+        Add sources to the grid.
 
         Parameters
         ----------
-        star : Star
-            The star to add to the grid.
+        sources : list of Source objects
+            The sources to add to the grid.
         """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
-                grid.add_star(star)
+                grid.add_sources(sources)
 
     def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", return_timing=False, nbatch=1):
         """
@@ -95,6 +97,11 @@ class Model:
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+        for grid in self.grid_list[device]:
+                for source in grid.sources:
+                    if isinstance(source, DiffuseSource):
+                        source.initialize_luminosity_array(wavelength="random")
+
         told = self.grid.grid.temperature.numpy().copy()
 
         timing = {}
@@ -173,7 +180,9 @@ class Model:
             iter_timing = {}
 
             for grid in self.grid_list[device]:
-                grid.initialize_luminosity_array(wavelength=wavelength)
+                for source in grid.sources + [grid.grid_source]:
+                    if isinstance(source, DiffuseSource):
+                        source.initialize_luminosity_array(wavelength=wavelength)
 
             t1 = time.time()
             result = self.pool.map(lambda grid: grid.propagate_photons_scattering(grid.emit(int(nphotons / self.ncores), wavelength, scattering=True, timing=iter_timing), i, timing=iter_timing), self.grid_list[device])
@@ -182,6 +191,11 @@ class Model:
             iter_timing["Total Time"] = t2 - t1
 
             total_scattering = torch.mean(torch.cat([torch.unsqueeze(grid.scattering, 0) for grid in self.grid_list[device]]), axis=0) / (4.*np.pi * self.grid.volume.to(device))
+
+            for source in grid.sources:
+                if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
+                    total_scattering[i] += (source.luminosity * (self.grid.distance_unit**2 * u.Jy) * source.density / (4.*np.pi * u.steradian * (self.grid.grid.density.numpy() * self.grid.dust.interpolate_kext(wavelength) * self.grid.distance_unit**-1))).value
+
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:
                     grid.scattering[i] = total_scattering[i].clone().to(wp.device_to_torch(grid.device))
