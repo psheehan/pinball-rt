@@ -16,10 +16,10 @@ class Star:
     luminosity: float
     radius: float
 
-    def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, radius=1.0*const.R_sun, x=0., y=0., z=0.):
+    def __init__(self, temperature=4000.*u.K, luminosity=1.0*const.L_sun, x=0., y=0., z=0.):
         self.temperature = temperature
         self.luminosity = luminosity
-        self.radius = radius
+        self.radius = (self.luminosity / (4.*np.pi*const.sigma_sb*self.temperature**4))**0.5
         self.x = x
         self.y = y
         self.z = z
@@ -63,7 +63,7 @@ class Star:
         if simulation == "thermal":
             photon_energy = np.repeat(self.luminosity.to(u.L_sun).value / nphotons, nphotons)
         elif simulation == "scattering":
-            photon_energy = np.repeat((4.*np.pi**2*u.steradian*self.radius**2*models.BlackBody(temperature=self.temperature)(frequency[0])).to(distance_unit**2 * u.Jy).value / nphotons, nphotons)
+            photon_energy = np.repeat((4.*np.pi**2*u.steradian*self.radius**2*models.BlackBody(temperature=self.temperature)(frequency[0]*u.GHz)).to(distance_unit**2 * u.Jy).value / nphotons, nphotons)
 
         with wp.ScopedDevice(device):
             photon_list = PhotonList()
@@ -74,7 +74,7 @@ class Star:
 
         return photon_list
     
-    def emit_rays(self, nu, distance_unit, ez, nrays, distance, device="cpu"):
+    def emit_rays(self, nu, distance_unit, ez, nrays, physical_pixel_size, device="cpu"):
         theta = np.pi*np.random.rand(nrays)
         phi = 2*np.pi*np.random.rand(nrays)
 
@@ -84,7 +84,7 @@ class Star:
         
         direction = np.tile(ez, (nrays, 1))
 
-        intensity = (np.tile(self.flux(nu.data)*np.pi*u.steradian, (nrays, 1)) / nrays).to(u.Jy).value * ((self.radius / distance).decompose()**2).value
+        intensity = (np.tile(self.flux(nu.data)*np.pi, (nrays, 1)) / nrays).to(u.Jy / u.steradian).value * ((self.radius / physical_pixel_size).decompose()**2).value
         tau_intensity = np.zeros((nrays, nu.size), dtype=float)
 
         with wp.ScopedDevice(device):

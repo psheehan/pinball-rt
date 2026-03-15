@@ -53,6 +53,7 @@ Or, click the link below to try it out in Google Colab:
 
    installation
    running
+   dustcreation
 
 .. toctree::
    :maxdepth: 1

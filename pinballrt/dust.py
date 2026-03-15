@@ -7,14 +7,11 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
 import scipy.interpolate
-from scipy.stats import gaussian_kde
-from tqdm import trange
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
 import scipy.stats.qmc
 import scipy.integrate
-from scipy.interpolate import RegularGridInterpolator
 import warp as wp
 import numpy as np
 import torch.nn as nn
@@ -22,9 +19,8 @@ import pytorch_lightning as pl
 import torch
 import os
 import PyMieScatt
-from KDEpy import FFTKDE
-import interpn
-import psutil
+
+from torch.distributions.multivariate_normal import MultivariateNormal
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
@@ -214,6 +210,16 @@ class Dust(pl.LightningDataModule):
                 self.nu[i-1]
 
         return frequency
+    
+    def random_nu_ml(self, temperature):
+        nphotons = temperature.size
+        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
+        test_x = torch.transpose(torch.vstack((torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)), 0, 1)
+        test_x = self.random_nu_x_scaler.transform(test_x)
+
+        log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
+
+        return 10.**log10_nu.numpy()
 
     def random_nu(self, photon_list, subset=None):
         temperature = wp.to_torch(photon_list.temperature)
@@ -224,8 +230,16 @@ class Dust(pl.LightningDataModule):
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
 
         test_x = torch.transpose(torch.vstack((torch.log10(temperature), ksi)), 0, 1)
+        test_x = self.random_nu_x_scaler.transform(test_x)
 
-        log10_nu = torch.clamp(self.random_nu_model(test_x).detach(), self.log10_nu_min, self.log10_nu_max)
+        if nphotons > 250000:
+            test_x = TensorDataset(test_x)
+            loader = DataLoader(test_x, batch_size=250000)
+
+            log10_nu = torch.cat([torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(X).detach()), self.log10_nu_min, self.log10_nu_max) for X, in loader], 0)
+        else:
+            log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
+        
         nu = wp.from_torch(10.**torch.flatten(log10_nu))
 
         return nu
@@ -242,42 +256,23 @@ class Dust(pl.LightningDataModule):
     def ml_step(self, photon_list, s, iphotons):
         nphotons = iphotons.size(0)
 
-        test_x = torch.transpose(torch.vstack((torch.log10(wp.to_torch(photon_list.frequency)[iphotons]),
+        test_y = torch.transpose(torch.vstack((torch.log10(wp.to_torch(photon_list.frequency)[iphotons]),
                               torch.log10(wp.to_torch(photon_list.temperature)[iphotons]),
                               torch.log10(wp.to_torch(photon_list.density)[iphotons] * wp.to_torch(photon_list.kabs)[iphotons] * s[iphotons]),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)),
-                              torch.rand(int(nphotons)))), 0, 1)
+                              )), 0, 1)
 
-        vals = self.ml_step_model(test_x).detach()
+        test_x = self.ml_step_model.condition(self.ml_step_y_scaler.transform(test_y)).sample(test_y.size(0)).detach()
+        test_x = self.ml_step_x_scaler.inverse_transform(test_x)
 
-        vals[:,0] = torch.clamp(vals[:,0], self.log10_nu_min, self.log10_nu_max)
-
-        return 10.**vals[:,0], 10.**vals[:,1], 10.**vals[:,2], vals[:,3], vals[:,4], vals[:,5], vals[:,6], vals[:,7], vals[:,8]
+        return 10.**torch.clamp(test_x[:,0], self.log10_nu0_min, self.log10_nu0_max), 10.**test_x[:,1], 10.**test_x[:,2], test_x[:,3], test_x[:,4], torch.zeros(test_x.size(0)), test_x[:,5], test_x[:,6], torch.zeros(test_x.size(0))
 
     def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
-        all_layers = [nn.Flatten()]
+        if model == 'ml_step':
+            self.ml_step_model = StackedNVP(input_size, hidden_units=hidden_units[0], conditional_size=output_size, nflows=len(hidden_units))
+        else:
+            self.random_nu_model = MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units)
 
-        for hidden_unit in hidden_units:
-            layer = nn.Linear(input_size, hidden_unit)
-            all_layers.append(layer)
-            all_layers.append(nn.Sigmoid())
-            input_size = hidden_unit
-
-        all_layers.append(nn.Linear(hidden_units[-1], output_size))
-
-        if model == "random_nu":
-            self.random_nu_model = nn.Sequential(*all_layers)
-        elif model == "ml_step":
-            self.ml_step_model = nn.Sequential(*all_layers)
-
-    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48), max_epochs=10, plot=False, 
+    def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48),
             tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None):
         """
         Learn a model for either the random_nu function or the ml_step function.
@@ -294,11 +289,14 @@ class Dust(pl.LightningDataModule):
             The fraction of the remaining samples (after testing) to use for validation.
         hidden_units : tuple
             The number of hidden units in each layer of the neural network.
-        max_epochs : int
-            The maximum number of epochs to train the model.
-        plot : bool
-            Whether to plot the results after training.
+        tau_range : tuple
+            The range of optical depths to sample from (in log10) for the ml_step model.
+        temperature_range : tuple
+            The range of temperatures to sample from (in log10) for the ml_step model.
+        nu_range : tuple
+            The range of frequencies to sample from (in GHz) for the ml_step model. If None, use the full range of the dust opacities.
         """
+        self.current_model = model
         self.nsamples = nsamples
         self.test_split = test_split
         self.valid_split = valid_split
@@ -309,7 +307,7 @@ class Dust(pl.LightningDataModule):
         if model == "random_nu":
             input_size, output_size = 2, 1
         elif model == "ml_step":
-            input_size, output_size = 12, 9
+            input_size, output_size = 7, 3
 
             if nu_range is None:
                 nu_range = (self.nu.value.min(), self.nu.value.max())
@@ -327,9 +325,32 @@ class Dust(pl.LightningDataModule):
 
         self.dustLM = DustLightningModule(getattr(self, model+"_model"))
 
-        self.trainer = pl.Trainer(max_epochs=max_epochs)
-        self.trainer.fit(model=self.dustLM, datamodule=self)
+        self.trainer = pl.Trainer(max_epochs=0, callbacks=[pl.callbacks.ModelCheckpoint(save_last=True, 
+                                                                                        dirpath=f'{model}_lightning_logs')])
 
+    def fit(self, epochs=10, batch_size=100, ckpt_path=None):
+        '''
+        Run the model fit.
+
+        Parameters:
+        -----------
+        epochs : int
+            The number of epochs to train the model.
+        '''
+        self.batch_size = batch_size
+
+        self.trainer.fit_loop.max_epochs += epochs
+        self.trainer.fit(model=self.dustLM, datamodule=self, ckpt_path=ckpt_path)
+
+    def test_model(self, plot=False):
+        '''
+        Test the model fit.
+
+        Parameters:
+        -----------
+        plot : bool
+            Whether to plot the results after training.
+        '''
         # Test the model.
 
         self.trainer.test(model=self.dustLM, datamodule=self)
@@ -339,8 +360,8 @@ class Dust(pl.LightningDataModule):
         if plot:
             import matplotlib.pyplot as plt
 
-            if model == "random_nu":
-                y_pred = trainer.predict(dustLM, datamodule=self)
+            if self.current_model == "random_nu":
+                y_pred = self.trainer.predict(self.dustLM, datamodule=self)
                 y_pred = torch.cat(y_pred)
                 y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
 
@@ -368,6 +389,17 @@ class Dust(pl.LightningDataModule):
         y = np.concatenate([self.random_nu_manual(10.**X_batch[:,0].numpy(), X_batch[:,1].numpy()) for X_batch in DataLoader(X, batch_size=1000)])
         y = torch.tensor(np.log10(y.value), dtype=torch.float32)
 
+        X_scaler = StandardScaler()
+        X_scaler.fit(X)
+        X = X_scaler.transform(X)
+
+        y_scaler = StandardScaler()
+        y_scaler.fit(y)
+        y = y_scaler.transform(y)
+
+        self.random_nu_x_scaler = X_scaler
+        self.random_nu_y_scaler = y_scaler
+
         self.dataset = TensorDataset(X, y)
 
     def prepare_data_ml_step(self, device='cpu'):
@@ -388,66 +420,30 @@ class Dust(pl.LightningDataModule):
                     temperature_range=(self.log10_T_min, self.log10_T_max), nu_range=(self.log10_nu0_min, self.log10_nu0_max))
             df.to_csv("sim_results.csv")
 
+        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
+        targets = ["log10_nu0", "log10_T", "log10_tau_cell_nu0"]
+
+        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+
+        data = df.loc[:, targets+features].values
+        self.ml_step_x_scaler = StandardScaler()
+        self.ml_step_x_scaler.fit(torch.tensor(df.loc[:, features].values, dtype=torch.float32))
+        self.ml_step_y_scaler = StandardScaler()
+        self.ml_step_y_scaler.fit(torch.tensor(df.loc[:, targets].values, dtype=torch.float32))
+        self.ml_step_features = features
+        self.ml_step_limits = {}
+        for key in features:
+            self.ml_step_limits[key] = (df[key].min(), df[key].max())
+
         self.df = df
         self.nsamples = len(df)
 
-        new_order = df.columns[[0, 1, 2, 3, 4, 9, 10, 11, 8, 6, 7, 5]]
-
-        df = df.loc[:, new_order]
-
-        dependencies = {
-            "log10_nu":["log10_nu0", "log10_T", "log10_tau_cell_nu0"],
-            "log10_Eabs":["log10_nu0", "log10_T", "log10_tau_cell_nu0", "log10_nu"],
-            "direction_yaw":["log10_nu0", "log10_T", "log10_tau_cell_nu0","log10_nu", "log10_Eabs"],
-            "direction_pitch":["log10_nu0", "log10_T", "log10_nu", "log10_Eabs"],
-            "direction_roll":["log10_nu0", "log10_T", "log10_tau_cell_nu0", "log10_nu", "log10_Eabs"],
-            "roll":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll"],
-            "yaw":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
-            "pitch":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll"],
-            "log10_tau":["log10_nu", "log10_Eabs", "direction_yaw", "direction_pitch", "direction_roll", "roll", "pitch"],
-        }
-
-        new_columns = []
-        for i in trange(3,df.shape[1]):
-            column = df.columns[i]
-
-            bw = len(df)**(-1./(len(dependencies[column])+1 + 4))
-
-            kde = FFTKDE(bw=bw, kernel="gaussian")
-            kde.fit(df[dependencies[column] + [column]].values)
-
-            Ndim = len(dependencies[column]) + 1
-            N = min(100, round((0.1*psutil.virtual_memory().available / 8 / Ndim )**(1./Ndim)))
-            shape = (N,)*Ndim
-
-            result = kde.evaluate(shape)
-
-            cdf = np.cumsum(result[1].reshape(shape), axis=-1)
-
-            slices = (slice(None),) * len(dependencies[column])
-            cdf /= cdf[slices + (-1,)][slices + (np.newaxis,)]
-
-            dims = cdf.shape
-            starts = result[0].min(axis=0)
-            steps = np.array([np.unique(result[0][:,j])[1] - np.unique(result[0][:,j])[0] for j in range(result[0].shape[1])])
-
-            cdf_interp = interpn.MultilinearRegular.new(dims, starts, steps, cdf)
-            ksi = cdf_interp.eval(df.loc[:, dependencies[column] + [column]].values.T)
-
-            new_columns.append(("ksi_"+column, ksi))
-
-        for name, values in new_columns:
-            df[name] = values
-
-        features = ["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_log10_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"]
-        targets = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"]
-
-        X = torch.tensor(df.loc[:, features].values, dtype=torch.float32)
-        y = torch.tensor(df.loc[:, targets].values, dtype=torch.float32)
+        X = self.ml_step_x_scaler.transform(torch.tensor(df.loc[:, features].values, dtype=torch.float32))
+        y = self.ml_step_y_scaler.transform(torch.tensor(df.loc[:, targets].values, dtype=torch.float32))
 
         self.dataset = TensorDataset(X, y)
 
-    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, use_ml_step=False):
+    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), nu_range=None, use_ml_step=False, position=0):
         """
         Run a dust simulation that can be used to learn an ML-step model with the given parameters.
 
@@ -498,19 +494,18 @@ class Dust(pl.LightningDataModule):
         grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step)
 
         # Calculate roll, pitch, and yaw for the position relative to where it started.
+        # Also calculate roll, pitch, and yaw for the direction relative to the radial vector where it exits.
 
         ypr = []
-        for (direction0, direction) in zip(initial_direction, photon_list.direction.numpy()):
-            rot, _ = Rotation.align_vectors(direction, direction0)
-            ypr.append(rot.as_euler('zyx'))
-        ypr = np.array(ypr)
-
-        # Calculate roll, pitch, and yaw for the direction relative to the radial vector where it exits.
-
         direction_ypr = []
-        for (position, direction) in zip(photon_list.position.numpy(), photon_list.direction.numpy()):
-            rot, _ = Rotation.align_vectors(direction, position)
-            direction_ypr.append(rot.as_euler('zyx'))
+        for (direction0, position, direction) in zip(initial_direction, photon_list.position.numpy(), photon_list.direction.numpy()):
+            rot, _ = Rotation.align_vectors(position, direction0)
+            ypr.append(rot.as_euler('ZYX'))
+            
+            rot, _ = Rotation.align_vectors(rot.inv().apply(direction), direction0)
+            direction_ypr.append(rot.as_euler('ZYX'))
+
+        ypr = np.array(ypr)
         direction_ypr = np.array(direction_ypr)
 
         # Store the results in a pandas DataFrame
@@ -523,17 +518,38 @@ class Dust(pl.LightningDataModule):
                        "log10_tau":np.log10(photon_list.tau.numpy().copy()),
                        "yaw":ypr[:,0],
                        "pitch":ypr[:,1],
-                       "roll":ypr[:,2],
-                       #"direction_theta":np.acos((photon_list.position.numpy() * photon_list.direction.numpy()).sum(axis=1))})
                        "direction_yaw":direction_ypr[:,0],
-                       "direction_pitch":direction_ypr[:,1],
-                       "direction_roll":direction_ypr[:,2]})
+                       "direction_pitch":direction_ypr[:,1]})
 
         return df
 
     # DataModule functions
 
-    def plot_ml_step(self):
+    def plot_specific_ml_step(self, tau=1.5, temperature=100.0*u.K, nu=1e3*u.GHz, nsamples=1000, 
+                              plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])):
+        
+        df = self.run_dust_simulation(nphotons=nsamples, tau_range=(tau,tau), temperature_range=(np.log10(temperature.value), np.log10(temperature.value)), nu_range=(nu, nu), use_ml_step=False)
+
+        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+
+        features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
+        targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
+
+        X = self.ml_step_x_scaler.transform(torch.tensor(df.loc[:, features].values, dtype=torch.float32))
+        y = self.ml_step_y_scaler.transform(torch.tensor(df.loc[:, targets].values, dtype=torch.float32))
+
+        self.dataset = TensorDataset(X, y)
+        self.nsamples = nsamples
+        self.test_split = 0.98
+        self.valid_split = 0.01
+        self.batch_size = 10000
+
+        if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
+            del self.train, self.valid, self.test
+
+        self.plot_ml_step(plot_columns=plot_columns)
+
+    def plot_ml_step(self, plot_columns='all'):
         import matplotlib.pyplot as plt
 
         if self.trainer is None and hasattr(self, "ml_step_model"):
@@ -542,45 +558,47 @@ class Dust(pl.LightningDataModule):
             self.trainer = pl.Trainer()
 
             self.learning = 'ml_step'
-            self.test_split = 0.1
-            self.valid_split = 0.2
+            self.test_split = 0.98
+            self.valid_split = 0.01
+            self.batch_size = 10000
 
         if self.trainer is not None:
-            y_pred = self.trainer.predict(self.dustLM, datamodule=self)
-            y_pred = torch.cat(y_pred).numpy()
-            y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
+            X_pred = self.trainer.predict(self.dustLM, datamodule=self)
+            X_pred = torch.cat(X_pred)
+            y_pred = torch.cat([batch[1] for batch in self.predict_dataloader()])
 
-            X_test = torch.cat([batch[0] for batch in self.predict_dataloader()]).numpy()
+            X_true = torch.cat([batch[0] for batch in self.predict_dataloader()])
+            y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
 
             predict = True
 
-        columns = self.df.columns
-        features = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0", "ksi_log10_nu", "ksi_log10_Eabs", "ksi_log10_tau", "ksi_yaw", "ksi_pitch", "ksi_roll", "ksi_direction_yaw", "ksi_direction_pitch", "ksi_direction_roll"])
-        targets = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "roll", "direction_yaw", "direction_pitch", "direction_roll"])
+        features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
+        targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
+        if plot_columns == 'all':
+            columns = np.concatenate((targets, features))
+        else:
+            columns = np.array(plot_columns)
+
+        df_true = pd.DataFrame(torch.cat([self.ml_step_y_scaler.inverse_transform(y_true), self.ml_step_x_scaler.inverse_transform(X_true)], dim=1).numpy(), columns=np.concatenate((targets, features)))
+        df_pred = pd.DataFrame(torch.cat([self.ml_step_y_scaler.inverse_transform(y_pred), self.ml_step_x_scaler.inverse_transform(X_pred)], dim=1).numpy(), columns=np.concatenate((targets, features)))
+        print(df_pred.head())
 
         fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
+
+        if len(columns) == 1:
+            ax = np.array([[ax]])
 
         for i, key1 in enumerate(columns):
             for j, key2 in enumerate(columns):
                 if key1 == key2:
-                    ax[i,j].hist(self.df[key1], bins=50, histtype='step', density=True)
-                    if key1 in targets and predict:
-                        ax[i,j].hist(y_pred[:,np.where(targets == key1)[0][0]], bins=50, histtype='step', density=True)
+                    ax[i,j].hist(df_true[key1], bins=50, histtype='step', density=True)
+                    if predict:
+                        ax[i,j].hist(df_pred[key1], bins=50, histtype='step', density=True)
                 elif i > j:
-                    ax[i,j].scatter(self.df[key2], self.df[key1], marker='.', s=0.025)
+                    ax[i,j].scatter(df_true[key2], df_true[key1], marker='.', s=0.025, alpha=1.0)
 
-                    if (key1 in targets or key2 in targets) and predict:
-                        if key2 in targets:
-                            x = y_pred[:,np.where(targets == key2)[0][0]]
-                        else:
-                            x = X_test[:,np.where(features == key2)[0][0]]
-
-                        if key1 in targets:
-                            y = y_pred[:,np.where(targets == key1)[0][0]]
-                        else:
-                            y = X_test[:,np.where(features == key1)[0][0]]
-
-                        ax[i,j].scatter(x, y, marker='.', s=0.025)
+                    if predict:
+                        ax[i,j].scatter(df_pred[key2], df_pred[key1], marker='.', s=0.025, alpha=1.0)
                 elif i < j:
                     ax[i,j].set_axis_off()
 
@@ -598,19 +616,19 @@ class Dust(pl.LightningDataModule):
         valid_size = int((self.nsamples - test_size)*self.valid_split)
         train_size = self.nsamples - test_size - valid_size
         train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
-        self.train, self.val = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
+        self.train, self.valid = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=100, num_workers=2)
+        return DataLoader(self.train, batch_size=self.batch_size, num_workers=2, persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val, batch_size=100, num_workers=2)
+        return DataLoader(self.valid, batch_size=self.batch_size, num_workers=2, persistent_workers=True)
 
     def test_dataloader(self):
-        return DataLoader(self.test, batch_size=100, num_workers=2)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=2, persistent_workers=True)
 
     def predict_dataloader(self):
-        return DataLoader(self.test, batch_size=100, num_workers=2)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=2, persistent_workers=True)
 
     def state_dict(self):
         state_dict = {
@@ -623,6 +641,8 @@ class Dust(pl.LightningDataModule):
 
         if hasattr(self, "random_nu_model"):
             state_dict["random_nu_state_dict"] = self.random_nu_model.state_dict()
+            state_dict["random_nu_x_scaler"] = self.random_nu_x_scaler.state_dict()
+            state_dict["random_nu_y_scaler"] = self.random_nu_y_scaler.state_dict()
 
         if hasattr(self, "ml_step_model"):
             state_dict["ml_step_state_dict"] = self.ml_step_model.state_dict()
@@ -634,9 +654,23 @@ class Dust(pl.LightningDataModule):
             state_dict["log10_tau_cell_nu0_min"] = self.log10_tau_cell_nu0_min
             state_dict["log10_tau_cell_nu0_max"] = self.log10_tau_cell_nu0_max
 
+            state_dict["ml_step_x_scaler"] = self.ml_step_x_scaler.state_dict()
+            state_dict["ml_step_y_scaler"] = self.ml_step_y_scaler.state_dict()
+
+            state_dict["ml_step_features"] = self.ml_step_features
+            state_dict["ml_step_limits"] = self.ml_step_limits
+
         return state_dict
 
     def save(self, filename):
+        """
+        Save the Dust object to a file.
+        
+        Parameters
+        ----------
+        filename : str
+            The filename to save the Dust object to.
+        """
         torch.save(self.state_dict(), filename)
 
     def copy(self, device="cpu"):
@@ -684,10 +718,15 @@ def load(filename, device="cpu"):
         d.initialize_model(model="random_nu", input_size=2, output_size=1, hidden_units=hidden_units)
 
         d.random_nu_model.load_state_dict(state_dict['random_nu_state_dict'])
+        d.random_nu_x_scaler = StandardScaler()
+        d.random_nu_x_scaler.load_state_dict(state_dict["random_nu_x_scaler"])
+        d.random_nu_y_scaler = StandardScaler()
+        d.random_nu_y_scaler.load_state_dict(state_dict["random_nu_y_scaler"])
 
     if "ml_step_state_dict" in state_dict:
-        hidden_units = [state_dict['ml_step_state_dict'][key].shape[0] for key in state_dict['ml_step_state_dict'] if 'bias' in key][0:-1]
-        d.initialize_model(model="ml_step", input_size=12, output_size=9, hidden_units=hidden_units)
+        hidden_units = [state_dict['ml_step_state_dict'][key].size(0) for key in state_dict['ml_step_state_dict'] if 'sig_net' in key and '0.weight' in key]
+
+        d.initialize_model(model="ml_step", input_size=7, output_size=3, hidden_units=hidden_units)
 
         d.ml_step_model.load_state_dict(state_dict['ml_step_state_dict'])
 
@@ -698,8 +737,229 @@ def load(filename, device="cpu"):
         d.log10_tau_cell_nu0_min = state_dict["log10_tau_cell_nu0_min"]
         d.log10_tau_cell_nu0_max = state_dict["log10_tau_cell_nu0_max"]
 
+        d.ml_step_x_scaler = StandardScaler()
+        d.ml_step_x_scaler.load_state_dict(state_dict["ml_step_x_scaler"])
+        d.ml_step_y_scaler = StandardScaler()
+        d.ml_step_y_scaler.load_state_dict(state_dict["ml_step_y_scaler"])
+
+        d.ml_step_features = state_dict["ml_step_features"]
+        d.ml_step_limits = state_dict["ml_step_limits"]
+
     return d
 
+class MultiLayerPerceptron(nn.Module):
+    def __init__(self, input_size, output_size, hidden_units=(48, 48, 48)):
+        super().__init__()
+        all_layers = [nn.Flatten()]
+
+        for hidden_unit in hidden_units:
+            layer = nn.Linear(input_size, hidden_unit)
+            all_layers.append(layer)
+            all_layers.append(nn.LeakyReLU())
+            input_size = hidden_unit
+
+        all_layers.append(nn.Linear(hidden_units[-1], output_size))
+        self.model = nn.Sequential(*all_layers)
+    
+    def forward(self, x):
+        return self.model(x)
+
+    def loss(self, x, y):
+        return nn.functional.mse_loss(self(x), y)
+    
+def softClampAsymAdvanced(value, negAlpha, posAlpha):
+    reLU = torch.nn.ReLU()
+    posValues = (2.0 * posAlpha / torch.pi) * torch.arctan(reLU(value) / posAlpha)
+    negValues = (2.0 * negAlpha / torch.pi) * torch.arctan(-reLU(-value) / negAlpha)
+    return negValues + posValues
+
+class RealNVP(nn.Module):
+    def __init__(self, input_size, hidden_units=48, conditional_size=0):
+        super().__init__()
+
+        self.d, self.c = input_size, conditional_size
+
+        self.sig_net = nn.Sequential(
+                    nn.Linear(self.d + self.c, hidden_units),
+                    nn.LeakyReLU(),
+                    nn.Linear(hidden_units, self.d),
+                    nn.Tanh())
+
+        self.mu_net = nn.Sequential(
+                    nn.Linear(self.d + self.c, hidden_units),
+                    nn.LeakyReLU(),
+                    nn.Linear(hidden_units, self.d),
+        )
+
+        self.mask = torch.ones(self.d)
+        self.mask[::2] = 0
+
+        base_mu, base_cov = torch.zeros(input_size), torch.eye(input_size)
+        self.base_dist = MultivariateNormal(base_mu, base_cov)
+
+    def condition(self, y):
+        self.y = y
+        return self
+
+    def forward(self, x, flip=False):
+        if flip:
+            mask = 1 - self.mask
+        else:
+            mask = self.mask
+        
+        # forward
+        if self.c > 0:
+            sig = (1 - mask) * self.sig_net(torch.cat([x * mask, self.y], dim=1))
+            mu = (1 - mask) * self.mu_net(torch.cat([x * mask, self.y], dim=1))
+        else:
+            sig = (1 - mask) * self.sig_net(x * mask)
+            mu = (1 - mask) * self.mu_net(x * mask)
+        #sig = softClampAsymAdvanced(sig, 2.0, 0.1)
+
+        z = x * mask + (1 - mask) * (x * torch.exp(sig) + mu)
+
+        log_pz = self.base_dist.log_prob(z)
+        log_jacob = (sig * (1 - mask)).sum(-1)
+
+        return z, log_pz, log_jacob
+
+    def inverse(self, Z, flip=False):
+        if flip:
+            mask = 1 - self.mask
+        else:
+            mask = self.mask
+
+        if self.c > 0:
+            sig = (1 - mask) * self.sig_net(torch.cat([Z * mask, self.y], dim=1))
+            mu = (1 - mask) * self.mu_net(torch.cat([Z * mask, self.y], dim=1))
+        else:
+            sig = self.sig_net(Z * mask)
+            mu = self.mu_net(Z * mask)
+        #sig = softClampAsymAdvanced(sig, 2.0, 0.1)
+        x = Z * mask + (1 - mask) * (Z - mu) * torch.exp(-sig)
+
+        return x
+
+
+class TrainableLOFTLayer(nn.Module):
+
+    def __init__(self, dim, initial_t, train_t):
+        assert(initial_t >= 1.0)
+        super().__init__()
+        self.dim = dim
+        self.rep_t = torch.ones(dim) * (initial_t - 1.0) # reparameterization of t
+        self.rep_t = torch.nn.Parameter(self.rep_t, requires_grad=train_t)
+
+        base_mu, base_cov = torch.zeros(dim), torch.eye(dim)
+        self.base_dist = MultivariateNormal(base_mu, base_cov)
+
+    def inverse(self, z):
+        t = self.get_t()
+
+        new_value, part1 = TrainableLOFTLayer.LOFT_forward_static(t, z)
+
+        #log_derivatives = - torch.log(part1 + 1.0)
+
+        #log_det = torch.sum(log_derivatives, axis = 1)
+
+        return new_value
+
+    def get_t(self):
+        return 1.0 + torch.nn.functional.softplus(self.rep_t)
+
+    def LOFT_forward_static(t, z):
+        part1 = torch.max(torch.abs(z) - t, torch.tensor(0.0))
+        part2 = torch.min(torch.abs(z), t)
+
+        new_value = torch.sign(z) * (torch.log(part1 + 1) + part2)
+
+        return new_value, part1
+
+    def forward(self, z):
+        t = self.get_t()
+
+        part1 = torch.max(torch.abs(z) - t, torch.tensor(0.0))
+        part2 = torch.min(torch.abs(z), t)
+
+        new_value = torch.sign(z) * (torch.exp(part1) - 1.0 + part2)
+
+        log_det = torch.sum(part1, axis = 1)
+        log_pz = self.base_dist.log_prob(new_value)
+
+        return new_value, log_pz, log_det
+    
+
+class StackedNVP(nn.Module):
+    def __init__(self, input_size, hidden_units=48, conditional_size=0, nflows=1):
+        super().__init__()
+        self.bijectors = nn.ModuleList([
+            RealNVP(input_size, hidden_units=hidden_units, conditional_size=conditional_size) for _ in range(nflows)
+        ])
+        self.flips = [True if i%2 else False for i in range(nflows)]
+
+        self.loft = TrainableLOFTLayer(input_size, 1.0, True)
+
+        base_mu, base_cov = torch.zeros(input_size), torch.eye(input_size)
+        self.base_dist = MultivariateNormal(base_mu, base_cov)
+
+    def condition(self, y):
+        for bijector in self.bijectors:
+            bijector.condition(y)
+        return self
+
+    def forward(self, x):
+        log_jacobs = []
+
+        x, log_pz, lj = self.loft(x)
+
+        for bijector, f in zip(self.bijectors, self.flips):
+            x, log_pz, lj = bijector(x, flip=f)
+            log_jacobs.append(lj)
+
+        return x, log_pz, sum(log_jacobs)
+
+    def inverse(self, z):
+        for bijector, f in zip(reversed(self.bijectors), reversed(self.flips)):
+            z = bijector.inverse(z, flip=f)
+        z = self.loft.inverse(z)
+        return z
+
+    def loss(self, x):
+        z, log_pz, log_jacob = self.forward(x)
+
+        return (-log_pz - log_jacob).mean()
+
+    def sample(self, n):
+        z = self.base_dist.rsample(sample_shape=(n,))
+        return self.inverse(z)
+
+class StandardScaler:
+    def __init__(self):
+        self.mean = None
+        self.std = None
+
+    def fit(self, data):
+        # Calculate mean and std from the training data
+        self.mean = data.mean(dim=0, keepdim=True)
+        self.std = data.std(dim=0, keepdim=True) # Use unbiased=False for consistency
+
+    def transform(self, data):
+        # Apply the standardization
+        return (data - self.mean) / self.std
+
+    def inverse_transform(self, data):
+        # For reconstructing original data, useful for predictions
+        return (data * self.std) + self.mean
+
+    def state_dict(self):
+        return {
+            'mean': self.mean,
+            'std': self.std
+        }
+
+    def load_state_dict(self, state_dict):
+        self.mean = state_dict['mean']
+        self.std = state_dict['std']
 
 class DustLightningModule(pl.LightningModule):
     def __init__(self, model):
@@ -710,11 +970,21 @@ class DustLightningModule(pl.LightningModule):
         x = self.model(x)
         return x
 
+    def condition(self, y):
+        return self.model.condition(y)
+    
+    def loss(self, x, y):
+        if hasattr(self.model, "condition"):
+            loss = self.condition(y).loss(x)
+        else:
+            loss = self.model.loss(x, y)
+        return loss
+
     def training_step(self, batch, batch_idx):
         x, y = batch
         if y.dim() == 1:
             y = y.reshape(-1,1)
-        loss = nn.functional.mse_loss(self(x), y)
+        loss = self.loss(x, y)
         self.log('train_loss', loss, prog_bar=True)
         return loss
 
@@ -722,7 +992,7 @@ class DustLightningModule(pl.LightningModule):
         x, y = batch
         if y.dim() == 1:
             y = y.reshape(-1,1)
-        loss = nn.functional.mse_loss(self(x), y)
+        loss = self.loss(x, y)
         self.log('valid_loss', loss, prog_bar=True)
         return loss
 
@@ -730,17 +1000,20 @@ class DustLightningModule(pl.LightningModule):
         x, y = batch
         if y.dim() == 1:
             y = y.reshape(-1,1)
-        loss = nn.functional.mse_loss(self(x), y)
+        loss = self.loss(x, y)
         self.log('test_loss', loss, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
         return optimizer
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         x, y = batch
-        return self(x)
+        if hasattr(self.model, "condition"):
+            return self.condition(y).sample(x.size(0))
+        else:
+            return self(x)
 
 recipe_dict = {
     "draine":{

@@ -20,7 +20,7 @@ def test_Dust():
 
     d = Dust(lam, kabs, ksca)
 
-    assert d.kmean.value == 2831.6281816798232
+    assert np.abs(d.kmean.value - 2831.6281816798232) < 1e-10
 
     d.save("tmp.dst")
 
@@ -29,9 +29,34 @@ def test_learn_random_nu():
     Test the learn_random_nu method of the Dust class.
     """
 
-    d = load('yso.dst')
+    d = load(os.path.join(os.path.dirname(__file__), "data/yso.dst"))
 
     # Test the learn_random_nu method.
 
     n_samples = 1000
-    d.learn(model="random_nu", nsamples=n_samples, max_epochs=10)
+    d.learn(model="random_nu", nsamples=n_samples)
+    d.fit(epochs=10)
+    d.test_model(plot=True)
+
+def test_learn_ml_step():
+    """
+    Test the learn_ml_step method of the Dust class.
+    """
+    # Load the dust file.
+
+    d = load(os.path.join(os.path.dirname(__file__), "data/yso.dst"))
+
+    # Run a simple dust simulation to test the machinery.
+
+    d.run_dust_simulation(nphotons=100, tau_range=(0.5, 1.0), nu_range=(d.nu.max()/10, d.nu.max()), use_ml_step=False)
+
+    # Copy the pre-existing sim_results.csv to the current directory for training.
+
+    os.system(f"cp {os.path.join(os.path.dirname(__file__), 'data/sim_results.csv')} sim_results.csv")
+
+    # Test the learn_ml_step method.
+
+    n_samples = 1000
+    d.learn(model="ml_step", nsamples=n_samples)
+    d.fit(epochs=10)
+    d.test_model(plot=True)
