@@ -724,10 +724,6 @@ class Grid:
                 t2 = time.time()
                 photon_loc_time += t2 - t1
 
-                wp.launch(kernel=self.photon_cell_properties,
-                      dim=(nphotons,),
-                      inputs=[photon_list, self.grid, iphotons])
-
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
                           dim=(nphotons,),
@@ -752,6 +748,11 @@ class Grid:
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 #absorb_time += tmp_time
+
+                if nphotons > 0:
+                    wp.launch(kernel=self.photon_cell_properties,
+                        dim=(nphotons,),
+                        inputs=[photon_list, self.grid, iphotons])
 
             progress_bar.close()
 
