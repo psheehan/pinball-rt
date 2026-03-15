@@ -397,10 +397,10 @@ class Grid:
 
     @wp.kernel
     def ml_rotate_direction(photon_list: PhotonList,
-                             yaw: wp.array(dtype=float),
-                             pitch: wp.array(dtype=float),
-                             roll: wp.array(dtype=float),
-                             iphotons: wp.array(dtype=int)): # pragma: no cover
+                            yaw: wp.array(dtype=float),
+                            pitch: wp.array(dtype=float),
+                            roll: wp.array(dtype=float),
+                            iphotons: wp.array(dtype=int)): # pragma: no cover
         """
         Rotate the direction of the photons based on the yaw, pitch, and roll angles.
         """
@@ -408,8 +408,10 @@ class Grid:
         ip = iphotons[i]
 
         rpy_quat = wp.quat_rpy(roll[i], pitch[i], yaw[i])
+        direction_quat = wp.quat_between_vectors(wp.vec3(1., 0., 0.), photon_list.direction[ip])
+        total_quat = direction_quat * rpy_quat
 
-        photon_list.direction[ip] = wp.quat_rotate(rpy_quat, photon_list.direction[ip])
+        photon_list.direction[ip] = wp.quat_rotate(total_quat, wp.vec3(1., 0., 0.))
 
     @wp.kernel
     def ml_new_tau(photon_list: PhotonList,
@@ -431,23 +433,23 @@ class Grid:
 
         wp.launch(kernel=self.ml_deposited_energy,
                   dim=(nphotons,),
-                  inputs=[photon_list, deposited_energy, iphotons])
+                  inputs=[photon_list, wp.from_torch(deposited_energy), iphotons])
 
         wp.launch(kernel=self.update_frequency,
                   dim=(nphotons,),
-                  inputs=[photon_list, frequency, self.dust.interpolate_kabs_wp(photon_list, iphotons, frequency), self.dust.interpolate_ksca_wp(photon_list, iphotons, frequency), iphotons])
+                  inputs=[photon_list, wp.from_torch(frequency), self.dust.interpolate_kabs_wp(photon_list, iphotons, wp.from_torch(frequency)), self.dust.interpolate_ksca_wp(photon_list, iphotons, wp.from_torch(frequency)), iphotons])
 
         wp.launch(kernel=self.ml_rotate_direction,
                   dim=(nphotons,),
-                  inputs=[photon_list, yaw, pitch, roll, iphotons])
+                  inputs=[photon_list, wp.from_torch(yaw), wp.from_torch(pitch), wp.from_torch(roll), iphotons])
 
         wp.launch(kernel=self.ml_new_tau,
                   dim=(nphotons,),
-                  inputs=[photon_list, tau, s, iphotons])
+                  inputs=[photon_list, wp.from_torch(tau), s, iphotons])
         
-        return direction_yaw, direction_pitch, direction_roll
+        return wp.from_torch(direction_yaw), wp.from_torch(direction_pitch), wp.from_torch(direction_roll)
 
-    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}):
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -587,11 +589,6 @@ class Grid:
                           inputs=[photon_list, self.grid, iphotons])
                 t2 = time.time()
                 photon_loc_time += t2 - t1
-
-                if not learning:
-                    wp.launch(kernel=self.photon_cell_properties,
-                              dim=(nphotons,),
-                              inputs=[photon_list, self.grid, iphotons])
                     
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
@@ -620,6 +617,11 @@ class Grid:
                 #absorb_time += tmp_time
                 dust_interpolation_time += tmp_dust_interpolation_time
                 photon_loc_time += tmp_photon_loc_time
+
+                if not learning and nphotons > 0:
+                    wp.launch(kernel=self.photon_cell_properties,
+                              dim=(nphotons,),
+                              inputs=[photon_list, self.grid, iphotons])
 
             progress_bar.close()
 
