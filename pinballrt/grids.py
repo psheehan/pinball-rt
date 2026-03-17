@@ -326,10 +326,9 @@ class Grid:
         t2 = time.time()
         photon_loc_time = t2 - t1
 
-        if not learning:
-            wp.launch(kernel=self.photon_cell_properties,
-                      dim=(interact.sum(),),
-                      inputs=[photon_list, self.grid, iphotons])
+        wp.launch(kernel=self.check_in_grid,
+                  dim=(interact.sum(),),
+                  inputs=[photon_list, self.grid, iphotons])
 
         return photon_temperature_time, dust_interpolation_time, photon_loc_time, absorb_random_nu_time
 
@@ -618,6 +617,14 @@ class Grid:
                 dust_interpolation_time += tmp_dust_interpolation_time
                 photon_loc_time += tmp_photon_loc_time
 
+                t1 = time.time()
+                iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
+                nphotons = iphotons.size(0)
+                t2 = time.time()
+                removing_photons_time += t2 - t1
+
                 if not learning and nphotons > 0:
                     wp.launch(kernel=self.photon_cell_properties,
                               dim=(nphotons,),
@@ -748,6 +755,14 @@ class Grid:
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 #absorb_time += tmp_time
+
+                t1 = time.time()
+                iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
+                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
+                nphotons = iphotons.size(0)
+                t2 = time.time()
+                removing_photons_time += t2 - t1
 
                 if nphotons > 0:
                     wp.launch(kernel=self.photon_cell_properties,
