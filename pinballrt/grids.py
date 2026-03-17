@@ -450,7 +450,7 @@ class Grid:
                   inputs=[photon_list, wp.from_torch(tau), s, iphotons])
         
         return wp.from_torch(direction_yaw), wp.from_torch(direction_pitch), wp.from_torch(direction_roll)
-    
+
     @wp.kernel
     def set_photon_opacities(photon_list: PhotonList,
                           kabs: wp.array(dtype=float),
@@ -463,7 +463,7 @@ class Grid:
         photon_list.ksca[ip] = ksca[i]
         photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
 
-    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}):
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
