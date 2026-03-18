@@ -21,14 +21,8 @@ class Model:
         ----------
         grid : Grid
             The grid to use for the model.
-        ncells : int or list-like, optional
-            The number of cells in the grid. Can be specified either as an integer, in which case each dimension will 
-            have the same number of cells, or a 3 element tuple/list/array that specifies the number of cells separately 
-            for each dimension (default is 9).
-        dx : astropy.units.Quantity, optional
-            The cell size (default is 1.0 * u.au).
-        mirror : bool, optional
-            Whether to use a mirrored grid (default is False).
+        grid_kwargs : dict, optional
+            Additional keyword arguments to pass to the grid constructor (default is an empty dictionary).
         ncores : int, optional
             The number of CPU cores to use (default is 1).
         pool : schwimmbad.Pool, optional

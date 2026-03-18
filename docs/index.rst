@@ -37,10 +37,10 @@ Then set up a model and run:
    amax = np.ones(model.grid.shape) * u.cm
    amax[4,4,4] = 1.0 * u.micron
 
-   model.add_density(density, "yso.dst", amax=amax)
+   model.add_density(density, "diana_wice.dst", amax=amax)
    model.add_sources(star)
 
-   model.thermal_mc(nphotons=1000000)
+   model.thermal_mc(nphotons=100000)
 
 Or, click the link below to try it out in Google Colab:
 

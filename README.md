@@ -39,10 +39,10 @@ Then set up a model and run:
    amax = np.ones(model.grid.shape) * u.cm
    amax[4,4,4] = 1. * u.micron
 
-   model.add_density(density, "yso.dst", amax=amax)
+   model.add_density(density, "diana_wice.dst", amax=amax)
    model.add_sources(star)
 
-   model.thermal_mc(nphotons=1000000)
+   model.thermal_mc(nphotons=100000)
 ```
 
 For more information, see the documentation at https://pinball-rt.readthedocs.io.

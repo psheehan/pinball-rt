@@ -25,9 +25,7 @@ import interpn
 from torch.distributions.multivariate_normal import MultivariateNormal
 
 class Dust(pl.LightningDataModule):
-    def __init__(self, lam=None, kabs=None, ksca=None, recipe=None, optical_constants=None, 
-                 amin=None, amax=None, p=None, with_dhs=False, fmax=0.8, nf=50, interpolate=1000, 
-                 device="cpu"):
+    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, device="cpu"):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
 
@@ -39,46 +37,14 @@ class Dust(pl.LightningDataModule):
             Absorption coefficients of the dust.
         ksca : astropy.units.Quantity
             Scattering coefficients of the dust.
-        recipe : str or dict
-            Recipe to use for the dust composition. If a string, it should be one of the predefined recipes.
-        optical_constants : DustOpticalConstants
-            Precomputed optical constants for the dust to use to calculate the opacities.
-        amin : astropy.units.Quantity
-            Minimum grain size for the size distribution.
         amax : astropy.units.Quantity
             Maximum grain size for the size distribution.
         p : float
             Power-law index for the grain size distribution.
-        with_dhs : bool
-            Whether to use the Distribution of Hollow Spheres method for calculating opacities.
-        fmax : float
-            Maximum volume fraction of the hollow sphere in the DHS method.
-        nf : int
-            Number of discrete hollow sphere fractions to use in the DHS method.
-        interpolate : int
-            Number of points to interpolate the dust opacities.
         device : str
             Device to run the computations on (e.g., "cpu" or "cuda").
         """
         super().__init__()
-
-        if recipe is not None or optical_constants is not None:
-            if recipe is not None:
-                optical_constants = DustOpticalConstants(recipe=recipe)
-
-                if type(recipe) == str and recipe in DustOpticalConstants.recipes:
-                    recipe = recipe_dict[recipe]
-
-                if "with_dhs" in recipe:
-                    with_dhs = recipe["with_dhs"]
-                if "filling" in recipe:
-                    fmax = recipe["filling"]
-
-            optical_constants.calculate_size_distribution_opacity(amin, amax, p, nang=1, with_dhs=with_dhs, fmax=fmax, nf=nf)
-
-            lam = optical_constants.lam
-            kabs = optical_constants.kabs
-            ksca = optical_constants.ksca
 
         kunit = kabs.unit
         lam_unit = lam.unit
@@ -381,7 +347,7 @@ class Dust(pl.LightningDataModule):
             self.pmo_model = MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units)
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48),
-            tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), 
+            tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), 
             nu_range=None, overwrite=False):
         """
         Learn a model for either the random_nu function or the ml_step function.
@@ -399,9 +365,13 @@ class Dust(pl.LightningDataModule):
         hidden_units : tuple
             The number of hidden units in each layer of the neural network.
         tau_range : tuple
-            The range of optical depths to sample from (in log10) for the ml_step model.
+            The range of optical depths to sample from for the ml_step model.
         temperature_range : tuple
-            The range of temperatures to sample from (in log10) for the ml_step model.
+            The range of temperatures to sample from for the ml_step model.
+        amax_range : tuple
+            The range of maximum grain sizes to sample from for the ml_step model.
+        p_range : tuple
+            The range of power-law indices to sample from for the ml_step model.
         nu_range : tuple
             The range of frequencies to sample from (in GHz) for the ml_step model. If None, use the full range of the dust opacities.
         """
@@ -422,12 +392,16 @@ class Dust(pl.LightningDataModule):
             if nu_range is None:
                 nu_range = (self.nu.value.min(), self.nu.value.max())
 
-            self.log10_nu0_min = nu_range[0]
-            self.log10_nu0_max = nu_range[1]
-            self.log10_T_min = temperature_range[0]
-            self.log10_T_max = temperature_range[1]
-            self.log10_tau_cell_nu0_min = tau_range[0]
-            self.log10_tau_cell_nu0_max = tau_range[1]
+            self.log10_nu0_min = np.log10(nu_range[0].to(u.GHz).value)
+            self.log10_nu0_max = np.log10(nu_range[1].to(u.GHz).value)
+            self.log10_T_min = np.log10(temperature_range[0].to(u.K).value)
+            self.log10_T_max = np.log10(temperature_range[1].to(u.K).value)
+            self.log10_a_min = np.log10(amax_range[0].to(u.cm).value)
+            self.log10_a_max = np.log10(amax_range[1].to(u.cm).value)
+            self.p_min = p_range[0]
+            self.p_max = p_range[1]
+            self.log10_tau_cell_nu0_min = np.log10(tau_range[0])
+            self.log10_tau_cell_nu0_max = np.log10(tau_range[1])
         elif model in ["kabs", "ksca","pmo"]:
             input_size, output_size = 3, 1
 
@@ -602,11 +576,19 @@ class Dust(pl.LightningDataModule):
             self.log10_nu0_max = df['log10_nu0'].max()
             self.log10_T_min = df['log10_T'].min()
             self.log10_T_max = df['log10_T'].max()
+            self.log10_a_min = df['log10_amax'].min()
+            self.log10_a_max = df['log10_amax'].max()
+            self.p_min = df['p'].min()
+            self.p_max = df['p'].max()
             self.log10_tau_cell_nu0_min = df['log10_tau_cell_nu0'].min()
             self.log10_tau_cell_nu0_max = df['log10_tau_cell_nu0'].max()
         else:
-            df = self.run_dust_simulation(nphotons=self.nsamples, tau_range=(self.log10_tau_cell_nu0_min, self.log10_tau_cell_nu0_max),
-                    temperature_range=(self.log10_T_min, self.log10_T_max), nu_range=(self.log10_nu0_min, self.log10_nu0_max))
+            df = self.run_dust_simulation(nphotons=self.nsamples, 
+                                          tau_range=(10.**self.log10_tau_cell_nu0_min, 10.**self.log10_tau_cell_nu0_max),
+                                          temperature_range=(10.**self.log10_T_min*u.K, 10.**self.log10_T_max*u.K), 
+                                          amax_range=(10.**self.log10_a_min*u.cm, 10.**self.log10_a_max*u.cm), 
+                                          p_range=(self.p_min, self.p_max), 
+                                          nu_range=(10.**self.log10_nu0_min*u.GHz, 10.**self.log10_nu0_max*u.GHz))
             df.to_csv("sim_results.csv")
 
         features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
@@ -632,7 +614,9 @@ class Dust(pl.LightningDataModule):
 
         self.dataset = TensorDataset(X, y)
 
-    def run_dust_simulation(self, nphotons=1000, tau_range=(0.5, 4.0), temperature_range=(-1.0, 4.0), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), nu_range=None, use_ml_step=False, position=0):
+    def run_dust_simulation(self, nphotons=1000, tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), 
+                            amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), nu_range=None, use_ml_step=False, 
+                            position=0):
         """
         Run a dust simulation that can be used to learn an ML-step model with the given parameters.
 
@@ -644,11 +628,15 @@ class Dust(pl.LightningDataModule):
             The range of optical depths to sample from (in log10).
         temperature_range : tuple
             The range of temperatures to sample from (in log10).
+        amax_range : tuple
+            The range of maximum grain sizes to sample from (in log10).
+        p_range : tuple
+            The range of power-law indices to sample from.
         nu_range : tuple
             The range of frequencies to sample from (in GHz). If None, use the full range of the dust opacities.
         """
         if nu_range is None:
-            nu_range = (self.nu.value.min(), self.nu.value.max())
+            nu_range = (self.nu.min(), self.nu.max())
 
         # Set up the star.
 
@@ -674,12 +662,12 @@ class Dust(pl.LightningDataModule):
         photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0].value), np.log10(nu_range[1].value), nphotons), dtype=float)
         original_frequency = photon_list.frequency.numpy().copy()
 
-        photon_list.temperature = wp.array(10.**np.random.uniform(temperature_range[0], temperature_range[1], nphotons), dtype=float)
+        photon_list.temperature = wp.array(10.**np.random.uniform(np.log10(temperature_range[0].to(u.K).value), np.log10(temperature_range[1].to(u.K).value), nphotons), dtype=float)
 
         photon_list.amax = wp.array(10.**np.random.uniform(np.log10(amax_range[0].to(u.cm).value), np.log10(amax_range[1].to(u.cm).value), nphotons), dtype=float)
         photon_list.p = wp.array(np.random.uniform(p_range[0], p_range[1], nphotons), dtype=float)
 
-        tau = 10.**np.random.uniform(tau_range[0], tau_range[1], nphotons)
+        tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
         photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.p.numpy(), photon_list.amax.numpy(), photon_list.frequency.numpy()) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
         grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step)
@@ -718,15 +706,41 @@ class Dust(pl.LightningDataModule):
 
     # DataModule functions
 
-    def plot_ml_step(self, model="kabs", tau=1.5, temperature=100.0*u.K, nu=1e3*u.GHz, nsamples=1000, 
-                              plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])):
+    def plot_ml_step(self, tau=30., temperature=100.0*u.K, amax=1.*u.micron, p=3.5, nu=1e3*u.GHz, nsamples=1000, 
+                     plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])):
+        """
+        Plot the samples drawn from a sphere with the provided optical depth, temperature, and frequency.
+
+        Parameters
+        ----------
+        tau : float
+            The log-optical depth to use for the samples.
+        temperature : float
+            The temperature to use for the samples.
+        amax : float
+            The maximum grain size to use for the samples.
+        p : float
+            The power-law index to use for the samples.
+        nu : float
+            The frequency to use for the samples.
+        nsamples : int
+            The number of samples to generate.
+        plot_columns : numpy.ndarray
+            The columns to plot in the triangle plots.
+        """
         
-        df = self.run_dust_simulation(nphotons=nsamples, tau_range=(tau,tau), temperature_range=(np.log10(temperature.value), np.log10(temperature.value)), nu_range=(nu, nu), use_ml_step=False)
+        df = self.run_dust_simulation(nphotons=nsamples, 
+                                      tau_range=(tau,tau), 
+                                      temperature_range=(temperature, temperature), 
+                                      amax_range=(amax, amax), 
+                                      p_range=(p, p), 
+                                      nu_range=(nu, nu), 
+                                      use_ml_step=False)
 
         df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
 
         features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
-        targets = np.array(["log10_nu0", "log10_T", "log10_tau_cell_nu0"])
+        targets = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
 
         X = self.ml_step_x_scaler.transform(torch.tensor(df.loc[:, features].values, dtype=torch.float32))
         y = self.ml_step_y_scaler.transform(torch.tensor(df.loc[:, targets].values, dtype=torch.float32))
@@ -743,6 +757,14 @@ class Dust(pl.LightningDataModule):
         self.plot_triangle_plots(plot_columns=plot_columns)
 
     def plot_opacity_model(self, model='kabs'):
+        """
+        Plot the learned opacity model against the interpolated opacity.
+
+        Parameters
+        ----------
+        model : str
+            The model to plot. Either "kabs" or "ksca".
+        """
         import matplotlib.pyplot as plt
 
         log10_nu = np.linspace(np.log10(self.nu.min().value), np.log10(self.nu.max().value), 10)
@@ -762,6 +784,9 @@ class Dust(pl.LightningDataModule):
         plt.show()
 
     def plot_pmo_model(self):
+        """
+        Plot the learned Planck mean opacity model against the interpolated Planck mean opacity.
+        """
         import matplotlib.pyplot as plt
 
         p = np.repeat(np.random.uniform(0, 1, 1)*(self.p.max() - self.p.min()) + self.p.min(), 100)
@@ -780,6 +805,14 @@ class Dust(pl.LightningDataModule):
         plt.show()
 
     def plot_random_nu_model(self, nsamples=100000):
+        """
+        Plot samples drawn from the learned random_nu model against samples drawn from the random_nu_manual function.
+
+        Parameters
+        ----------
+        nsamples : int
+            The number of samples to draw from each model for the plot.
+        """
         import matplotlib.pyplot as plt
 
         T = np.repeat(10.**np.random.uniform(-1., 4., 1), nsamples)
@@ -1293,320 +1326,3 @@ class DustLightningModule(pl.LightningModule):
             return self.condition(y).sample(x.size(0))
         else:
             return self(x)
-
-recipe_dict = {
-    "draine":{
-        "dust":["astronomical_silicates","graphite_parallel_0.01","graphite_perpendicular_0.01"],
-        "format":["draine","draine","draine"],
-        "density":np.array([3.3,2.24,2.24]),
-        "abundance":np.array([0.65,0.35*1./3,0.35*2./3])
-    },
-    "dsharp":{
-        "dust":["astronomical_silicates","troilite","organics","water_ice"],
-        "format":["draine","henn","henn","henn"],
-        "density":np.array([3.3,4.83,1.5,0.92]),
-        "abundance":np.array([0.1670,0.0258,0.4430,0.3642])
-    },
-    "pollack":{
-        "dust":["astronomical_silicates","troilite","organics","water_ice"],
-        "format":["draine","henn","henn","henn"],
-        "density":np.array([3.3,4.83,1.5,0.92]),
-        "mass_fraction":np.array([3.41e-3,7.68e-4,4.13e-3,5.55e-3]),
-    },
-    "diana":{
-        "dust":["amorphous_silicates_extrapolated","amorphous_carbon_zubko1996_extrapolated"],
-        "format":["henn","henn"],
-        "density":np.array([3.3,1.0]),
-        "abundance":np.array([0.8,0.2]),
-        "filling":0.75,
-        "with_dhs":True,
-    },
-    "diana_wice":{
-        "dust":["amorphous_silicates_extrapolated","amorphous_carbon_zubko1996_extrapolated","water_ice"],
-        "format":["henn","henn","henn"],
-        "density":np.array([3.3,1.0,0.92]),
-        "abundance":np.array([0.8,0.2,0.5]),
-        "filling":0.75,
-        "with_dhs":True,
-    },
-}
-    
-class DustOpticalConstants:
-    recipes = ["draine","pollack","diana","diana_wice"]
-
-    def __init__(self, recipe=None):
-        if recipe is not None:
-            if type(recipe) == str:
-                recipe = recipe_dict[recipe]
-            elif type(recipe) == dict:
-                pass
-
-            water_ice = DustOpticalConstants()
-            water_ice.set_optical_constants_from_henn("water_ice.txt")
-
-            species = []
-            for i in range(len(recipe["dust"])):
-                species.append(DustOpticalConstants())
-                if recipe["format"][i] == "henn":
-                    species[-1].set_optical_constants_from_henn(recipe["dust"][i]+".txt")
-                    if "extrapolated" in recipe["dust"][i]:
-                        species[-1].calculate_optical_constants_on_wavelength_grid(water_ice.lam)
-                elif recipe["format"][i] == "draine":
-                    species[-1].set_optical_constants_from_draine(recipe["dust"][i]+".txt")
-                    species[-1].calculate_optical_constants_on_wavelength_grid(water_ice.lam)
-                species[-1].set_density(recipe["density"][i])
-
-            if "mass_fraction" in recipe:
-                abundances = (recipe["mass_fraction"]/recipe["density"])/(recipe["mass_fraction"]/recipe["density"]).sum()
-            else:
-                abundances = recipe["abundance"] / recipe["abundance"].sum()
-
-            if "filling" not in recipe:
-                recipe["filling"] = 1.
-
-            dust = mix_dust(species, abundances, filling=recipe["filling"])
-
-            self.set_optical_constants(dust.lam, dust.n, dust.k)
-            self.set_density(dust.rho)
-            
-    def add_coat(self, coat):
-        self.coat = coat
-
-    def calculate_optical_constants_on_wavelength_grid(self, lam):
-        f = scipy.interpolate.interp1d(self.lam, self.n)
-        n = f(lam)
-        f = scipy.interpolate.interp1d(self.lam, self.k)
-        k = f(lam)
-
-        self.lam = lam
-        self.nu = const.c.to('cm/s').value / self.lam
-
-        self.n = n
-        self.k = k
-        self.m = self.n + 1j*self.k
-
-    def calculate_size_distribution_opacity(self, amin, amax, p, \
-            coat_volume_fraction=0.0, nang=1000, with_dhs=False, fmax=0.8, \
-            nf=50):
-        na = int(round(np.log10(amax.to(u.um).value) - np.log10(amin.to(u.um).value))*100+1)
-        a = np.logspace(np.log10(amin.to(u.um).value),np.log10(amax.to(u.um).value),na) * u.um
-        kabsgrid = np.zeros((self.lam.size,na))
-        kscagrid = np.zeros((self.lam.size,na))
-        
-        normfunc = a**(3-p)
-
-        for i in range(na):
-            if with_dhs:
-                self.calculate_dhs_opacity(a[i], fmax=fmax, nf=nf, nang=nang)
-            else:
-                self.calculate_opacity(a[i], \
-                        coat_volume_fraction=coat_volume_fraction, nang=nang)
-            
-            kabsgrid[:,i] = self.kabs*normfunc[i]
-            kscagrid[:,i] = self.ksca*normfunc[i]
-
-        self.kabs, self.ksca = [], []
-        for p in self.p:
-            kabs_temp, ksca_temp = [], []
-
-            for amax in self.amax:
-                normfunc = a**(3-p)
-                normfunc[a > amax] = 0.
-                norm = scipy.integrate.trapz(normfunc, x=a)
-
-                kabs_temp.append(scipy.integrate.trapz(kabsgrid*normfunc,x=a, axis=1)/norm)
-                ksca_temp.append(scipy.integrate.trapz(kscagrid*normfunc,x=a, axis=1)/norm)
-
-            self.kabs.append(kabs_temp)
-            self.ksca.append(ksca_temp)
-                
-        self.kabs = np.array(self.kabs)
-        self.ksca = np.array(self.ksca)
-
-    def calculate_opacity(self, a, coat_volume_fraction=0.0, nang=1000):
-        self.kabs = np.zeros(self.lam.size) * a.unit**2 / u.g
-        self.ksca = np.zeros(self.lam.size) * a.unit**2 / u.g
-        
-        if not hasattr(self, 'coat'):
-            mdust = 4*np.pi*a**3/3*self.rho
-            
-            for i in range(self.lam.size):                
-                Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQ(self.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value)
-
-                self.kabs[i] = np.pi*a**2*Qabs/mdust
-                self.ksca[i] = np.pi*a**2*Qsca/mdust
-        else:
-            a_coat = a*(1+coat_volume_fraction)**(1./3)
-
-            mdust = 4*np.pi*a**3/3*self.rho+ \
-                    4*np.pi/3*(a_coat**3-a**3)*self.coat.rho
-            
-            for i in range(self.lam.size):
-                Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQCoreShell(self.m[i],self.coat.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value,a_coat.to(u.nm).value)
-
-                self.kabs[i] = np.pi*a_coat**2*Qabs/mdust
-                self.ksca[i] = np.pi*a_coat**2*Qsca/mdust
-
-        self.kext = self.kabs + self.ksca
-        self.albedo = self.ksca / self.kext
-
-    def calculate_dhs_opacity(self, a, fmax=0.8, nf=50, nang=1000):
-        self.kabs = np.zeros(self.lam.size) * a.unit**2 / u.g
-        self.ksca = np.zeros(self.lam.size) * a.unit**2 / u.g
-
-        for i in range(self.lam.size):
-            for j, f in enumerate(np.linspace(0., fmax, nf)):
-                x = 2*np.pi*a*f**(1./3)/self.lam[i]
-                y = 2*np.pi*a/self.lam[i]
-
-                if f == 0:
-                    Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQ(self.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value)
-                else:
-                    Qext,Qsca,Qabs,gsca,Qpr,Qback,Qratio=PyMieScatt.MieQCoreShell(1.0+1j,self.m[i],self.lam[i].to(u.nm).value,a.to(u.nm).value*f**(1./3),a.to(u.nm).value)
-
-                mdust = 4*np.pi*a**3*(1.-f)/3*self.rho
-
-                self.kabs[i] += np.pi*a**2*Qabs/mdust * 1./fmax * fmax/nf
-                self.ksca[i] += np.pi*a**2*Qsca/mdust * 1./fmax * fmax/nf
-
-        self.kext = self.kabs + self.ksca
-        self.albedo = self.ksca / self.kext
-
-    def set_density(self, rho):
-        if not isinstance(rho, u.Quantity):
-            rho = rho * u.g / u.cm**3
-        self.rho = rho
-
-    def set_optical_constants(self, lam, n, k):
-        self.lam = lam
-        if not isinstance(self.lam, u.Quantity):
-            self.lam = self.lam * u.cm
-        self.nu = (const.c / self.lam).to(u.GHz)
-
-        self.n = n
-        self.k = k
-        self.m = n+1j*k
-
-    def load_optical_constants_file_generic(self, filename):
-        if not os.path.exists(filename):
-            if os.path.exists(os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename):
-                filename = os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename
-            else:
-                web_data_location = 'https://raw.githubusercontent.com/psheehan/pdspy/master/pdspy/dust/data/optical_constants/'+filename
-                response = requests.get(web_data_location)
-                if response.status_code == 200:
-                    if not os.path.exists(os.environ["HOME"]+"/.pinballrt/data/optical_constants"):
-                        os.makedirs(os.environ["HOME"]+"/.pinballrt/data/optical_constants")
-                    urllib.request.urlretrieve(web_data_location, 
-                            os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename)
-                    filename = os.environ["HOME"]+"/.pinballrt/data/optical_constants/"+filename
-                else:
-                    print(web_data_location+' does not exist')
-                    return
-
-        opt_data = np.loadtxt(filename)
-
-        return opt_data
-
-    def set_optical_constants_from_draine(self, filename):
-        opt_data = self.load_optical_constants_file_generic(filename)
-
-        self.lam = np.flipud(opt_data[:,0])*1.0e-4 * u.cm
-        self.nu = (const.c / self.lam).to(u.GHz)
-
-        self.n = np.flipud(opt_data[:,3])+1.0
-        self.k = np.flipud(opt_data[:,4])
-        self.m = self.n+1j*self.k
-
-    def set_optical_constants_from_henn(self, filename):
-        opt_data = self.load_optical_constants_file_generic(filename)
-
-        self.lam = opt_data[:,0]*1.0e-4 * u.cm
-        self.nu = (const.c / self.lam).to(u.GHz)
-
-        self.n = opt_data[:,1]
-        self.k = opt_data[:,2]
-        self.m = self.n+1j*self.k
-
-    def set_optical_constants_from_jena(self, filename, type="standard"):
-        opt_data = self.load_optical_constants_file_generic(filename)
-
-        if type == "standard":
-            self.lam = np.flipud(1./opt_data[:,0]) * u.cm
-            self.n = np.flipud(opt_data[:,1])
-            self.k = np.flipud(opt_data[:,2])
-        elif type == "umwave":
-            self.lam = np.flipud(opt_data[:,0])*1.0e-4 * u.cm
-            self.n = np.flipud(opt_data[:,1])
-            self.k = np.flipud(opt_data[:,2])
-
-        self.nu = (const.c / self.lam).to(u.GHz)
-        self.m = self.n+1j*self.k
-
-    def set_optical_constants_from_oss(self, filename):
-        opt_data = self.load_optical_constants_file_generic(filename)
-        
-        self.lam = opt_data[:,0] * u.cm # in cm
-        self.nu = (const.c / self.lam).to(u.GHz)
-
-        self.n = opt_data[:,1]
-        self.k = opt_data[:,2]
-        self.m = self.n+1j*self.k
-
-def mix_dust(dust, abundance, medium=None, rule="Bruggeman", filling=1.):
-
-    if rule == "Bruggeman":
-        meff = np.zeros(dust[0].lam.size,dtype=complex)
-        rho = 0.0
-        
-        for i in range(dust[0].lam.size):
-            temp = scipy.optimize.fsolve(bruggeman,np.array([1.0,0.0]),\
-                    args=(dust,abundance,i, filling))
-            meff[i] = temp[0]+1j*temp[1]
-        
-        for i in range(len(dust)):
-            rho += dust[i].rho*abundance[i]
-
-        rho *= filling
-    
-    elif rule == "MaxGarn":
-        numerator = 0.0+1j*0.0
-        denominator = 0.0+1j*0.0
-        rho = 0.0
-        
-        for i in range(len(dust)):
-            gamma = 3. / (dust[i].m**2 + 2)
-
-            numerator += abundance[i] * gamma * dust[i].m**2
-            denominator += abundance[i] * gamma
-
-            rho += dust[i].rho*abundance[i]
-
-        mmix = np.sqrt(numerator / denominator)
-        
-        F = (mmix**2 - 1.) / (mmix**2 + 2.)
-
-        meff = np.sqrt((1. + 2.*filling*F) / (1. - filling*F))
-
-        rho *= filling
-
-    new = DustOpticalConstants()
-    new.set_density(rho)
-    new.set_optical_constants(dust[0].lam, meff.real, meff.imag)
-    
-    return new
-
-def bruggeman(meff, dust, abundance, index, filling):
-    
-    m_eff = meff[0]+1j*meff[1]
-    tot = 0+0j
-    
-    for j in range(len(dust)):
-        tot += filling * abundance[j]*(dust[j].m[index]**2-m_eff**2)/ \
-                (dust[j].m[index]**2+2*m_eff**2)
-
-    # Add in the void.
-
-    tot += (1 - filling) * (1. - m_eff**2) / (1. + 2*m_eff**2)
-    
-    return np.array([tot.real,tot.imag])

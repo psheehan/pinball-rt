@@ -27,7 +27,7 @@ properties stored in a file that comes with pinball-rt:
 
 .. code-block:: python
 
-   d = load("yso.dst")
+   d = load("diana_wice.dst")
 
 For further details on how to set up your own dust models, see :doc:`dustcreation`. We also need to define the density 
 distribution of the dust in our grid. Here, we'll use a uniform density for simplicity:
@@ -56,10 +56,10 @@ set up these alternative types of sources.
 
 .. code-block:: python
 
-   model.thermal_mc(nphotons=1000000)
+   model.thermal_mc(nphotons=100000)
 
 If CUDA is available, the code can also be run on the GPU with minimal additional effort:
 
 .. code-block:: python
 
-   model.thermal_mc(nphotons=1000000, device="cuda")
+   model.thermal_mc(nphotons=100000, device="cuda")
