@@ -1018,7 +1018,7 @@ def load(filename, device="cpu"):
     elif isinstance(filename, Dust):
         state_dict = filename.state_dict()
 
-    d = Dust(**state_dict["dust_properties"], interpolate=-1, device=device)
+    d = Dust(**state_dict["dust_properties"], device=device)
 
     for attr in ["kabs", "ksca", "pmo", "random_nu"]:
         if f"{attr}_state_dict" in state_dict:

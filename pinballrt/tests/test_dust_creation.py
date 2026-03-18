@@ -10,7 +10,7 @@ def test_Dust():
 
     data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
 
-    d = Dust(lam=data["lam"]*u.cm, kabs=data["kabs"]*u.cm**2/u.g, ksca=data["ksca"]*u.cm**2/u.g, amax=data["amax"]*u.cm, p=data["p"], interpolate=0)
+    d = Dust(lam=data["lam"]*u.cm, kabs=data["kabs"]*u.cm**2/u.g, ksca=data["ksca"]*u.cm**2/u.g, amax=data["amax"]*u.cm, p=data["p"])
 
     assert d.kmean.value == 2206.6072
 
@@ -23,7 +23,7 @@ def test_learning():
 
     data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
 
-    d = Dust(lam=data["lam"]*u.cm, kabs=data["kabs"]*u.cm**2/u.g, ksca=data["ksca"]*u.cm**2/u.g, amax=data["amax"]*u.cm, p=data["p"], interpolate=0)
+    d = Dust(lam=data["lam"]*u.cm, kabs=data["kabs"]*u.cm**2/u.g, ksca=data["ksca"]*u.cm**2/u.g, amax=data["amax"]*u.cm, p=data["p"])
 
     # Test the learn_random_nu method.
 
