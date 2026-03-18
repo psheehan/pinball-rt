@@ -1,4 +1,3 @@
-from pinballrt.dust import load
 from pinballrt.sources import BlackbodyStar, DiffuseSource, EnergySource, ExternalSource
 from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
@@ -6,10 +5,8 @@ from pinballrt.utils import calculate_Qvalue
 
 import astropy.units as u
 from astropy.modeling import models
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-import torch
 import os
 
 import pytest

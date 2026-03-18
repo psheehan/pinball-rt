@@ -17,7 +17,6 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torch
 import os
-import interpn
 
 from torch.distributions.multivariate_normal import MultivariateNormal
 
@@ -221,6 +220,8 @@ class Dust(pl.LightningDataModule):
         return direction, frequency
 
     def random_nu_manual(self, p, amax, temperature, ksi=None, batch_size=100000):
+        import interpn
+
         if ksi is None:
             nphotons = temperature.size
             ksi = np.random.rand(nphotons)

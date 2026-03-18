@@ -25,12 +25,12 @@ dependencies = [
   "xarray",
   "schwimmbad",
   "requests",
-  "interpn[pydantic]",
 ]
 
 [project.optional-dependencies]
 test = ["pytest","pytest-xdist","submitit"]
 docs = ["sphinx","sphinx-automodapi","sphinx_book_theme","numpydoc"]
+train = ["interpn[pydantic]","matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/psheenan/pinball-warp"
