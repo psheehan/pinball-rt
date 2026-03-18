@@ -6,7 +6,6 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
 import scipy.interpolate
-from tqdm import trange
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -18,8 +17,6 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torch
 import os
-import PyMieScatt
-
 import interpn
 
 from torch.distributions.multivariate_normal import MultivariateNormal
