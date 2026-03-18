@@ -21,14 +21,8 @@ class Model:
         ----------
         grid : Grid
             The grid to use for the model.
-        ncells : int or list-like, optional
-            The number of cells in the grid. Can be specified either as an integer, in which case each dimension will 
-            have the same number of cells, or a 3 element tuple/list/array that specifies the number of cells separately 
-            for each dimension (default is 9).
-        dx : astropy.units.Quantity, optional
-            The cell size (default is 1.0 * u.au).
-        mirror : bool, optional
-            Whether to use a mirrored grid (default is False).
+        grid_kwargs : dict, optional
+            Additional keyword arguments to pass to the grid constructor (default is an empty dictionary).
         ncores : int, optional
             The number of CPU cores to use (default is 1).
         pool : schwimmbad.Pool, optional
@@ -52,7 +46,7 @@ class Model:
         self.ncores = ncores
         self.pool = pool
 
-    def add_density(self, density: u.Quantity, dust):
+    def add_density(self, density: u.Quantity, dust, amax=1.0*u.micron, p=3.5):
         """
         Add density to the grid.
         
@@ -62,10 +56,16 @@ class Model:
             The density to add to the grid.
         dust : Dust
             The dust distribution to use.
+        amax : astropy.units.Quantity
+            The maximum dust size of the dust in the grid. Can be specified as a single value to be constant over
+            the grid, or as an array with a spatially varying value.
+        p : float or array-like
+            The dust grain size distribution power-law slope. Can be specified as a single value to be constant over
+            the grid, or as an array with a spatially varying value.
         """
         for device in self.grid_list:
             for grid in self.grid_list[device]:
-                grid.add_density(density, load(dust) if isinstance(dust, str) else dust)
+                grid.add_density(density, load(dust) if isinstance(dust, str) else dust, amax=amax, p=p)
 
     def add_sources(self, sources):
         """
@@ -194,7 +194,8 @@ class Model:
 
             for source in grid.sources:
                 if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
-                    total_scattering[i] += (source.luminosity * (self.grid.distance_unit**2 * u.Jy) * source.density / (4.*np.pi * u.steradian * (self.grid.grid.density.numpy() * self.grid.dust.interpolate_kext(wavelength) * self.grid.distance_unit**-1))).value
+                    total_scattering[i] += (source.luminosity * (self.grid.distance_unit**2 * u.Jy) * \
+                                            source.density / (4.*np.pi * u.steradian * (self.grid.grid.density.numpy() * self.grid.dust.interpolate_kext(self.grid.grid.p.numpy(), self.grid.grid.amax.numpy(), np.ones(self.grid.shape)*wavelength) * self.grid.distance_unit**-1))).value
 
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:

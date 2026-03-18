@@ -23,7 +23,6 @@ dependencies = [
   "scipy",
   "tqdm",
   "xarray",
-  "PyMieScatt @ git+https://github.com/bsumlin/PyMieScatt.git",
   "schwimmbad",
   "requests",
 ]
@@ -31,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest","pytest-xdist","submitit"]
 docs = ["sphinx","sphinx-automodapi","sphinx_book_theme","numpydoc"]
+train = ["interpn[pydantic]","matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/psheenan/pinball-warp"

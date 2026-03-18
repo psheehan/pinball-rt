@@ -1,4 +1,3 @@
-from pinballrt.dust import load
 from pinballrt.sources import BlackbodyStar, DiffuseSource, EnergySource, ExternalSource
 from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
@@ -6,10 +5,8 @@ from pinballrt.utils import calculate_Qvalue
 
 import astropy.units as u
 from astropy.modeling import models
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-import torch
 import os
 
 import pytest
@@ -28,15 +25,21 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
 
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/yso.dst")
+    d = os.path.join(os.path.dirname(__file__), "data/diana_wice.dst")
+    print(d)
 
     # Set up the grid.
     model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
 
     density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
+    amax = np.ones(model.grid.shape) * u.cm
+    if isinstance(model.grid, UniformCartesianGrid):
+        amax[4, 4, 4] = 1.0 * u.micron
+    else:
+        amax[0, :, :] = 1.0 * u.micron
 
-    model.add_density(density, d)
-    model.add_sources([BlackbodyStar(), 
+    model.add_density(density, d, amax=amax)
+    model.add_sources([BlackbodyStar(),
                        DiffuseSource(model.grid, lambda nu: 4*np.pi**2 * u.steradian * (0.035*u.R_sun)**2 * models.BlackBody(2000.*u.K)(nu), 10.*u.au**-3),
                        EnergySource(model.grid, 0.001*u.L_sun * u.au**-3), 
                        ExternalSource(model.grid, models.BlackBody(2.7*u.K))])

@@ -34,11 +34,13 @@ Then set up a model and run:
    model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
 
    density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
+   amax = np.ones(model.grid.shape) * u.cm
+   amax[4,4,4] = 1.0 * u.micron
 
-   model.add_density(density, "yso.dst")
+   model.add_density(density, "diana_wice.dst", amax=amax)
    model.add_sources(star)
 
-   model.thermal_mc(nphotons=1000000)
+   model.thermal_mc(nphotons=100000)
 
 Or, click the link below to try it out in Google Colab:
 

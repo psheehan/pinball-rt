@@ -146,6 +146,11 @@ class SphericalSource:
             ray_list.tau_intensity = wp.array2d(tau_intensity, dtype=float)
             ray_list.pixel_too_large = wp.zeros(nrays, dtype=bool)
 
+            ray_list.density = wp.zeros(nrays, dtype=float)
+            ray_list.temperature = wp.zeros(nrays, dtype=float)
+            ray_list.amax = wp.zeros(nrays, dtype=float)
+            ray_list.p = wp.zeros(nrays, dtype=float)
+
             ray_list.radius = wp.array(np.zeros(nrays), dtype=float)
             ray_list.logradius = wp.array(np.zeros(nrays), dtype=float)
             ray_list.theta = wp.zeros(nrays, dtype=float)
@@ -442,7 +447,7 @@ class GridSource(DiffuseSource):
             for i in range(self.grid.shape[0]):
                 for j in range(self.grid.shape[1]):
                     for k in range(self.grid.shape[2]):
-                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.interpolate_kabs(nu)*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
+                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(torch.tensor(self.grid.grid.p.numpy()[i,j,k]).expand(nu.size), torch.tensor(self.grid.grid.amax.numpy()[i,j,k]).expand(nu.size), torch.tensor(nu.value, dtype=torch.float32))*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value[0]
 
         self.total_lum = self.luminosity.sum()
 

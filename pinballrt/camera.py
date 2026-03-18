@@ -60,6 +60,11 @@ class Camera:
         ray_list.image_iy = wp.array(image_iy, dtype=int)
         ray_list.pixel_too_large = wp.array(pixel_too_large, dtype=bool)
 
+        ray_list.density = wp.zeros(xflat.size, dtype=float)
+        ray_list.temperature = wp.zeros(xflat.size, dtype=float)
+        ray_list.amax = wp.zeros(xflat.size, dtype=float)
+        ray_list.p = wp.zeros(xflat.size, dtype=float)
+
         ray_list.radius = wp.array(np.zeros(xflat.shape), dtype=float)
         if isinstance(self.grid, LogUniformSphericalGrid):
             ray_list.logradius = wp.array(np.zeros(xflat.shape), dtype=float)
@@ -119,6 +124,7 @@ class Camera:
                         dim=iwill_be_in_grid.shape,
                         inputs=[ray_list, self.grid.grid, iwill_be_in_grid])
 
+                #print(nrays)
                 self.grid.propagate_rays(ray_list, nu.values, pixel_size)
 
                 for source in self.grid.sources:
