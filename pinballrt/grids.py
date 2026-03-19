@@ -935,8 +935,8 @@ class Grid:
             wp.launch(kernel=self.set_ray_opacities,
                       dim=(nrays, nnu),
                       inputs=[ray_list, 
-                              wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
-                              wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
                               iray])
 
             # Sanity check on which rays are actually in the grid.
@@ -984,8 +984,8 @@ class Grid:
                     wp.launch(kernel=self.set_ray_opacities,
                               dim=(nrays, nnu),
                               inputs=[ray_list, 
-                                      wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
-                                      wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
                                       iray])
 
     def propagate_rays_from_source(self, ray_list: PhotonList, frequency):
@@ -1007,8 +1007,8 @@ class Grid:
             wp.launch(kernel=self.set_ray_opacities,
                       dim=(nrays, nnu),
                       inputs=[ray_list, 
-                              wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
-                              wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
                               iray])
 
             s = wp.zeros(nrays, dtype=float)
@@ -1045,8 +1045,8 @@ class Grid:
                     wp.launch(kernel=self.set_ray_opacities,
                               dim=(nrays, nnu),
                               inputs=[ray_list, 
-                                      wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
-                                      wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
                                       iray])
 
 class UniformCartesianGrid(Grid):

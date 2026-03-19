@@ -194,8 +194,8 @@ class Model:
 
             for source in grid.sources:
                 if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
-                    total_scattering[i] += (source.luminosity * (self.grid.distance_unit**2 * u.Jy) * \
-                                            source.density / (4.*np.pi * u.steradian * (self.grid.grid.density.numpy() * self.grid.dust.interpolate_kext(self.grid.grid.p.numpy(), self.grid.grid.amax.numpy(), np.ones(self.grid.shape)*wavelength) * self.grid.distance_unit**-1))).value
+                    total_scattering[i] += torch.tensor((source.luminosity * (self.grid.distance_unit**2 * u.Jy) * \
+                                            source.density / (4.*np.pi * u.steradian * (self.grid.grid.density.numpy() * self.grid.dust.interpolate_kext(self.grid.grid.p.numpy(), self.grid.grid.amax.numpy(), np.ones(self.grid.shape)*wavelength) * self.grid.distance_unit**-1))).value, device=device)
 
             for dev in self.grid_list:
                 for grid in self.grid_list[dev]:

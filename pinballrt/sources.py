@@ -347,7 +347,7 @@ class DiffuseSource:
             self.log10_intensity_func = np.interp1d(np.log10(self.frequency.to(u.GHz).value), np.log10(self.spectrum.value), kind='linear')
             self.intensity = lambda nu: 10**self.log10_intensity_func(np.log10(nu.to(u.GHz).value)) * self.spectrum.unit
 
-        self.total_luminosity = ((self.grid.volume*self.grid.distance_unit**3 * density).sum() *scipy.integrate.trapezoid(self.intensity(self.frequency), self.frequency)).to(u.L_sun)
+        self.total_luminosity = ((self.grid.volume.cpu().numpy()*self.grid.distance_unit**3 * density).sum() *scipy.integrate.trapezoid(self.intensity(self.frequency), self.frequency)).to(u.L_sun)
 
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.intensity(self.frequency), self.frequency, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
@@ -358,7 +358,7 @@ class DiffuseSource:
             self.total_lum = self.total_luminosity.to(u.L_sun)
         else:
             frequency = (const.c / wavelength).to(u.GHz)
-            self.luminosity = (self.density * self.grid.volume * self.grid.distance_unit**3 * self.intensity(frequency)).to(self.grid.distance_unit**2 * u.Jy).value
+            self.luminosity = (self.density * self.grid.volume.cpu().numpy() * self.grid.distance_unit**3 * self.intensity(frequency)).to(self.grid.distance_unit**2 * u.Jy).value
             self.total_lum = self.luminosity.sum()
 
     @wp.kernel
@@ -444,10 +444,11 @@ class GridSource(DiffuseSource):
             nu = (const.c / wavelength).to(u.GHz)
             self.luminosity = np.zeros(self.grid.shape)
 
-            for i in range(self.grid.shape[0]):
-                for j in range(self.grid.shape[1]):
-                    for k in range(self.grid.shape[2]):
-                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(torch.tensor(self.grid.grid.p.numpy()[i,j,k]).expand(nu.size), torch.tensor(self.grid.grid.amax.numpy()[i,j,k]).expand(nu.size), torch.tensor(nu.value, dtype=torch.float32))*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value[0]
+            with wp.ScopedDevice(self.grid.device):
+                for i in range(self.grid.shape[0]):
+                    for j in range(self.grid.shape[1]):
+                        for k in range(self.grid.shape[2]):
+                            self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(wp.to_torch(self.grid.grid.p)[i,j,k].expand(nu.size), wp.to_torch(self.grid.grid.amax)[i,j,k].expand(nu.size), torch.tensor(nu.value, dtype=torch.float32, device=wp.device_to_torch(wp.get_device()))).cpu().numpy()*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value[0]
 
         self.total_lum = self.luminosity.sum()
 
@@ -492,7 +493,7 @@ class EnergySource(GridSource):
         """
         super().__init__(grid)
         self.energy_density = energy_density
-        self.luminosity = energy_density * self.grid.volume * self.grid.distance_unit**3
+        self.luminosity = energy_density * self.grid.volume.cpu().numpy() * self.grid.distance_unit**3
         self.total_lum = self.luminosity.sum()
 
     def initialize_luminosity_array(self, wavelength):

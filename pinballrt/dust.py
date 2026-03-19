@@ -90,16 +90,13 @@ class Dust(pl.LightningDataModule):
             self.kext_wp = wp.array(self.kext, dtype=float)
             self.albedo_wp = wp.array(self.albedo, dtype=float)
 
-        if hasattr(self, "random_nu_model"):
-            self.random_nu_model.to(device)
-        if hasattr(self, "ml_step_model"):
-            self.ml_step_model.to(device)
-        if hasattr(self, "kabs_model"):
-            self.kabs_model.to(device)
-        if hasattr(self, "ksca_model"):
-            self.ksca_model.to(device)
-        if hasattr(self, "pmo_model"):
-            self.pmo_model.to(device)
+        for model in ["random_nu", "ml_step", "kabs", "ksca"]:
+            if hasattr(self, f"{model}_model"):
+                getattr(self, f"{model}_model").to(device)
+            if hasattr(self, f"{model}_x_scaler"):
+                getattr(self, f"{model}_x_scaler").to(device)
+            if hasattr(self, f"{model}_y_scaler"):
+                getattr(self, f"{model}_y_scaler").to(device)
 
     def interpolate_kabs(self, p, amax, nu):
         samples = np.vstack((p.flatten(), np.log10(amax).flatten(), np.log10(nu).flatten())).T
@@ -1260,6 +1257,10 @@ class StandardScaler:
     def inverse_transform(self, data):
         # For reconstructing original data, useful for predictions
         return (data * self.std) + self.mean
+
+    def to(self, device):
+        self.mean = self.mean.to(device)
+        self.std = self.std.to(device)
 
     def state_dict(self):
         return {
