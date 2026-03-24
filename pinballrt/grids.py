@@ -9,14 +9,6 @@ import numpy as np
 import time
 from  tqdm.auto import tqdm
 
-def progresser(n):
-    text = "progresser #{}".format(n)
-    progress_bar = tqdm(total=5000, position=n, leave=True)
-    #for i in tqdm(range(5000), desc=text, position=n, leave=True):
-    for i in range(5000):
-        time.sleep(0.001)
-        progress_bar.update(1)
-
 from .utils import GridStruct, EPSILON, equal, equal_zero, planck_function
 
 class Grid:
