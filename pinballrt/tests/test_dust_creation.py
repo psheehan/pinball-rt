@@ -1,6 +1,7 @@
 from pinballrt.dust import Dust, load
 import numpy as np
 import astropy.units as u
+import dill
 import os
 
 def test_Dust():
@@ -56,3 +57,14 @@ def test_learn_ml_step():
     d.learn(model="ml_step", nsamples=n_samples, tau_range=(0.5, 1.0), nu_range=(d.nu.max()/10, d.nu.max()))
     d.fit(epochs=10)
     d.test_model(plot=True)
+
+def test_dust_pickle():
+    """
+    Test that Dust classes can be pickled and unpickled.
+    """
+
+    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
+
+    d = Dust(lam=data["lam"]*u.cm, kabs=data["kabs"]*u.cm**2/u.g, ksca=data["ksca"]*u.cm**2/u.g, amax=data["amax"]*u.cm, p=data["p"])
+
+    result = dill.loads(dill.dumps(d))

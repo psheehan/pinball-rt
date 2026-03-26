@@ -20,6 +20,8 @@ import os
 
 from torch.distributions.multivariate_normal import MultivariateNormal
 
+wp.config.quiet = True
+
 class Dust(pl.LightningDataModule):
     def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, device="cpu"):
         """
@@ -81,6 +83,24 @@ class Dust(pl.LightningDataModule):
 
         self.temperature = np.logspace(-1.,4.,999)
         self.log_temperature = np.log10(self.temperature)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+                
+        for entry in state:
+            if isinstance(getattr(self, entry), wp.types.array):
+                state[entry] = getattr(self, entry).numpy()
+            else:
+                state[entry] = getattr(self, entry)
+
+        return state
+    
+    def __setstate__(self, state):
+        for entry in state:
+            if 'wp' in entry:
+                state[entry] = wp.array(state[entry])
+
+        self.__dict__.update(state)
 
     def to_device(self, device):
         with wp.ScopedDevice(device):

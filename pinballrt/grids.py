@@ -7,7 +7,7 @@ import astropy.constants as const
 import warp as wp
 import numpy as np
 import time
-import tqdm
+from  tqdm.auto import tqdm
 
 from .utils import GridStruct, EPSILON, equal, equal_zero, planck_function
 
@@ -26,6 +26,39 @@ class Grid:
             self.shape = (self.grid.n1, self.grid.n2, self.grid.n3)
 
         self.grid_source = GridSource(self)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+                
+        new_dict = {}
+        for entry in state['grid'].__dict__:
+            if isinstance(getattr(self.grid, entry), wp.types.array):
+                new_dict[entry] = getattr(self.grid, entry).numpy()
+            elif isinstance(getattr(self.grid, entry), type(None)):
+                new_dict[entry] = getattr(self.grid, entry)
+            elif isinstance(getattr(self.grid, entry), wp.types.bool):
+                new_dict[entry] = bool(getattr(self.grid, entry))
+            elif isinstance(getattr(self.grid, entry), int):
+                new_dict[entry] = getattr(self.grid, entry)
+
+        state['grid'] = new_dict
+
+        return state
+    
+    def __setstate__(self, state):
+        new_grid = GridStruct()
+
+        for entry in state['grid']:
+            if isinstance(state['grid'][entry], np.ndarray):
+                setattr(new_grid, entry, wp.array(state['grid'][entry]))
+            elif isinstance(state['grid'][entry], type(None)):
+                pass
+            else:
+                setattr(new_grid, entry, state['grid'][entry])
+
+        state['grid'] = new_grid
+
+        self.__dict__.update(state)
 
     def add_density(self, _density, dust, amax=1.0*u.micron, p=3.5):
         with wp.ScopedDevice(self.device):
@@ -497,7 +530,7 @@ class Grid:
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
 
-            progress_bar = tqdm.tqdm(total=nphotons)
+            progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
             iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
             nphotons = iphotons.size(0)
@@ -681,7 +714,7 @@ class Grid:
             timing["ml_step_time"] = ml_step_time
             timing["absorb_random_nu_time"] = absorb_random_nu_time
 
-    def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False, timing={}):
+    def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False, timing={}, position=0):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -709,7 +742,7 @@ class Grid:
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
 
-            progress_bar = tqdm.tqdm(total=nphotons)
+            progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
             iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
             nphotons = iphotons.size(0)
