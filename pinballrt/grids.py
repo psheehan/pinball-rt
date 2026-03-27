@@ -109,28 +109,6 @@ class Grid:
         else:
             self.sources += [sources]
 
-    @wp.kernel
-    def sample_from_cum_lum(grid: GridStruct,
-                            cum_sum: wp.array3d(dtype=float),
-                            cell_coords: wp.array2d(dtype=int),
-                            seed: int,
-                            ): # pragma: no cover
-        i = wp.tid()
-
-        rng = wp.rand_init(seed, i)
-        ksi = wp.randf(rng)
-
-        min_cum_sum = float(wp.inf)
-
-        for ix in range(grid.n1):
-            for iy in range(grid.n2):
-                for iz in range(grid.n3):
-                    if ksi < cum_sum[ix,iy,iz] and cum_sum[ix,iy,iz] < min_cum_sum:
-                        min_cum_sum = cum_sum[ix,iy,iz]
-                        cell_coords[i][0] = ix
-                        cell_coords[i][1] = iy
-                        cell_coords[i][2] = iz
-
     def base_emit(self, nphotons, wavelength="random", scattering=False, timing={}):
         with wp.ScopedDevice(self.device):
             if scattering:
@@ -1005,7 +983,7 @@ class Grid:
         alpha_sca = 0.
 
         if grid.include_dust:
-            tau_cell = tau_cell + s[ir]*ray_list.kext[iray,inu]*grid.dust_density[ix,iy,iz]
+            tau_cell = tau_cell + s[ir]*ray_list.kext[ir,inu]*grid.dust_density[ix,iy,iz]
             alpha_ext = alpha_ext + ray_list.kext[ir,inu]*grid.dust_density[ix,iy,iz]
             alpha_sca = alpha_sca + ray_list.kext[ir,inu]*ray_list.ray_albedo[ir,inu]*grid.dust_density[ix,iy,iz]
             intensity_abs = intensity_abs + ray_list.kext[ir,inu] * (1. - ray_list.ray_albedo[ir,inu]) * \
@@ -1280,9 +1258,9 @@ class UniformCartesianGrid(Grid):
 
         rng = wp.rand_init(seed, ip)
 
-        position[ip][0] = grid.w1[ix] + (grid.w1[ix+1] - grid.w1[ix])*max(min(wp.randf(rng), 0.999), 0.001)
-        position[ip][1] = grid.w2[iy] + (grid.w2[iy+1] - grid.w2[iy])*max(min(wp.randf(rng), 0.999), 0.001)
-        position[ip][2] = grid.w3[iz] + (grid.w3[iz+1] - grid.w3[iz])*max(min(wp.randf(rng), 0.999), 0.001)
+        position[ip][0] = grid.w1[ix] + (grid.w1[ix+1] - grid.w1[ix])*wp.randf(rng)
+        position[ip][1] = grid.w2[iy] + (grid.w2[iy+1] - grid.w2[iy])*wp.randf(rng)
+        position[ip][2] = grid.w3[iz] + (grid.w3[iz+1] - grid.w3[iz])*wp.randf(rng)
 
     @wp.kernel
     def next_wall_distance(photon_list: PhotonList,
@@ -1608,9 +1586,9 @@ class UniformSphericalGrid(Grid):
 
         rng = wp.rand_init(seed, ip)
 
-        r = grid.w1[ix] + max(min(wp.randf(rng), 0.999), 0.001) * (grid.w1[ix+1] - grid.w1[ix])
-        theta = grid.w2[iy] + max(min(wp.randf(rng), 0.999), 0.001) * (grid.w2[iy+1] - grid.w2[iy])
-        phi = grid.w3[iz] + max(min(wp.randf(rng), 0.999), 0.001) * (grid.w3[iz+1] - grid.w3[iz])
+        r = grid.w1[ix] + wp.randf(rng) * (grid.w1[ix+1] - grid.w1[ix])
+        theta = grid.w2[iy] + wp.randf(rng) * (grid.w2[iy+1] - grid.w2[iy])
+        phi = grid.w3[iz] + wp.randf(rng) * (grid.w3[iz+1] - grid.w3[iz])
 
         position[ip][0] = r * wp.sin(theta) * wp.cos(phi)
         position[ip][1] = r * wp.sin(theta) * wp.sin(phi)
@@ -2091,9 +2069,9 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
         if ix == 0:
             r = 10.**(wp.randf(rng) * grid.logw1[ix])
         else:
-            r = 10.**(grid.logw1[ix-1] + max(min(wp.randf(rng), 0.999), 0.001) * (grid.logw1[ix] - grid.logw1[ix-1]))
-        theta = grid.w2[iy] + max(min(wp.randf(rng), 0.999), 0.001) * (grid.w2[iy+1] - grid.w2[iy])
-        phi = grid.w3[iz] + max(min(wp.randf(rng), 0.999), 0.001) * (grid.w3[iz+1] - grid.w3[iz])
+            r = 10.**(grid.logw1[ix-1] + wp.randf(rng) * (grid.logw1[ix] - grid.logw1[ix-1]))
+        theta = grid.w2[iy] + wp.randf(rng) * (grid.w2[iy+1] - grid.w2[iy])
+        phi = grid.w3[iz] + wp.randf(rng) * (grid.w3[iz+1] - grid.w3[iz])
 
         position[ip][0] = r * wp.sin(theta) * wp.cos(phi)
         position[ip][1] = r * wp.sin(theta) * wp.sin(phi)
