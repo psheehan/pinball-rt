@@ -8,7 +8,7 @@ thermal Monte Carlo simulation. Start by importing the necessary modules:
 .. code-block:: python
 
    from pinballrt.dust import load
-   from pinballrt.sources import Star
+   from pinballrt.sources import BlackbodyStar
    from pinballrt.grids import UniformCartesianGrid
    from pinballrt.model import Model
    import astropy.units as u
@@ -21,14 +21,16 @@ First lets set up our model using a cartesian grid:
    # Set up the grid.
    model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
 
-In this case, we are setting up a 9 x 9 x 9 cartesian grid with a cell size of 2 au. For additional grid geometries that are available, see :doc:`grids`. Next, we need to load the dust properties. We'll do this using
-precomputed properties stored in a file that comes with pinball-rt:
+In this case, we are setting up a 9 x 9 x 9 cartesian grid with a cell size of 2 au. For additional grid geometries 
+that are available, see :doc:`grids`. Next, we need to load the dust properties. We'll do this using precomputed 
+properties stored in a file that comes with pinball-rt:
 
 .. code-block:: python
 
-   d = load("yso.dst")
+   d = load("diana_wice.dst")
 
-We also need to define the density distribution of the dust in our grid. Here, we'll use a uniform density for simplicity:
+For further details on how to set up your own dust models, see :doc:`dustcreation`. We also need to define the density 
+distribution of the dust in our grid. Here, we'll use a uniform density for simplicity:
 
 .. code-block:: python
 
@@ -38,24 +40,26 @@ Note that the density should be given a unit (via astropy.units) so that there i
 
 .. code-block:: python
     
-   model.add_density(density, d)
+   model.add_density(density, d, amax=1.0*u.cm, p=3.0)
+
+Note that pinball Dust objects store dust opacities for a range of different properties. In this example we use a spatially constant maximum dust grain size and the grain size distribution power law index, but these properties can also be specified as arrays with varying values. 
 
 We also need a source of photons. In this example, we'll use a star with a blackbody spectrum:
 
 .. code-block:: python
 
-   star = Star(temperature=4000*u.K)
-   star.set_blackbody_spectrum()
-   model.add_star(star)
+   star = BlackbodyStar(temperature=4000*u.K)
+   model.add_sources(star)
 
-With the model set up, we can now run the thermal Monte Carlo simulation:
+but pinball-rt provides several different types of sources that can be used. See :doc:`sources` for more information on how to
+set up these alternative types of sources.
 
 .. code-block:: python
 
-   model.thermal_mc(nphotons=1000000)
+   model.thermal_mc(nphotons=100000)
 
 If CUDA is available, the code can also be run on the GPU with minimal additional effort:
 
 .. code-block:: python
 
-   model.thermal_mc(nphotons=1000000, device="cuda")
+   model.thermal_mc(nphotons=100000, device="cuda")

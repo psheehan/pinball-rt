@@ -3,23 +3,30 @@ sources
 
 .. currentmodule:: pinballrt.sources
 
-.. autoclass:: Star
+.. automodule:: pinballrt.sources
    :show-inheritance:
 
-   .. rubric:: Attributes Summary
+   .. rubric:: Classes Summary
 
    .. autosummary::
 
-      ~Star.temperature
-      ~Star.radius
-      ~Star.luminosity
+      ~SphericalSource
+      ~BlackbodyStar
+      ~ExternalSource
+      ~DiffuseSource
+      ~EnergySource
 
-   .. rubric:: Methods Summary
+.. autoclass:: SphericalSource
+   :show-inheritance:
 
-   .. autosummary::
+.. autoclass:: BlackbodyStar
+   :show-inheritance:
 
-      ~Star.set_blackbody_spectrum
+.. autoclass:: ExternalSource
+   :show-inheritance:
 
-   .. rubric:: Methods Documentation
+.. autoclass:: DiffuseSource
+   :show-inheritance:
 
-   .. automethod:: set_blackbody_spectrum
+.. autoclass:: EnergySource
+   :show-inheritance:

@@ -1,5 +1,6 @@
 import torch
 from .photons import PhotonList
+from .sources import GridSource, EnergySource
 from astropy.modeling import models
 from .gas import Gas
 import astropy.units as u
@@ -9,46 +10,7 @@ import numpy as np
 import time
 import tqdm
 
-from .utils import EPSILON, equal, equal_zero, planck_function
-
-@wp.struct
-class GridStruct:
-    w1: wp.array(dtype=float)
-    logw1: wp.array(dtype=float)
-    w2: wp.array(dtype=float)
-    w3: wp.array(dtype=float)
-    n1: int
-    n2: int
-    n3: int
-
-    sin_w2: wp.array(dtype=float)
-    cos_w2: wp.array(dtype=float)
-    tan_w2: wp.array(dtype=float)
-    neg_mu: wp.array(dtype=float)
-    sin_tol_w2: wp.array(dtype=float)
-    cos_tol_w2: wp.array(dtype=float)
-    sin_w3: wp.array(dtype=float)
-    cos_w3: wp.array(dtype=float)
-
-    mirror_symmetry: bool
-
-    dust_density: wp.array3d(dtype=float)
-    gas_density: wp.array3d(dtype=float)
-    temperature: wp.array3d(dtype=float)
-    energy: wp.array3d(dtype=float)
-    amax: wp.array3d(dtype=float)
-    p: wp.array3d(dtype=float)
-
-    velocity: wp.array4d(dtype=float)
-    microturbulence: wp.array3d(dtype=float)
-
-    nlines: int
-    line_nu: wp.array1d(dtype=float)
-    alpha_line: wp.array4d(dtype=float)
-    inv_gamma: wp.array4d(dtype=float)
-
-    include_dust: bool
-    include_gas: bool
+from .utils import GridStruct, EPSILON, equal, equal_zero, planck_function
 
 class Grid:
     def __init__(self, _w1, _w2, _w3, device='cpu'):
@@ -63,6 +25,8 @@ class Grid:
             self.grid.n3 = _w3.size-1
 
             self.shape = (self.grid.n1, self.grid.n2, self.grid.n3)
+
+        self.grid_source = GridSource(self)
 
     def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, gases=None, abundances=None, 
                                 velocity=None, microturbulence=None):
@@ -82,9 +46,9 @@ class Grid:
                     self.grid.amax = wp.array3d(amax, dtype=float)
                 elif isinstance(amax, u.Quantity):
                     if len(amax.shape) == 0:
-                        self.grid.amax = wp.array3d(np.ones(density.shape) * amax.to(u.um).value, dtype=float)
+                        self.grid.amax = wp.array3d(np.ones(density.shape) * amax.to(u.cm).value, dtype=float)
                     else:
-                        self.grid.amax = wp.array3d(amax.to(u.um).value, dtype=float)
+                        self.grid.amax = wp.array3d(amax.to(u.cm).value, dtype=float)
 
             if p is not None:
                 if isinstance(p, (int, float)):
@@ -128,8 +92,22 @@ class Grid:
                 if gases is not None:
                     self.grid.microturbulence = wp.array3d(np.zeros(self.shape), dtype=float)
 
-    def add_star(self, star):
-        self.star = star
+    def add_sources(self, sources):
+        """
+        Add sources to the model.
+
+        Parameters
+        ----------
+        sources : list of Source objects
+            The sources to add to the model.
+        """
+        if not hasattr(self, 'sources'):
+            self.sources = []
+
+        if isinstance(sources, list):
+            self.sources += sources
+        else:
+            self.sources += [sources]
 
     @wp.kernel
     def sample_from_cum_lum(grid: GridStruct,
@@ -156,58 +134,30 @@ class Grid:
     def base_emit(self, nphotons, wavelength="random", scattering=False, timing={}):
         with wp.ScopedDevice(self.device):
             if scattering:
-                nphotons_per_source = int(nphotons / 2)
+                source_list = [s for s in self.sources if not isinstance(s, EnergySource)] + [self.grid_source]
             else:
-                nphotons_per_source = nphotons
+                source_list = self.sources
+            nphotons_per_source = int(nphotons / (len(source_list)))
 
             t1 = time.time()
-            photon_list = self.star.emit(nphotons_per_source, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device, timing=timing)
+            for i in range(len(source_list)):
+                if i < nphotons % len(source_list):
+                    nphotons_per_source_i = nphotons_per_source + 1
+                else:
+                    nphotons_per_source_i = nphotons_per_source
+                tmp_photon_list = source_list[i].emit(nphotons_per_source_i, self.distance_unit, wavelength, simulation="scattering" if scattering else "thermal", device=self.device, timing=timing)
+
+                if i == 0:
+                    photon_list = tmp_photon_list
+                else:
+                    photon_list.position = wp.array(np.concatenate((photon_list.position.numpy(), tmp_photon_list.position.numpy()), axis=0), dtype=wp.vec3)
+                    photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), tmp_photon_list.direction.numpy()), axis=0), dtype=wp.vec3)
+                    photon_list.direction_frame = wp.array(np.concatenate((photon_list.direction_frame.numpy(), tmp_photon_list.direction_frame.numpy()), axis=0), dtype=wp.vec3)
+                    photon_list.frequency = wp.array(np.concatenate((photon_list.frequency.numpy(), tmp_photon_list.frequency.numpy()), axis=0), dtype=float)
+                    photon_list.energy = wp.array(np.concatenate((photon_list.energy.numpy(), tmp_photon_list.energy.numpy()), axis=0), dtype=float)
+                    photon_list.in_grid = wp.array(np.concatenate((photon_list.in_grid.numpy(), tmp_photon_list.in_grid.numpy()), axis=0), dtype=bool)
             t2 = time.time()
-            timing["Star emission time"] = t2 - t1
-
-            cell_coords = []
-            if scattering:
-                t1 = time.time()
-                multiplier = 1. / (nphotons_per_source * 100)
-                if self.luminosity.sum() == 0:
-                    self.luminosity += EPSILON
-                cum_lum = np.cumsum(np.maximum(self.luminosity, self.luminosity.max()*multiplier).flatten()).reshape(self.shape) / np.maximum(self.luminosity, self.luminosity.max()*multiplier).sum()
-                t2 = time.time()
-                timing["cum_lum time"] = t2 - t1
-
-                t1 = time.time()
-                cell_coords = wp.array2d(np.zeros((nphotons_per_source, 3), dtype=int), dtype=int)
-                wp.launch(kernel=self.sample_from_cum_lum,
-                          dim=(nphotons_per_source,),
-                          inputs=[self.grid, wp.array3d(cum_lum, dtype=float), cell_coords, np.random.randint(0, 100000)])
-                t2 = time.time()
-                timing["cell coords time"] = t2 - t1
-
-                t1 = time.time()
-                new_position = wp.array(np.zeros((nphotons_per_source,3)), dtype=wp.vec3)
-                wp.launch(kernel=self.random_location_in_cell, 
-                          dim=(nphotons_per_source,), 
-                          inputs=[new_position, cell_coords, self.grid, np.random.randint(0, 100000)])
-                t2 = time.time()
-                timing["random loc time"] = t2 - t1
-
-                photon_list.position = wp.array(np.concatenate((photon_list.position.numpy(), new_position.numpy()), axis=0), dtype=wp.vec3)
-
-                t1 = time.time()
-                new_direction = wp.array(np.zeros((nphotons_per_source, 3)), dtype=wp.vec3)
-                wp.launch(kernel=self.random_direction,
-                          dim=(nphotons_per_source,),
-                          inputs=[new_direction, torch.arange(nphotons_per_source, dtype=torch.int32, device=wp.device_to_torch(wp.get_device())), np.random.randint(0, 100000)])
-                photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), new_direction.numpy()), axis=0), dtype=wp.vec3)
-                photon_list.direction_frame = wp.array(np.concatenate((photon_list.direction_frame.numpy(), new_direction.numpy()), axis=0), dtype=wp.vec3)
-                t2 = time.time()
-                timing["random dir time"] = t2 - t1
-
-                t1 = time.time()
-                photon_list.frequency = wp.array(np.concatenate([photon_list.frequency.numpy(), np.repeat((const.c / wavelength).to(u.GHz).value, nphotons_per_source)]), dtype=float)
-                photon_list.energy = wp.array(np.concatenate([photon_list.energy.numpy(), np.repeat(self.total_lum/nphotons_per_source, nphotons_per_source).astype(np.float32)]), dtype=float)
-                t2 = time.time()
-                timing["set freq/energy time"] = t2 - t1
+            timing["Source emission time"] = t2 - t1
 
             return photon_list
     
@@ -284,17 +234,11 @@ class Grid:
 
         ip = iphotons[wp.tid()]
 
-        if photon_list.absorb[ip]:
-            deposited_energy = 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip]))
-            if track:
-                photon_list.deposited_energy[ip] += deposited_energy
-            else:
-                photon_list.deposited_energy[ip] = deposited_energy
+        deposited_energy = 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip]))
+        if track:
+            photon_list.deposited_energy[ip] += deposited_energy
         else:
-            if track:
-                photon_list.deposited_energy[ip] += 0.
-            else:
-                photon_list.deposited_energy[ip] = 0.
+            photon_list.deposited_energy[ip] = deposited_energy
 
     @wp.kernel
     def reduce_tau(photon_list: PhotonList,
@@ -416,14 +360,19 @@ class Grid:
         t2 = time.time()
         photon_temperature_time = t2 - t1
 
+        t1 = time.time()
         if not scattering and nabsorb > 0:
             new_frequency = self.dust.random_nu(photon_list, subset=absorb)
+        t2 = time.time()
+        absorb_random_nu_time = t2 - t1
 
         t1 = time.time()
         if not scattering and nabsorb > 0:
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
-                      inputs=[photon_list, new_frequency, self.dust.interpolate_kabs_wp(photon_list, iabsorb, new_frequency), self.dust.interpolate_ksca_wp(photon_list, iabsorb, new_frequency), iabsorb])
+                      inputs=[photon_list, new_frequency, 
+                              self.dust.ml_kabs(photon_list=photon_list, nu=wp.to_torch(new_frequency), iphotons=iabsorb), 
+                              self.dust.ml_ksca(photon_list=photon_list, nu=wp.to_torch(new_frequency), iphotons=iabsorb), iabsorb])
         t2 = time.time()
         dust_interpolation_time = t2 - t1
     
@@ -440,12 +389,11 @@ class Grid:
         t2 = time.time()
         photon_loc_time = t2 - t1
 
-        if not learning:
-            wp.launch(kernel=self.photon_cell_properties,
-                      dim=(interact.sum(),),
-                      inputs=[photon_list, self.grid, iphotons])
+        wp.launch(kernel=self.check_in_grid,
+                  dim=(nphotons,),
+                  inputs=[photon_list, self.grid, iphotons])
 
-        return photon_temperature_time, dust_interpolation_time, photon_loc_time
+        return photon_temperature_time, dust_interpolation_time, photon_loc_time, absorb_random_nu_time
 
     def update_grid(self, timing={}):
         with wp.ScopedDevice(self.device):
@@ -459,7 +407,8 @@ class Grid:
                 old_temperature = temperature.copy()
 
                 t1 = time.time()
-                planck_mean_opacity = self.dust.planck_mean_opacity(old_temperature, self.grid)
+                planck_mean_opacity = self.dust.ml_planck_mean_opacity(torch.tensor(self.grid.p.numpy().flatten()), torch.tensor(self.grid.amax.numpy().flatten()), 
+                                                                       torch.tensor(old_temperature.flatten(), dtype=torch.float32)).numpy().reshape(self.shape)
                 t2 = time.time()
                 pmo_time += t2 - t1
 
@@ -474,18 +423,6 @@ class Grid:
             timing["PMO time"] = pmo_time
 
             self.grid.temperature = wp.array3d(temperature, dtype=float)
-
-    def initialize_luminosity_array(self, wavelength):
-        with wp.ScopedDevice(self.device):
-            nu = (const.c / wavelength).to(u.GHz)
-            self.luminosity = np.zeros(self.shape)
-
-            for i in range(self.shape[0]):
-                for j in range(self.shape[1]):
-                    for k in range(self.shape[2]):
-                        self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.dust_density.numpy()[i,j,k]*self.volume.cpu().numpy()[i,j,k]*self.dust.interpolate_kabs(nu)*self.distance_unit**2*models.BlackBody(temperature=self.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value
-
-            self.total_lum = self.luminosity.sum()
 
     @wp.kernel
     def check_do_ml_step(photon_list: PhotonList,
@@ -523,10 +460,10 @@ class Grid:
 
     @wp.kernel
     def ml_rotate_direction(photon_list: PhotonList,
-                             yaw: wp.array(dtype=float),
-                             pitch: wp.array(dtype=float),
-                             roll: wp.array(dtype=float),
-                             iphotons: wp.array(dtype=int)): # pragma: no cover
+                            yaw: wp.array(dtype=float),
+                            pitch: wp.array(dtype=float),
+                            roll: wp.array(dtype=float),
+                            iphotons: wp.array(dtype=int)): # pragma: no cover
         """
         Rotate the direction of the photons based on the yaw, pitch, and roll angles.
         """
@@ -534,8 +471,10 @@ class Grid:
         ip = iphotons[i]
 
         rpy_quat = wp.quat_rpy(roll[i], pitch[i], yaw[i])
+        direction_quat = wp.quat_between_vectors(wp.vec3(1., 0., 0.), photon_list.direction[ip])
+        total_quat = direction_quat * rpy_quat
 
-        photon_list.direction[ip] = wp.quat_rotate(rpy_quat, photon_list.direction[ip])
+        photon_list.direction[ip] = wp.quat_rotate(total_quat, wp.vec3(1., 0., 0.))
 
     @wp.kernel
     def ml_new_tau(photon_list: PhotonList,
@@ -557,27 +496,38 @@ class Grid:
 
         wp.launch(kernel=self.ml_deposited_energy,
                   dim=(nphotons,),
-                  inputs=[photon_list, deposited_energy, iphotons])
+                  inputs=[photon_list, wp.from_torch(deposited_energy), iphotons])
 
         wp.launch(kernel=self.update_frequency,
                   dim=(nphotons,),
-                  inputs=[photon_list, frequency, self.dust.interpolate_kabs_wp(photon_list, iphotons, frequency), self.dust.interpolate_ksca_wp(photon_list, iphotons, frequency), iphotons])
+                  inputs=[photon_list, wp.from_torch(frequency), self.dust.ml_kabs(photon_list=photon_list, nu=wp.from_torch(frequency, iphotons=iphotons)), self.dust.ml_ksca(photon_list=photon_list, nu=wp.from_torch(frequency, iphotons=iphotons)), iphotons])
 
         wp.launch(kernel=self.ml_rotate_direction,
                   dim=(nphotons,),
-                  inputs=[photon_list, yaw, pitch, roll, iphotons])
+                  inputs=[photon_list, wp.from_torch(yaw), wp.from_torch(pitch), wp.from_torch(roll), iphotons])
 
         wp.launch(kernel=self.ml_new_tau,
                   dim=(nphotons,),
-                  inputs=[photon_list, tau, s, iphotons])
+                  inputs=[photon_list, wp.from_torch(tau), s, iphotons])
         
-        return direction_yaw, direction_pitch, direction_roll
+        return wp.from_torch(direction_yaw), wp.from_torch(direction_pitch), wp.from_torch(direction_roll)
 
-    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}):
+    @wp.kernel
+    def set_photon_opacities(photon_list: PhotonList,
+                          kabs: wp.array(dtype=float),
+                          ksca: wp.array(dtype=float),
+                          iphotons: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = iphotons[i]
+
+        photon_list.kabs[ip] = kabs[i]
+        photon_list.ksca[ip] = ksca[i]
+        photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
+
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
-            iphotons = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
-            iphotons_original = iphotons.clone()
+            iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
             photon_list.tau = wp.array(-np.log(1. - np.random.rand(nphotons)), dtype=float)
 
@@ -585,7 +535,6 @@ class Grid:
             s2 = wp.zeros(nphotons, dtype=float)
             s3 = wp.zeros(nphotons, dtype=float)
             photon_list.alpha = wp.zeros(nphotons, dtype=float)
-            photon_list.in_grid = wp.ones(nphotons, dtype=bool)
             if use_ml_step:
                 photon_list.do_ml_step = wp.zeros(nphotons, dtype=bool)
 
@@ -602,19 +551,41 @@ class Grid:
             removing_photons_time = 0.
             absorb_time = 0.
             ml_step_time = 0.
+            absorb_random_nu_time = 0.
+
+            photon_list.kabs = wp.zeros(nphotons, dtype=float)
+            photon_list.ksca = wp.zeros(nphotons, dtype=float)
+            photon_list.albedo = wp.zeros(nphotons, dtype=float)
+            photon_list.absorb = wp.zeros(nphotons, dtype=bool)
+
+            progress_bar = tqdm.tqdm(total=nphotons)
+
+            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+            nphotons = iphotons.size(0)
+
+            wp.launch(kernel=self.check_in_grid,
+                      dim=(nphotons,),
+                      inputs=[photon_list, self.grid, iphotons])
+            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+            nphotons_done = iphotons_original.size(0) - iphotons.size(0)
+            nphotons = iphotons.size(0)
 
             t1 = time.time()
-            photon_list.kabs = self.dust.interpolate_kabs_wp(photon_list, iphotons)
-            photon_list.ksca = self.dust.interpolate_ksca_wp(photon_list, iphotons)
-            photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
+            wp.launch(kernel=self.set_photon_opacities,
+                      dim=(nphotons,),
+                      inputs=[photon_list, 
+                              wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
+                              wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
+                              iphotons])
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
-            photon_list.absorb = wp.array(np.random.rand(nphotons) > photon_list.albedo.numpy(), dtype=bool)
+            wp.launch(kernel=self.random_absorb, 
+                      dim=(nphotons,), 
+                      inputs=[photon_list, iphotons, np.random.randint(0, 100000)])
 
             count = 0
             nphotons_done = 0
-            progress_bar = tqdm.tqdm(total=nphotons)
             while nphotons > 0:
                 #print(nphotons)
                 count += 1
@@ -703,11 +674,6 @@ class Grid:
                           inputs=[photon_list, self.grid, iphotons])
                 t2 = time.time()
                 photon_loc_time += t2 - t1
-
-                if not learning:
-                    wp.launch(kernel=self.photon_cell_properties,
-                              dim=(nphotons,),
-                              inputs=[photon_list, self.grid, iphotons])
                     
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
@@ -729,12 +695,37 @@ class Grid:
                 interaction_indices = iphotons_original[interaction]
                 absorb = torch.logical_and(interaction, wp.to_torch(photon_list.absorb))
                 absorb_indices = iphotons_original[absorb]
-                tmp_photon_temp_time, tmp_dust_interpolation_time, tmp_photon_loc_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, learning=learning)
+                tmp_photon_temp_time, tmp_dust_interpolation_time, tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, learning=learning)
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_dust_interpolation_time - tmp_photon_loc_time
+                absorb_random_nu_time += tmp_absorb_random_nu_time
                 #absorb_time += tmp_time
                 dust_interpolation_time += tmp_dust_interpolation_time
                 photon_loc_time += tmp_photon_loc_time
+
+                t1 = time.time()
+                iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
+                nphotons = iphotons.size(0)
+                t2 = time.time()
+                removing_photons_time += t2 - t1
+
+                if nphotons > 0:
+                    if not learning:
+                        wp.launch(kernel=self.photon_cell_properties,
+                                  dim=(nphotons,),
+                                  inputs=[photon_list, self.grid, iphotons])
+                    
+                    t1 = time.time()
+                    wp.launch(kernel=self.set_photon_opacities,
+                            dim=(nphotons,),
+                            inputs=[photon_list, 
+                                    wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
+                                    wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
+                                    iphotons])
+                    t2 = time.time()
+                    dust_interpolation_time += t2 - t1
 
             progress_bar.close()
 
@@ -749,19 +740,18 @@ class Grid:
             timing["removing_photons_time"] = removing_photons_time
             timing["absorb_time"] = absorb_time
             timing["ml_step_time"] = ml_step_time
+            timing["absorb_random_nu_time"] = absorb_random_nu_time
 
     def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False, timing={}):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
-            iphotons = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
-            iphotons_original = iphotons.clone()
+            iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
             photon_list.tau = wp.array(-np.log(1. - np.random.rand(nphotons)), dtype=float)
 
             s1 = wp.zeros(nphotons, dtype=float)
             s2 = wp.zeros(nphotons, dtype=float)
             photon_list.alpha = wp.zeros(nphotons, dtype=float)
-            photon_list.in_grid = wp.zeros(nphotons, dtype=bool)
 
             next_wall_time = 0.
             dust_interpolation_time = 0.
@@ -773,20 +763,41 @@ class Grid:
             removing_photons_time = 0.
             absorb_time = 0.
 
+            photon_list.total_tau_abs = wp.zeros(nphotons, dtype=float)
+
+            photon_list.kabs = wp.zeros(nphotons, dtype=float)
+            photon_list.ksca = wp.zeros(nphotons, dtype=float)
+            photon_list.albedo = wp.zeros(nphotons, dtype=float)
+            photon_list.absorb = wp.zeros(nphotons, dtype=bool)
+
+            progress_bar = tqdm.tqdm(total=nphotons)
+
+            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+            nphotons = iphotons.size(0)
+
+            wp.launch(kernel=self.check_in_grid,
+                      dim=(nphotons,),
+                      inputs=[photon_list, self.grid, iphotons])
+            iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
+            nphotons_done = iphotons_original.size(0) - iphotons.size(0)
+            nphotons = iphotons.size(0)
+
             t1 = time.time()
-            photon_list.kabs = self.dust.interpolate_kabs_wp(photon_list, iphotons)
-            photon_list.ksca = self.dust.interpolate_ksca_wp(photon_list, iphotons)
-            photon_list.albedo = wp.array(photon_list.ksca.numpy() / (photon_list.kabs.numpy() + photon_list.ksca.numpy()), dtype=float)
+            wp.launch(kernel=self.set_photon_opacities,
+                      dim=(nphotons,),
+                      inputs=[photon_list, 
+                              wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
+                              wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
+                              iphotons])
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
-            photon_list.absorb = wp.array(np.random.rand(nphotons) > photon_list.albedo.numpy(), dtype=bool)
-
-            photon_list.total_tau_abs = wp.zeros(nphotons, dtype=float)
+            wp.launch(kernel=self.random_absorb, 
+                      dim=(nphotons,), 
+                      inputs=[photon_list, iphotons, np.random.randint(0, 100000)])
 
             count = 0
             nphotons_done = 0
-            progress_bar = tqdm.tqdm(total=nphotons)
             while nphotons > 0:
                 count += 1
 
@@ -827,10 +838,6 @@ class Grid:
                 t2 = time.time()
                 photon_loc_time += t2 - t1
 
-                wp.launch(kernel=self.photon_cell_properties,
-                      dim=(nphotons,),
-                      inputs=[photon_list, self.grid, iphotons])
-
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
                           dim=(nphotons,),
@@ -847,14 +854,37 @@ class Grid:
                 removing_photons_time += t2 - t1
 
                 t1 = time.time()
-                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-10, wp.to_torch(photon_list.in_grid))
+                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, wp.to_torch(photon_list.in_grid))
                 interaction_indices = iphotons_original[interaction]
                 absorb = torch.logical_and(interaction, wp.to_torch(photon_list.absorb))
                 absorb_indices = iphotons_original[absorb]
-                tmp_photon_temp_time, tmp_dust_interpolation_time, tmp_photon_loc_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, scattering=True)
+                tmp_photon_temp_time, tmp_dust_interpolation_time, tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, scattering=True)
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 #absorb_time += tmp_time
+
+                t1 = time.time()
+                iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
+                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
+                nphotons = iphotons.size(0)
+                t2 = time.time()
+                removing_photons_time += t2 - t1
+
+                if nphotons > 0:
+                    wp.launch(kernel=self.photon_cell_properties,
+                              dim=(nphotons,),
+                              inputs=[photon_list, self.grid, iphotons])
+                    
+                    t1 = time.time()
+                    wp.launch(kernel=self.set_photon_opacities,
+                            dim=(nphotons,),
+                            inputs=[photon_list, 
+                                    wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
+                                    wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
+                                    iphotons])
+                    t2 = time.time()
+                    dust_interpolation_time += t2 - t1
 
             progress_bar.close()
 
@@ -976,9 +1006,9 @@ class Grid:
 
         if grid.include_dust:
             tau_cell = tau_cell + s[ir]*ray_list.kext[iray,inu]*grid.dust_density[ix,iy,iz]
-            alpha_ext = alpha_ext + ray_list.kext[iray,inu]*grid.dust_density[ix,iy,iz]
-            alpha_sca = alpha_sca + ray_list.kext[iray,inu]*ray_list.ray_albedo[iray,inu]*grid.dust_density[ix,iy,iz]
-            intensity_abs = intensity_abs + ray_list.kext[iray,inu] * (1. - ray_list.ray_albedo[iray,inu]) * \
+            alpha_ext = alpha_ext + ray_list.kext[ir,inu]*grid.dust_density[ix,iy,iz]
+            alpha_sca = alpha_sca + ray_list.kext[ir,inu]*ray_list.ray_albedo[ir,inu]*grid.dust_density[ix,iy,iz]
+            intensity_abs = intensity_abs + ray_list.kext[ir,inu] * (1. - ray_list.ray_albedo[ir,inu]) * \
                     grid.dust_density[ix,iy,iz] * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
 
             albedo_total = alpha_sca / alpha_ext
@@ -1019,20 +1049,47 @@ class Grid:
 
         ray_list.intensity[ir, inu] = ray_list.intensity[ir, inu] * wp.exp(-s[ir] * ray_list.kext[ir, inu] * grid.dust_density[ix, iy, iz])
 
+    @wp.kernel
+    def set_ray_opacities(ray_list: PhotonList,
+                          kext: wp.array2d(dtype=float),
+                          albedo: wp.array2d(dtype=float),
+                          irays: wp.array(dtype=int)): # pragma: no cover
+        
+        iray, inu = wp.tid()
+        ir = irays[iray]
+
+        ray_list.kext[ir, inu] = kext[iray, inu]
+        ray_list.ray_albedo[ir, inu] = albedo[iray, inu]
+
     def propagate_rays(self, ray_list: PhotonList, frequency, pixel_size):
+
         with wp.ScopedDevice(self.device):
             nrays = ray_list.position.numpy().shape[0]
-            iray = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
-            iray_original = iray.clone()
-            nnu = frequency.size
-            ray_list.in_grid = wp.zeros(nrays, dtype=bool)
+            if nrays == 0:
+                return
 
+            iray_original = torch.arange(nrays, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
+            s = wp.zeros(nrays, dtype=float)
+
+            nnu = frequency.size
             ray_list.frequency = wp.array(frequency, dtype=float)
 
-            ray_list.kext = self.dust.interpolate_kext_wp(ray_list, iray)
-            ray_list.ray_albedo = self.dust.interpolate_albedo_wp(ray_list, iray)
+            ray_list.kext = wp.zeros((nrays, nnu), dtype=float)
+            ray_list.ray_albedo = wp.zeros((nrays, nnu), dtype=float)
+            
+            iray = iray_original[wp.to_torch(ray_list.in_grid)]
+            nrays = iray.size(0)
 
-            s = wp.zeros(nrays, dtype=float)
+            wp.launch(kernel=self.photon_cell_properties,
+                      dim=(nrays,),
+                      inputs=[ray_list, self.grid, iray])
+            
+            wp.launch(kernel=self.set_ray_opacities,
+                      dim=(nrays, nnu),
+                      inputs=[ray_list, 
+                              wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              iray])
 
             # Sanity check on which rays are actually in the grid.
 
@@ -1071,8 +1128,17 @@ class Grid:
                 iray = iray_original[torch.logical_and(wp.to_torch(ray_list.in_grid), torch.logical_not(wp.to_torch(ray_list.pixel_too_large)))]
                 nrays = iray.size(0)
 
-                ray_list.kext = self.dust.interpolate_kext_wp(ray_list, iray)
-                ray_list.ray_albedo = self.dust.interpolate_albedo_wp(ray_list, iray)
+                if nrays > 0:
+                    wp.launch(kernel=self.photon_cell_properties,
+                              dim=(nrays,),
+                              inputs=[ray_list, self.grid, iray])
+
+                    wp.launch(kernel=self.set_ray_opacities,
+                              dim=(nrays, nnu),
+                              inputs=[ray_list, 
+                                      wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      iray])
 
     def propagate_rays_from_source(self, ray_list: PhotonList, frequency):
         with wp.ScopedDevice(self.device):
@@ -1084,9 +1150,19 @@ class Grid:
 
             ray_list.frequency = wp.array(frequency, dtype=float)
     
-            ray_list.kext = self.dust.interpolate_kext_wp(ray_list, iray)
-            ray_list.ray_albedo = self.dust.interpolate_albedo_wp(ray_list, iray)
-    
+            wp.launch(kernel=self.photon_cell_properties,
+                      dim=(nrays,),
+                      inputs=[ray_list, self.grid, iray])
+
+            ray_list.kext = wp.zeros((nrays, frequency.size), dtype=float)
+            ray_list.ray_albedo = wp.zeros((nrays, frequency.size), dtype=float)
+            wp.launch(kernel=self.set_ray_opacities,
+                      dim=(nrays, nnu),
+                      inputs=[ray_list, 
+                              wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                              iray])
+
             s = wp.zeros(nrays, dtype=float)
             
             while nrays > 0:
@@ -1113,9 +1189,18 @@ class Grid:
                 iray = iray_original[torch.logical_and(wp.to_torch(ray_list.in_grid), torch.logical_not(wp.to_torch(ray_list.pixel_too_large)))]
                 nrays = iray.size(0)
 
-                ray_list.kext = self.dust.interpolate_kext_wp(ray_list, iray)
-                ray_list.ray_albedo = self.dust.interpolate_albedo_wp(ray_list, iray)
-    
+                if nrays > 0:
+                    wp.launch(kernel=self.photon_cell_properties,
+                              dim=(nrays,),
+                              inputs=[ray_list, self.grid, iray])
+
+                    wp.launch(kernel=self.set_ray_opacities,
+                              dim=(nrays, nnu),
+                              inputs=[ray_list, 
+                                      wp.from_torch(torch.cat([self.dust.ml_kext(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      wp.from_torch(torch.cat([self.dust.ml_albedo(photon_list=ray_list, nu=torch.tensor(frequency[i], dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(nrays), iphotons=iray).unsqueeze(1) for i in range(frequency.size)], axis=1)), 
+                                      iray])
+
 class UniformCartesianGrid(Grid):
     def __init__(self, ncells=9, dx=1.0*u.au, device="cpu"):
         """
@@ -1164,6 +1249,7 @@ class UniformCartesianGrid(Grid):
         timing["Photon emission time"] = t2 - t1
 
         with wp.ScopedDevice(self.device):
+            nphotons = photon_list.position.numpy().shape[0]
             iphotons = wp.array(np.arange(nphotons), dtype=int)
 
             photon_list.indices = wp.zeros((nphotons, 3), dtype=int)
@@ -1481,6 +1567,8 @@ class UniformSphericalGrid(Grid):
         timing["Photon emission time"] = t2 - t1
         
         with wp.ScopedDevice(self.device):
+            nphotons = photon_list.position.numpy().shape[0]
+
             photon_list.radius = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.theta = wp.zeros(nphotons, dtype=float)
             photon_list.phi = wp.zeros(nphotons, dtype=float)
@@ -1958,6 +2046,8 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
         timing["Photon emission time"] = t2 - t1
         
         with wp.ScopedDevice(self.device):
+            nphotons = photon_list.position.numpy().shape[0]
+            
             photon_list.radius = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.logradius = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.theta = wp.zeros(nphotons, dtype=float)
