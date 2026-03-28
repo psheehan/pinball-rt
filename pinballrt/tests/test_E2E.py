@@ -2,6 +2,7 @@ from pinballrt.sources import BlackbodyStar, DiffuseSource, EnergySource, Extern
 from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
 from pinballrt.utils import calculate_Qvalue
+from pinballrt.gas import Gas
 
 import astropy.units as u
 from astropy.modeling import models
@@ -37,9 +38,14 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
     else:
         amax[0, :, :] = 1.0 * u.micron
 
-    vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
-                             0.5*(model.grid.grid.w2.numpy()[1:] + model.grid.grid.w2.numpy()[0:-1]), 
-                             0.5*(model.grid.grid.w3.numpy()[1:] + model.grid.grid.w3.numpy()[0:-1]), indexing='ij')
+    if isinstance(model.grid, UniformCartesianGrid):
+        vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
+                                 0.5*(model.grid.grid.w2.numpy()[1:] + model.grid.grid.w2.numpy()[0:-1]), 
+                                 0.5*(model.grid.grid.w3.numpy()[1:] + model.grid.grid.w3.numpy()[0:-1]), indexing='ij')
+    else:
+        vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
+                                 np.zeros(model.grid.grid.n2),
+                                 np.zeros(model.grid.grid.n3), indexing='ij')
     velocity = np.concatenate((vx[np.newaxis], vy[np.newaxis], vz[np.newaxis]), axis=0) * (-1.0 * u.km / u.s)
 
     model.set_physical_properties(density=density, dust=d, amax=amax, p=3.5, gases=[os.path.join(os.path.dirname(__file__), "data/co.dat")], 
@@ -53,6 +59,13 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
 
     image = model.make_image(npix=256, pixel_size=0.2*u.arcsec, channels=np.array([1., 1000.])*u.micron, 
                              incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, nphotons=1000000, include_gas=False)
+
+    g = Gas()
+    g.set_properties_from_lambda('co.dat')
+
+    cube = model.make_image(npix=256, pixel_size=0.2*u.arcsec, channels=np.linspace(-20., 20., 300)*u.km/u.s, rest_frequency=g.nu[2], 
+                            incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device='cpu')
+    mom0 = cube.sum(dim='lam')
 
     # Do the checks.
 
@@ -69,8 +82,12 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
         base_image = xr.open_dataset(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_image.nc"))
         Q = calculate_Qvalue(image.intensity, base_image.intensity, percentile=99.0, clip=0.1)
         assert Q < 1.025, f"Image difference exceeds tolerance: {Q}"
+
+        base_image = xr.open_dataset(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_mom0.nc"))
+        Q = calculate_Qvalue(image.intensity, base_image.intensity, percentile=99.0, clip=0.1)
+        assert Q < 1.025, f"Mom0 difference exceeds tolerance: {Q}"
     else:
-        return model.grid.grid.temperature.numpy(), model.grid.scattering.numpy(), image
+        return model.grid.grid.temperature.numpy(), model.grid.scattering.numpy(), image, mom0
 
 def update_test(test, grid_class):
     found = False
@@ -82,8 +99,9 @@ def update_test(test, grid_class):
     if not found:
         raise ValueError(f"Grid class {grid_class} not found in test data. Please add it to the test_data list in test_E2E.py.")
     
-    temperature, scattering, image = test(grid_class, data[1], data[2], return_vals=True)
+    temperature, scattering, image, mom0 = test(grid_class, data[1], data[2], return_vals=True)
 
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_temperature.npz"), temperature=temperature)
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_scattering.npz"), scattering=scattering)
     image.to_netcdf(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_image.nc"))
+    mom0.to_netcdf(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_mom0.nc"))
