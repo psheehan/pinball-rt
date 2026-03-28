@@ -67,25 +67,36 @@ class Model:
     def set_physical_properties(self, density=None, dust=None, amax=None, p=None, gases=None, abundances=None, 
                                 velocity=None, microturbulence=None):
         """
-        Add density to the grid.
+        Set the physical properties of the grid.
         
         Parameters
         ----------
-        density : astropy.units.Quantity
+        density : astropy.units.Quantity, optional
             The density to add to the grid.
-        dust : Dust
+        dusttogasratio : float, optional
+            The dust-to-gas mass ratio. Default is 0.01.
+        dust : Dust, optional
             The dust distribution to use.
-        amax : astropy.units.Quantity
+        amax : astropy.units.Quantity, optional
             The maximum dust size of the dust in the grid. Can be specified as a single value to be constant over
             the grid, or as an array with a spatially varying value.
-        p : float or array-like
+        p : float or array-like, optional
             The dust grain size distribution power-law slope. Can be specified as a single value to be constant over
             the grid, or as an array with a spatially varying value.
+        gases : Gas, optional
+            List of gas species to include in the grid.
+        abundances : dict, optional
+            The abundances of the gas species.
+        velocity : astropy.units.Quantity, optional
+            The velocity field of the gas.
+        microturbulence : astropy.units.Quantity, optional
+            The microturbulent velocity of the gas.
         """
         for device in self.grid_list:
-            self.grid_list[device].set_physical_properties(density=density, dust=load(dust) if isinstance(dust, str) else dust,
-                                               amax=amax, p=p, gases=gases, abundances=abundances,
-                                               velocity=velocity, microturbulence=microturbulence)
+            self.grid_list[device].set_physical_properties(density=density, dusttogasratio=dusttogasratio,
+                                                           dust=load(dust) if isinstance(dust, str) else dust,
+                                                           amax=amax, p=p, gases=gases, abundances=abundances,
+                                                           velocity=velocity, microturbulence=microturbulence)
 
     def add_sources(self, sources):
         """
@@ -248,8 +259,8 @@ class Model:
         if return_timing:
             return timing
 
-    def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, include_dust=True, 
-                   include_gas=True, include_sources=True, nphotons=100000, device="cpu"):
+    def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, 
+                   include_dust=True, include_gas=True, include_sources=True, nphotons=100000, device="cpu"):
         """
         Create an image from the dust distribution.
 
@@ -260,14 +271,22 @@ class Model:
         pixel_size : Quantity
             The size of each pixel in the image. If none, will set the pixel size such that the image is
             25% larger than the grid.
-        lam : array-like Quantity
-            The wavelengths to simulate.
+        channels : array-like Quantity
+            The wavelengths, frequencies, or velocities to simulate.
         incl : Quantity
             The inclination angle of the image.
         pa : Quantity
             The position angle of the image.
-        dpc : Quantity
-            The distance to the image plane in parsecs.
+        distance : Quantity
+            The distance to the image plane.
+        include_dust : bool, optional
+            Whether to include dust in the image (default is True).
+        include_gas : bool, optional
+            Whether to include gas in the image (default is True).
+        include_sources : bool, optional
+            Whether to include sources in the image (default is True).
+        nphotons : int, optional
+            The number of photons to use in the Monte Carlo simulation (default is 100000).
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """

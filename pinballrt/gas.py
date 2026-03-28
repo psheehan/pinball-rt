@@ -8,6 +8,16 @@ import os
 class Gas:
 
     def set_properties_from_lambda(self, filename):
+        """
+        Set the properties of the gas from a Leiden Atomic and Molecular Database (LAMDA) file. The filename can either be a 
+        local file, or the name of a valid file in the LAMDA database, which will be downloaded and stored in the pinball-rt 
+        cache in the user's home directory if it is not already present.
+
+        Parameters
+        ----------
+        filename : str
+            The name of the LAMDA file to load. This can be a local file path or the name of a file in the LAMDA database.
+        """
         if not os.path.exists(filename):
             if os.path.exists(os.environ["HOME"]+"/.pinballrt/data/gas/"+filename):
                 filename = os.environ["HOME"]+"/.pinballrt/data/gas/"+filename

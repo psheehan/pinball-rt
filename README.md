@@ -39,10 +39,17 @@ Then set up a model and run:
    amax = np.ones(model.grid.shape) * u.cm
    amax[4,4,4] = 1. * u.micron
 
-   model.add_density(density, "diana_wice.dst", amax=amax)
+   model.set_physical_properties(density=density, dust="diana_wice.dst", amax=amax)
    model.add_sources(star)
 
+   # Calculate the temperature structure.
    model.thermal_mc(nphotons=100000)
+
+   # Make an image.
+   image = model.make_image(npix=256, pixel_size=0.2*u.arcsec, 
+                            channels=np.array([1., 1000.])*u.micron, incl=45.*u.degree, 
+                            pa=45.*u.degree, distance=1.*u.pc, device='cpu', 
+                            include_gas=False, nphotons=1000000)
 ```
 
 For more information, see the documentation at https://pinball-rt.readthedocs.io.
