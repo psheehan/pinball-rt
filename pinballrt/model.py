@@ -64,8 +64,8 @@ class Model:
         else:
             self.pool = SerialPool()
 
-    def set_physical_properties(self, density=None, dust=None, amax=None, p=None, gases=None, abundances=None, 
-                                velocity=None, microturbulence=None):
+    def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, 
+                                gases=None, abundances=None, velocity=None, microturbulence=None):
         """
         Set the physical properties of the grid.
         
