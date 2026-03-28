@@ -41,3 +41,5 @@ class PhotonList:
     phi: wp.array(dtype=float)
     sin_phi: wp.array(dtype=float)
     cos_phi: wp.array(dtype=float)
+
+    direction_frame: wp.array(dtype=wp.vec3)

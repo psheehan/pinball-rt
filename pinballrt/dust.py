@@ -663,7 +663,7 @@ class Dust(pl.LightningDataModule):
 
         density = np.ones(grid.shape) * 1e-16 * u.g / u.cm**3
 
-        grid.add_density(density, self)
+        grid.set_physical_properties(density=density, amax=1.0*u.micron, p=3.5, dust=self)
         grid.add_sources(star)
 
         # Emit the photons

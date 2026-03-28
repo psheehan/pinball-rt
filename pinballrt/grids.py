@@ -2,6 +2,7 @@ import torch
 from .photons import PhotonList
 from .sources import GridSource, EnergySource
 from astropy.modeling import models
+from .gas import Gas
 import astropy.units as u
 import astropy.constants as const
 import warp as wp
@@ -60,32 +61,69 @@ class Grid:
 
         self.__dict__.update(state)
 
-    def add_density(self, _density, dust, amax=1.0*u.micron, p=3.5):
+    def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, gases=None, abundances=None, 
+                                velocity=None, microturbulence=None):
         with wp.ScopedDevice(self.device):
-            self.grid.density = wp.array3d((_density*dust.kmean).to(1./self.distance_unit).value, dtype=float)
+            if density is not None:
+                self.grid.dust_density = wp.array3d((density * dusttogasratio * dust.kmean).to(1. / self.distance_unit).value, dtype=float)
+                self.grid.gas_density = wp.array3d(density.to(u.g / u.cm**3), dtype=float)
 
-            self.grid.energy = wp.zeros(_density.shape, dtype=float)
-            self.grid.temperature = wp.array3d(np.ones(_density.shape)*0.1, dtype=float)
-            self.mass = (_density * self.volume.cpu().numpy() * self.distance_unit**3).decompose()
+                self.grid.energy = wp.zeros(density.shape, dtype=float)
+                self.grid.temperature = wp.array3d(np.ones(density.shape) * 0.1, dtype=float)
+                self.dust_mass = (density * dusttogasratio * self.volume.cpu().numpy() * self.distance_unit**3).decompose()
 
-            if isinstance(amax, (int, float)):
-                self.grid.amax = wp.array3d(np.ones(_density.shape)*amax, dtype=float)
-            elif isinstance(amax, np.ndarray):
-                self.grid.amax = wp.array3d(amax, dtype=float)
-            elif isinstance(amax, u.Quantity):
-                if len(amax.shape) == 0:
-                    self.grid.amax = wp.array3d(np.ones(_density.shape)*amax.to(u.cm).value, dtype=float)
-                else:
-                    self.grid.amax = wp.array3d(amax.to(u.cm).value, dtype=float)
+            if amax is not None:
+                if isinstance(amax, (int, float)):
+                    self.grid.amax = wp.array3d(np.ones(density.shape) * amax, dtype=float)
+                elif isinstance(amax, np.ndarray):
+                    self.grid.amax = wp.array3d(amax, dtype=float)
+                elif isinstance(amax, u.Quantity):
+                    if len(amax.shape) == 0:
+                        self.grid.amax = wp.array3d(np.ones(density.shape) * amax.to(u.cm).value, dtype=float)
+                    else:
+                        self.grid.amax = wp.array3d(amax.to(u.cm).value, dtype=float)
 
-            if isinstance(p, (int, float)):
-                self.grid.p = wp.array3d(np.ones(_density.shape)*p, dtype=float)
-            elif isinstance(p, np.ndarray):
-                self.grid.p = wp.array3d(p, dtype=float)
+            if p is not None:
+                if isinstance(p, (int, float)):
+                    self.grid.p = wp.array3d(np.ones(density.shape) * p, dtype=float)
+                elif isinstance(p, np.ndarray):
+                    self.grid.p = wp.array3d(p, dtype=float)
 
-            self.dust = dust
+            if dust is not None:
+                self.dust = dust
+                self.dust.to_device(wp.device_to_torch(wp.get_device()))
 
-            self.dust.to_device(wp.device_to_torch(wp.get_device()))
+            if gases is not None:
+                self.gases = []
+                for g in gases:
+                    if isinstance(g, str):
+                        gas = Gas()
+                        gas.set_properties_from_lambda(g)
+                        self.gases.append(gas)
+                    else:
+                        self.gases.append(g)
+                
+                self.gas_abundances = abundances
+
+            if velocity is not None:
+                self.grid.velocity = wp.array4d((velocity / const.c).decompose(), dtype=float)
+            else:
+                if gases is not None:
+                    self.grid.velocity = wp.array4d(np.zeros((3, self.shape[0], self.shape[1], self.shape[2])), dtype=float)
+
+            if microturbulence is not None:
+                if isinstance(microturbulence, (int, float)):
+                    self.grid.microturbulence = wp.array3d(np.ones(self.shape)*microturbulence, dtype=float)
+                elif isinstance(microturbulence, np.ndarray):
+                    self.grid.microturbulence = wp.array3d(microturbulence, dtype=float)
+                elif isinstance(microturbulence, u.Quantity):
+                    if len(microturbulence.shape) == 0:
+                        self.grid.microturbulence = wp.array3d(np.ones(self.shape)*microturbulence.to(u.km / u.s).value, dtype=float)
+                    else:
+                        self.grid.microturbulence = wp.array3d(microturbulence.to(u.km / u.s), dtype=float)
+            else:
+                if gases is not None:
+                    self.grid.microturbulence = wp.array3d(np.zeros(self.shape), dtype=float)
 
     def add_sources(self, sources):
         """
@@ -125,6 +163,7 @@ class Grid:
                 else:
                     photon_list.position = wp.array(np.concatenate((photon_list.position.numpy(), tmp_photon_list.position.numpy()), axis=0), dtype=wp.vec3)
                     photon_list.direction = wp.array(np.concatenate((photon_list.direction.numpy(), tmp_photon_list.direction.numpy()), axis=0), dtype=wp.vec3)
+                    photon_list.direction_frame = wp.array(np.concatenate((photon_list.direction_frame.numpy(), tmp_photon_list.direction_frame.numpy()), axis=0), dtype=wp.vec3)
                     photon_list.frequency = wp.array(np.concatenate((photon_list.frequency.numpy(), tmp_photon_list.frequency.numpy()), axis=0), dtype=float)
                     photon_list.energy = wp.array(np.concatenate((photon_list.energy.numpy(), tmp_photon_list.energy.numpy()), axis=0), dtype=float)
                     photon_list.in_grid = wp.array(np.concatenate((photon_list.in_grid.numpy(), tmp_photon_list.in_grid.numpy()), axis=0), dtype=bool)
@@ -156,7 +195,7 @@ class Grid:
 
         ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
 
-        photon_list.alpha[ip] = grid.density[ix,iy,iz] * photon_list.ksca[ip]
+        photon_list.alpha[ip] = grid.dust_density[ix,iy,iz] * photon_list.ksca[ip]
         distances[ip] = photon_list.tau[ip] / photon_list.alpha[ip]
 
     @wp.kernel
@@ -257,7 +296,7 @@ class Grid:
         ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
 
         photon_list.temperature[ip] = grid.temperature[ix, iy, iz]
-        photon_list.density[ip] = grid.density[ix, iy, iz]
+        photon_list.density[ip] = grid.dust_density[ix, iy, iz]
         photon_list.amax[ip] = grid.amax[ix, iy, iz]
         photon_list.p[ip] = grid.p[ix, iy, iz]
 
@@ -386,9 +425,9 @@ class Grid:
 
                 temperature = ((total_energy*u.L_sun).cgs.value / (4*const.sigma_sb.cgs.value*\
                         planck_mean_opacity*\
-                        self.mass.cgs.value))**0.25
+                        self.dust_mass.cgs.value))**0.25
 
-                temperature[np.logical_or(temperature < 0.1, self.mass.value == 0)] = 0.1
+                temperature[np.logical_or(temperature < 0.1, self.dust_mass.value == 0)] = 0.1
 
                 if (np.abs(old_temperature - temperature) / old_temperature).max() < 1.0e-2:
                     converged = True
@@ -883,6 +922,81 @@ class Grid:
 
         photon_list.pixel_too_large[ir] = pixel_size > cell_size[ix,iy,iz]
 
+    def select_lines(self, lam):
+        # Convert wavelengths to frequencies and find range
+        nu = (const.c / lam).to(u.GHz)
+        max_nu = nu.max() 
+        min_nu = nu.min()
+
+        line_nu = []
+        alpha_line = []
+        inv_gamma = []
+
+        # Check which lines fall in range for each gas
+        for igas, gas in enumerate(self.gases):
+            # Calculate maximum line width
+            max_v = self.grid.velocity.numpy().max() * const.c
+            a_thermal = 3*np.sqrt(2 * const.k_B * self.grid.temperature.numpy().max()*u.K / \
+                    (gas.mass * const.m_p)) # 3-sigma width
+            a_microturb = self.grid.microturbulence.numpy().max() * u.km / u.s
+
+            max_v += a_thermal + a_microturb
+
+            # Check each transition
+            for iline in range(gas.nu.size):
+                max_frequency = gas.nu[iline] * (1 + max_v / const.c)
+                min_frequency = gas.nu[iline] * (1 - max_v / const.c)
+
+                if ((min_nu < min_frequency and min_frequency < max_nu) or
+                        (min_nu < max_frequency and max_frequency < max_nu) or
+                        (min_frequency < min_nu and max_nu < max_frequency)):
+
+                    print(f"Including gas {igas} transition at {gas.nu[iline]}")
+
+                    alpha_line_tmp, inv_gamma_tmp = self.calculate_level_populations(igas, iline)
+
+                    line_nu.append(gas.nu[iline].to(u.GHz).value)
+                    alpha_line.append(alpha_line_tmp)
+                    inv_gamma.append(inv_gamma_tmp)
+
+        with wp.ScopedDevice(self.device):
+            self.grid.alpha_line = wp.array4d(np.array(alpha_line), dtype=float)
+            self.grid.inv_gamma = wp.array4d(np.array(inv_gamma), dtype=float)
+            self.grid.nlines = len(line_nu)
+            self.grid.line_nu = wp.array1d(np.array(line_nu), dtype=float)
+
+    def calculate_level_populations(self, igas, iline):
+        gas = self.gases[igas]
+
+        # get level indices (convert to 0-based)
+        level_up = gas.J_u[iline] - 1
+        level_low = gas.J_l[iline] - 1
+
+        level_populations_upper = np.zeros(self.shape)
+        level_populations_lower = np.zeros(self.shape)
+        alpha_line = np.zeros(self.shape)
+        self.inv_gamma_thermal_np = np.zeros(self.shape)
+
+        # partition function: either callable or array-like
+        Q = gas.partition_function(self.grid.temperature.numpy())
+
+        # level populations (LTE Boltzmann with partition function)
+        level_populations_upper = gas.g[level_up] * np.exp(-const.h * const.c * gas.E[level_up] / (const.k_B * self.grid.temperature.numpy()*u.K)) / Q
+        level_populations_lower = gas.g[level_low] * np.exp(-const.h * const.c * gas.E[level_low] / (const.k_B * self.grid.temperature.numpy()*u.K)) / Q
+
+        # thermal / microturbulent broadening
+        a_thermal = np.sqrt(2.0 * const.k_B * self.grid.temperature.numpy()*u.K / (gas.mass * const.m_p))
+        a_microturb = self.grid.microturbulence.numpy() * u.km / u.s
+        inv_gamma = (1.0 / (gas.nu[iline] / const.c * np.sqrt(a_thermal**2 + a_microturb**2))).decompose().to(1./u.GHz)
+
+        number_density = (self.grid.gas_density.numpy()*u.g / u.cm**3 * self.gas_abundances[igas] / (gas.mass * const.m_p)).decompose()
+        
+        # Alpha for this line in this cell
+        # alpha = c^2/(8*pi*nu^2) * A * n * (n_l * g_u/g_l - n_u) * inv_gamma / sqrt(pi)
+        alpha_line = (const.c**2 / (8.0 * np.pi * gas.nu[iline]**2) * gas.A_ul[iline] * number_density * (level_populations_lower * (gas.g[level_up] / gas.g[level_low]) - level_populations_upper) * (inv_gamma / np.sqrt(np.pi))).decompose().to(1./self.distance_unit)
+
+        return alpha_line, inv_gamma
+
     @wp.kernel
     def add_intensity(ray_list: PhotonList,
                       s: wp.array(dtype=float),
@@ -897,23 +1011,39 @@ class Grid:
 
         tau_cell = 0.
         intensity_abs = 0.
+        intensity_sca = 0.
         alpha_ext = 0.
         alpha_sca = 0.
 
-        tau_cell = tau_cell + s[ir]*ray_list.kext[ir,inu]*grid.density[ix,iy,iz]
-        alpha_ext = alpha_ext + ray_list.kext[ir,inu]*grid.density[ix,iy,iz]
-        alpha_sca = alpha_sca + ray_list.kext[ir,inu]*ray_list.ray_albedo[ir,inu]*grid.density[ix,iy,iz]
-        intensity_abs = intensity_abs + ray_list.kext[ir,inu] * (1. - ray_list.ray_albedo[ir,inu]) * \
-                grid.density[ix,iy,iz] * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
+        if grid.include_dust:
+            tau_cell = tau_cell + s[ir]*ray_list.kext[ir,inu]*grid.dust_density[ix,iy,iz]
+            alpha_ext = alpha_ext + ray_list.kext[ir,inu]*grid.dust_density[ix,iy,iz]
+            alpha_sca = alpha_sca + ray_list.kext[ir,inu]*ray_list.ray_albedo[ir,inu]*grid.dust_density[ix,iy,iz]
+            intensity_abs = intensity_abs + ray_list.kext[ir,inu] * (1. - ray_list.ray_albedo[ir,inu]) * \
+                    grid.dust_density[ix,iy,iz] * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
 
-        albedo_total = alpha_sca / alpha_ext
+            albedo_total = alpha_sca / alpha_ext
 
-        if alpha_ext > 0.:
-            intensity_abs = intensity_abs * (1.0 - wp.exp(-tau_cell)) / alpha_ext
+            if alpha_ext > 0.:
+                intensity_abs = intensity_abs * (1.0 - wp.exp(-tau_cell)) / alpha_ext
 
-        intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * scattering[inu,ix,iy,iz]
+                intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * scattering[inu,ix,iy,iz]
 
-        intensity_cell = intensity_abs + intensity_sca
+        intensity_line = float(0.)
+        if grid.include_gas:
+            vector_velocity = wp.vec3(grid.velocity[0,ix,iy,iz], grid.velocity[1,ix,iy,iz], grid.velocity[2,ix,iy,iz])
+            for itrans in range(grid.nlines):
+                # Need to add doppler shift here based on cell velocity along ray direction
+                profile = wp.exp(-(ray_list.frequency[inu] * (1.0 + wp.dot(ray_list.direction[ir],vector_velocity)) - grid.line_nu[itrans])**2. * (grid.inv_gamma[itrans,ix,iy,iz]**2.))
+
+                alpha_this_line = grid.alpha_line[itrans,ix,iy,iz] * profile
+
+                tau_cell = tau_cell + s[ir] * alpha_this_line
+                alpha_ext = alpha_ext + alpha_this_line
+
+                intensity_line = intensity_line + alpha_this_line * planck_function(ray_list.frequency[inu], grid.temperature[ix,iy,iz])
+
+        intensity_cell = intensity_abs + intensity_sca + intensity_line
 
         ray_list.intensity[ir,inu] = (ray_list.intensity[ir,inu] + intensity_cell * wp.exp(-ray_list.tau_intensity[ir,inu])) * (1. - wp.float32(ray_list.pixel_too_large[ir]))
         ray_list.tau_intensity[ir,inu] = ray_list.tau_intensity[ir,inu] + tau_cell
@@ -928,7 +1058,7 @@ class Grid:
 
         ix, iy, iz = ray_list.indices[ir][0], ray_list.indices[ir][1], ray_list.indices[ir][2]
 
-        ray_list.intensity[ir, inu] = ray_list.intensity[ir, inu] * wp.exp(-s[ir] * ray_list.kext[ir, inu] * grid.density[ix, iy, iz])
+        ray_list.intensity[ir, inu] = ray_list.intensity[ir, inu] * wp.exp(-s[ir] * ray_list.kext[ir, inu] * grid.dust_density[ix, iy, iz])
 
     @wp.kernel
     def set_ray_opacities(ray_list: PhotonList,
@@ -1233,7 +1363,7 @@ class UniformCartesianGrid(Grid):
         if sz2 < s:
             s = sz2
 
-        if s * photon_list.kabs[ip] * grid.density[ix, iy, iz] < 10.**log10_tau_min:
+        if s * photon_list.kabs[ip] * grid.dust_density[ix, iy, iz] < 10.**log10_tau_min:
             s = 0.
 
         max_tau_distance = 10.**log10_tau_max / photon_list.alpha[ip]
@@ -1380,6 +1510,8 @@ class UniformCartesianGrid(Grid):
         elif photon_list.position[ip][2] == grid.w3[i3+1] and photon_list.direction[ip][2] > 0:
             i3 += 1
         photon_list.indices[ip][2] = i3
+
+        photon_list.direction_frame[ip] = photon_list.direction[ip]
 
 class UniformSphericalGrid(Grid):
     def __init__(self, ncells=9, dr=1.0*u.au, mirror=True, device="cpu"):
@@ -1635,7 +1767,7 @@ class UniformSphericalGrid(Grid):
                 if sp < s:
                     s = sp
 
-        if s * photon_list.kabs[ip] * grid.density[iw1, iw2, iw3] < log10_tau_min:
+        if s * photon_list.kabs[ip] * grid.dust_density[iw1, iw2, iw3] < log10_tau_min:
             s = 0.
 
         max_tau_distance = log10_tau_max / photon_list.alpha[ip]
@@ -1848,6 +1980,14 @@ class UniformSphericalGrid(Grid):
         photon_list.position[ip][0] = photon_list.radius[ip] * photon_list.sin_theta[ip] * photon_list.cos_phi[ip]
         photon_list.position[ip][1] = photon_list.radius[ip] * photon_list.sin_theta[ip] * photon_list.sin_phi[ip]
         photon_list.position[ip][2] = photon_list.radius[ip] * photon_list.cos_theta[ip]
+
+        # Also, since we have all of the components calculated, update the direction frame
+
+        xhat = wp.vec3(photon_list.sin_theta[ip] * photon_list.cos_phi[ip], photon_list.cos_theta[ip] * photon_list.cos_phi[ip], -photon_list.sin_phi[ip])
+        yhat = wp.vec3(photon_list.sin_theta[ip] * photon_list.sin_phi[ip], photon_list.cos_theta[ip] * photon_list.sin_phi[ip], photon_list.cos_phi[ip])
+        zhat = wp.vec3(photon_list.cos_theta[ip], -photon_list.sin_theta[ip], 0.)
+
+        photon_list.direction_frame[ip] = photon_list.direction[ip][0] * xhat + photon_list.direction[ip][1] * yhat + photon_list.direction[ip][2] * zhat
 
 class LogUniformSphericalGrid(UniformSphericalGrid):
     def __init__(self, ncells=9, rmin=0.1*u.au, rmax=4.5*u.au, mirror=True, device="cpu"):
@@ -2122,3 +2262,11 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
         photon_list.position[ip][0] = photon_list.radius[ip] * photon_list.sin_theta[ip] * photon_list.cos_phi[ip]
         photon_list.position[ip][1] = photon_list.radius[ip] * photon_list.sin_theta[ip] * photon_list.sin_phi[ip]
         photon_list.position[ip][2] = photon_list.radius[ip] * photon_list.cos_theta[ip]
+
+        # Also, since we have all of the components calculated, update the direction frame
+
+        xhat = wp.vec3(photon_list.sin_theta[ip] * photon_list.cos_phi[ip], photon_list.cos_theta[ip] * photon_list.cos_phi[ip], -photon_list.sin_phi[ip])
+        yhat = wp.vec3(photon_list.sin_theta[ip] * photon_list.sin_phi[ip], photon_list.cos_theta[ip] * photon_list.sin_phi[ip], photon_list.cos_phi[ip])
+        zhat = wp.vec3(photon_list.cos_theta[ip], -photon_list.sin_theta[ip], 0.)
+
+        photon_list.direction_frame[ip] = photon_list.direction[ip][0] * xhat + photon_list.direction[ip][1] * yhat + photon_list.direction[ip][2] * zhat

@@ -100,6 +100,7 @@ class SphericalSource:
         phi = 2*np.pi*np.random.rand(nphotons)
 
         direction = cost[:,np.newaxis]*r_hat + (sint*np.cos(phi))[:,np.newaxis]*phi_hat + (sint*np.sin(phi))[:,np.newaxis]*theta_hat
+        direction_frame = cost[:,np.newaxis]*r_hat + (sint*np.cos(phi))[:,np.newaxis]*phi_hat + (sint*np.sin(phi))[:,np.newaxis]*theta_hat
 
         if wavelength == "random":
             t1 = time.time()
@@ -118,6 +119,7 @@ class SphericalSource:
             photon_list = PhotonList()
             photon_list.position = wp.array(position, dtype=wp.vec3)
             photon_list.direction = wp.array(direction, dtype=wp.vec3)
+            photon_list.direction_frame = wp.array(direction_frame, dtype=wp.vec3)
             photon_list.frequency = wp.array(frequency, dtype=float)
             photon_list.energy = wp.array(photon_energy, dtype=float)
             photon_list.in_grid = wp.ones(nphotons, dtype=bool)
@@ -141,6 +143,7 @@ class SphericalSource:
             ray_list = PhotonList()
             ray_list.position = wp.array(position, dtype=wp.vec3)
             ray_list.direction = wp.array(direction, dtype=wp.vec3)
+            ray_list.direction_frame = wp.array(direction, dtype=wp.vec3)
             ray_list.indices = wp.zeros(position.shape, dtype=int)
             ray_list.intensity = wp.array2d(intensity, dtype=float)
             ray_list.tau_intensity = wp.array2d(tau_intensity, dtype=float)
@@ -405,6 +408,7 @@ class DiffuseSource:
                     inputs=[photon_list.position, cell_coords, self.grid.grid, np.random.randint(0, 100000)])
 
             photon_list.direction = wp.array(np.zeros((nphotons, 3)), dtype=wp.vec3)
+            photon_list.direction_frame = wp.array(np.zeros((nphotons, 3)), dtype=wp.vec3)
             wp.launch(kernel=self.grid.random_direction,
                         dim=(nphotons,),
                         inputs=[photon_list.direction, torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device())), np.random.randint(0, 100000)])
@@ -448,7 +452,7 @@ class GridSource(DiffuseSource):
                 for i in range(self.grid.shape[0]):
                     for j in range(self.grid.shape[1]):
                         for k in range(self.grid.shape[2]):
-                            self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(wp.to_torch(self.grid.grid.p)[i,j,k].expand(nu.size), wp.to_torch(self.grid.grid.amax)[i,j,k].expand(nu.size), torch.tensor(nu.value, dtype=torch.float32, device=wp.device_to_torch(wp.get_device()))).cpu().numpy()*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value[0]
+                            self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.dust_density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(wp.to_torch(self.grid.grid.p)[i,j,k].expand(nu.size), wp.to_torch(self.grid.grid.amax)[i,j,k].expand(nu.size), torch.tensor(nu.value, dtype=torch.float32, device=wp.device_to_torch(wp.get_device()))).cpu().numpy()*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value[0]
 
         self.total_lum = self.luminosity.sum()
 

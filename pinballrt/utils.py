@@ -90,8 +90,20 @@ class GridStruct:
 
     mirror_symmetry: bool
 
-    density: wp.array3d(dtype=float)
+    dust_density: wp.array3d(dtype=float)
+    gas_density: wp.array3d(dtype=float)
     temperature: wp.array3d(dtype=float)
     energy: wp.array3d(dtype=float)
     amax: wp.array3d(dtype=float)
     p: wp.array3d(dtype=float)
+
+    velocity: wp.array4d(dtype=float)
+    microturbulence: wp.array3d(dtype=float)
+
+    nlines: int
+    line_nu: wp.array1d(dtype=float)
+    alpha_line: wp.array4d(dtype=float)
+    inv_gamma: wp.array4d(dtype=float)
+
+    include_dust: bool
+    include_gas: bool
