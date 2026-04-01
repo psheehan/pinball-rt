@@ -21,25 +21,26 @@ Then set up a model and run:
 
 .. code-block:: python
 
-   from pinballrt.sources import Star
+   from pinballrt.sources import BlackbodyStar
    from pinballrt.grids import UniformCartesianGrid
    from pinballrt.model import Model
    import astropy.units as u
    import numpy as np
 
    # Set up the star.
-   star = Star()
-   star.set_blackbody_spectrum()
+   star = BlackbodyStar()
 
    # Set up the grid.
    model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
 
    density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
+   amax = np.ones(model.grid.shape) * u.cm
+   amax[4,4,4] = 1.0 * u.micron
 
-   model.add_density(density, "yso.dst")
-   model.add_star(star)
+   model.add_density(density, "diana_wice.dst", amax=amax)
+   model.add_sources(star)
 
-   model.thermal_mc(nphotons=1000000)
+   model.thermal_mc(nphotons=100000)
 
 Or, click the link below to try it out in Google Colab:
 
