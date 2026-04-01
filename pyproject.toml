@@ -24,6 +24,7 @@ dependencies = [
   "tqdm",
   "xarray",
   "PyMieScatt @ git+https://github.com/bsumlin/PyMieScatt.git",
+  "zuko", 
   "schwimmbad",
   "requests",
 ]
