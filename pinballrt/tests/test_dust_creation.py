@@ -54,7 +54,7 @@ def test_learn_ml_step():
     # Test the learn_ml_step method.
 
     n_samples = 100
-    d.learn(model="ml_step", nsamples=n_samples, tau_range=(0.5, 1.0), nu_range=(d.nu.max()/10, d.nu.max()))
+    d.learn(model="ml_step", hidden_units=((32, 32, 32),)*6, nsamples=n_samples, tau_range=(0.5, 1.0), nu_range=(d.nu.max()/10, d.nu.max()))
     d.fit(epochs=10)
     d.test_model(plot=True)
 

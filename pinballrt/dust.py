@@ -17,6 +17,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torch
 import os
+import zuko
 
 from torch.distributions.multivariate_normal import MultivariateNormal
 
@@ -344,14 +345,14 @@ class Dust(pl.LightningDataModule):
                               torch.log10(wp.to_torch(photon_list.density)[iphotons] * wp.to_torch(photon_list.kabs)[iphotons] * s[iphotons]),
                               )), 0, 1)
 
-        test_x = self.ml_step_model.condition(self.ml_step_y_scaler.transform(test_y)).sample(test_y.size(0)).detach()
+        test_x = self.ml_step_model.condition(self.ml_step_y_scaler.transform(test_y)).sample().detach()
         test_x = self.ml_step_x_scaler.inverse_transform(test_x)
 
         return 10.**torch.clamp(test_x[:,0], self.log10_nu0_min, self.log10_nu0_max), 10.**test_x[:,1], 10.**test_x[:,2], test_x[:,3], test_x[:,4], torch.zeros(test_x.size(0)), test_x[:,5], test_x[:,6], torch.zeros(test_x.size(0))
 
     def initialize_model(self, model="random_nu", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
         if model == 'ml_step':
-            self.ml_step_model = StackedNVP(input_size, hidden_units=hidden_units[0], conditional_size=output_size, nflows=len(hidden_units))
+            self.ml_step_model = NeuralSplineFlow(input_size, output_size, transforms=len(hidden_units), hidden_features=hidden_units[0])
         elif model == 'random_nu':
             self.random_nu_model = MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units)
         elif model == "kabs":
@@ -891,7 +892,7 @@ class Dust(pl.LightningDataModule):
 
             y_true = torch.unsqueeze(y_true, 1)
 
-        if plot_columns == 'all':
+        if isinstance(plot_columns, str) and plot_columns == 'all':
             columns = np.concatenate((targets, features))
         else:
             columns = np.array(plot_columns)
@@ -909,7 +910,7 @@ class Dust(pl.LightningDataModule):
                 if key1 == key2:
                     ax[i,j].hist(df_true[key1], bins=50, histtype='step', density=True)
                     if predict:
-                        ax[i,j].hist(df_pred[key1], bins=50, histtype='step', density=True)
+                        ax[i,j].hist(df_pred[key1], bins=250, histtype='step', density=True)
                 elif i > j:
                     ax[i,j].scatter(df_true[key2], df_true[key1], marker='.', s=1.0, alpha=1.0)
 
@@ -1051,7 +1052,7 @@ def load(filename, device="cpu"):
             getattr(d, f'{attr}_y_scaler').load_state_dict(state_dict[f"{attr}_y_scaler"])
 
     if "ml_step_state_dict" in state_dict:
-        hidden_units = [state_dict['ml_step_state_dict'][key].size(0) for key in state_dict['ml_step_state_dict'] if 'sig_net' in key and '0.weight' in key]
+        hidden_units = (tuple([state_dict['ml_step_state_dict'][key].size(1) for key in state_dict['ml_step_state_dict'] if '0.hyper' in key and 'weight' in key and '0.weight' not in key]),) * len([state_dict['ml_step_state_dict'][key].size(0) for key in state_dict['ml_step_state_dict'] if '0.weight' in key])
 
         d.initialize_model(model="ml_step", input_size=7, output_size=5, hidden_units=hidden_units)
 
@@ -1093,172 +1094,10 @@ class MultiLayerPerceptron(nn.Module):
 
     def loss(self, x, y):
         return nn.functional.mse_loss(self(x), y)
-    
-def softClampAsymAdvanced(value, negAlpha, posAlpha):
-    reLU = torch.nn.ReLU()
-    posValues = (2.0 * posAlpha / torch.pi) * torch.arctan(reLU(value) / posAlpha)
-    negValues = (2.0 * negAlpha / torch.pi) * torch.arctan(-reLU(-value) / negAlpha)
-    return negValues + posValues
 
-class RealNVP(nn.Module):
-    def __init__(self, input_size, hidden_units=48, conditional_size=0):
-        super().__init__()
-
-        self.d, self.c = input_size, conditional_size
-
-        self.sig_net = nn.Sequential(
-                    nn.Linear(self.d + self.c, hidden_units),
-                    nn.LeakyReLU(),
-                    nn.Linear(hidden_units, self.d),
-                    nn.Tanh())
-
-        self.mu_net = nn.Sequential(
-                    nn.Linear(self.d + self.c, hidden_units),
-                    nn.LeakyReLU(),
-                    nn.Linear(hidden_units, self.d),
-        )
-
-        self.mask = torch.ones(self.d)
-        self.mask[::2] = 0
-
-        base_mu, base_cov = torch.zeros(input_size), torch.eye(input_size)
-        self.base_dist = MultivariateNormal(base_mu, base_cov)
-
+class NeuralSplineFlow(zuko.flows.NSF):
     def condition(self, y):
-        self.y = y
-        return self
-
-    def forward(self, x, flip=False):
-        if flip:
-            mask = 1 - self.mask
-        else:
-            mask = self.mask
-        
-        # forward
-        if self.c > 0:
-            sig = (1 - mask) * self.sig_net(torch.cat([x * mask, self.y], dim=1))
-            mu = (1 - mask) * self.mu_net(torch.cat([x * mask, self.y], dim=1))
-        else:
-            sig = (1 - mask) * self.sig_net(x * mask)
-            mu = (1 - mask) * self.mu_net(x * mask)
-        #sig = softClampAsymAdvanced(sig, 2.0, 0.1)
-
-        z = x * mask + (1 - mask) * (x * torch.exp(sig) + mu)
-
-        log_pz = self.base_dist.log_prob(z)
-        log_jacob = (sig * (1 - mask)).sum(-1)
-
-        return z, log_pz, log_jacob
-
-    def inverse(self, Z, flip=False):
-        if flip:
-            mask = 1 - self.mask
-        else:
-            mask = self.mask
-
-        if self.c > 0:
-            sig = (1 - mask) * self.sig_net(torch.cat([Z * mask, self.y], dim=1))
-            mu = (1 - mask) * self.mu_net(torch.cat([Z * mask, self.y], dim=1))
-        else:
-            sig = self.sig_net(Z * mask)
-            mu = self.mu_net(Z * mask)
-        #sig = softClampAsymAdvanced(sig, 2.0, 0.1)
-        x = Z * mask + (1 - mask) * (Z - mu) * torch.exp(-sig)
-
-        return x
-
-
-class TrainableLOFTLayer(nn.Module):
-
-    def __init__(self, dim, initial_t, train_t):
-        assert(initial_t >= 1.0)
-        super().__init__()
-        self.dim = dim
-        self.rep_t = torch.ones(dim) * (initial_t - 1.0) # reparameterization of t
-        self.rep_t = torch.nn.Parameter(self.rep_t, requires_grad=train_t)
-
-        base_mu, base_cov = torch.zeros(dim), torch.eye(dim)
-        self.base_dist = MultivariateNormal(base_mu, base_cov)
-
-    def inverse(self, z):
-        t = self.get_t()
-
-        new_value, part1 = TrainableLOFTLayer.LOFT_forward_static(t, z)
-
-        #log_derivatives = - torch.log(part1 + 1.0)
-
-        #log_det = torch.sum(log_derivatives, axis = 1)
-
-        return new_value
-
-    def get_t(self):
-        return 1.0 + torch.nn.functional.softplus(self.rep_t)
-
-    def LOFT_forward_static(t, z):
-        part1 = torch.max(torch.abs(z) - t, torch.tensor(0.0))
-        part2 = torch.min(torch.abs(z), t)
-
-        new_value = torch.sign(z) * (torch.log(part1 + 1) + part2)
-
-        return new_value, part1
-
-    def forward(self, z):
-        t = self.get_t()
-
-        part1 = torch.max(torch.abs(z) - t, torch.tensor(0.0))
-        part2 = torch.min(torch.abs(z), t)
-
-        new_value = torch.sign(z) * (torch.exp(part1) - 1.0 + part2)
-
-        log_det = torch.sum(part1, axis = 1)
-        log_pz = self.base_dist.log_prob(new_value)
-
-        return new_value, log_pz, log_det
-    
-
-class StackedNVP(nn.Module):
-    def __init__(self, input_size, hidden_units=48, conditional_size=0, nflows=1):
-        super().__init__()
-        self.bijectors = nn.ModuleList([
-            RealNVP(input_size, hidden_units=hidden_units, conditional_size=conditional_size) for _ in range(nflows)
-        ])
-        self.flips = [True if i%2 else False for i in range(nflows)]
-
-        self.loft = TrainableLOFTLayer(input_size, 1.0, True)
-
-        base_mu, base_cov = torch.zeros(input_size), torch.eye(input_size)
-        self.base_dist = MultivariateNormal(base_mu, base_cov)
-
-    def condition(self, y):
-        for bijector in self.bijectors:
-            bijector.condition(y)
-        return self
-
-    def forward(self, x):
-        log_jacobs = []
-
-        x, log_pz, lj = self.loft(x)
-
-        for bijector, f in zip(self.bijectors, self.flips):
-            x, log_pz, lj = bijector(x, flip=f)
-            log_jacobs.append(lj)
-
-        return x, log_pz, sum(log_jacobs)
-
-    def inverse(self, z):
-        for bijector, f in zip(reversed(self.bijectors), reversed(self.flips)):
-            z = bijector.inverse(z, flip=f)
-        z = self.loft.inverse(z)
-        return z
-
-    def loss(self, x):
-        z, log_pz, log_jacob = self.forward(x)
-
-        return (-log_pz - log_jacob).mean()
-
-    def sample(self, n):
-        z = self.base_dist.rsample(sample_shape=(n,))
-        return self.inverse(z)
+        return self(y)
 
 class StandardScaler:
     def __init__(self):
@@ -1272,7 +1111,7 @@ class StandardScaler:
 
     def transform(self, data):
         # Apply the standardization
-        return (data - self.mean) / self.std
+        return torch.where(self.std == 0, 0., (data - self.mean) / self.std)
 
     def inverse_transform(self, data):
         # For reconstructing original data, useful for predictions
@@ -1306,7 +1145,7 @@ class DustLightningModule(pl.LightningModule):
     
     def loss(self, x, y):
         if hasattr(self.model, "condition"):
-            loss = self.condition(y).loss(x)
+            loss = -self.condition(y).log_prob(x).mean()
         else:
             loss = self.model.loss(x, y)
         return loss
@@ -1342,6 +1181,6 @@ class DustLightningModule(pl.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         x, y = batch
         if hasattr(self.model, "condition"):
-            return self.condition(y).sample(x.size(0))
+            return self.condition(y).sample()
         else:
             return self(x)
