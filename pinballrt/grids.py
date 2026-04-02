@@ -76,8 +76,9 @@ class Grid:
                 if isinstance(amax, (int, float)):
                     self.grid.amax = wp.array3d(np.ones(density.shape) * amax, dtype=float)
                 elif isinstance(amax, np.ndarray):
-                    self.grid.amax = wp.array3d(amax, dtype=float)
-                elif isinstance(amax, u.Quantity):
+                    if not isinstance(amax, u.Quantity):
+                        amax = amax * u.cm
+                        
                     if len(amax.shape) == 0:
                         self.grid.amax = wp.array3d(np.ones(density.shape) * amax.to(u.cm).value, dtype=float)
                     else:
