@@ -97,6 +97,9 @@ class GridStruct:
     amax: wp.array3d(dtype=float)
     p: wp.array3d(dtype=float)
 
+    kabs: wp.array4d(dtype=float)
+    ksca: wp.array4d(dtype=float)
+
     velocity: wp.array4d(dtype=float)
     microturbulence: wp.array3d(dtype=float)
 

@@ -193,7 +193,7 @@ class Model:
         if return_timing:
             return timing
 
-    def scattering_mc(self, nphotons, wavelengths, device="cpu", return_timing=False, nbatch=1):
+    def scattering_mc(self, nphotons, wavelengths, device="cpu", return_timing=False, nbatch=1, set_grid_opacities=True):
         """
         Perform a scattering Monte Carlo simulation.
 
@@ -211,6 +211,10 @@ class Model:
                 self.grid_list[dev].scattering = torch.zeros((len(wavelengths),)+self.grid_list[dev].shape, 
                                                              dtype=torch.float32, 
                                                              device=wp.device_to_torch(wp.get_device()))
+                
+        if set_grid_opacities:
+            nu = (const.c / wavelengths).to(u.GHz)
+            self.grid_list[device].set_grid_opacities(nu)
 
         timing = {}
         for i, wavelength in enumerate(wavelengths):
@@ -230,7 +234,7 @@ class Model:
                                        [nphotons]*njobs,
                                        [njobs]*njobs,
                                        [wavelength]*njobs,
-                                       [i]*njobs))
+                                       [i]*njobs,))
             total_scattering = [r[0] for r in result]
             time.sleep(0.1)
             t2 = time.time()
@@ -351,7 +355,8 @@ class Model:
         # First, run a scattering simulation to get the scattering phase function
 
         if include_dust:
-            self.scattering_mc(nphotons, lam, device=device)
+            self.grid_list[device].set_grid_opacities(nu)
+            self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False)
 
         # Now set up the image proper.
 
