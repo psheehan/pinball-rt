@@ -446,13 +446,15 @@ class GridSource(DiffuseSource):
                     self.mass * self.grid.grid.temperature.numpy()*u.K**4).to(u.L_sun)
         else:
             nu = (const.c / wavelength).to(u.GHz)
-            self.luminosity = np.zeros(self.grid.shape)
 
             with wp.ScopedDevice(self.grid.device):
-                for i in range(self.grid.shape[0]):
-                    for j in range(self.grid.shape[1]):
-                        for k in range(self.grid.shape[2]):
-                            self.luminosity[i,j,k] = (4*np.pi*u.steradian*self.grid.grid.dust_density.numpy()[i,j,k]*self.grid.volume.cpu().numpy()[i,j,k]*self.grid.dust.ml_kabs(wp.to_torch(self.grid.grid.p)[i,j,k].expand(nu.size), wp.to_torch(self.grid.grid.amax)[i,j,k].expand(nu.size), torch.tensor(nu.value, dtype=torch.float32, device=wp.device_to_torch(wp.get_device()))).cpu().numpy()*self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()[i,j,k]*u.K)(nu)).to(u.au**2 * u.Jy).value[0]
+                self.luminosity = (4*np.pi*u.steradian*\
+                                   self.grid.grid.dust_density.numpy()*\
+                                   self.grid.volume.cpu().numpy()*\
+                                   self.grid.dust.ml_kabs(wp.to_torch(self.grid.grid.p).flatten(), 
+                                                          wp.to_torch(self.grid.grid.amax).flatten(), 
+                                                          torch.tensor(nu.value, dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(np.prod(self.grid.shape))).cpu().numpy().reshape(self.grid.shape)*\
+                                   self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()*u.K)(nu)).to(u.au**2 * u.Jy).value
 
         self.total_lum = self.luminosity.sum()
 
