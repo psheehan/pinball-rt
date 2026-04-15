@@ -3,7 +3,7 @@ import astropy.units as u
 
 from .sources import DiffuseSource, EnergySource
 from .grids import Grid
-from .dust import load, Dust
+from .dust import load
 from .gas import Gas
 from .camera import Camera
 from schwimmbad import SerialPool, MultiPool
@@ -234,7 +234,8 @@ class Model:
                                        [nphotons]*njobs,
                                        [njobs]*njobs,
                                        [wavelength]*njobs,
-                                       [i]*njobs,))
+                                       [i]*njobs,
+                                       [self.camera_list[device].i_wp]*njobs))
             total_scattering = [r[0] for r in result]
             time.sleep(0.1)
             t2 = time.time()
@@ -354,14 +355,14 @@ class Model:
 
         # First, run a scattering simulation to get the scattering phase function
 
+        for dev in self.camera_list:
+            self.camera_list[dev].set_orientation(incl, pa, distance)
+
         if include_dust:
             self.grid_list[device].set_grid_opacities(nu)
             self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False)
 
         # Now set up the image proper.
-
-        for dev in self.camera_list:
-            self.camera_list[dev].set_orientation(incl, pa, distance)
 
         physical_pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
 
@@ -448,11 +449,11 @@ def thermal_mc_task(args):
     return grid.grid.energy.numpy(), iter_timing
 
 def scattering_mc_task(args):
-    grid, position, s, nphotons, njobs, wavelength, i = args
+    grid, position, s, nphotons, njobs, wavelength, i, camera_direction = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
     photon_list = grid.emit(int(nphotons / njobs), wavelength, scattering=True, timing=iter_timing)
-    grid.propagate_photons_scattering(photon_list, i, timing=iter_timing, position=position)
+    grid.propagate_photons_scattering(photon_list, i, camera_direction, timing=iter_timing, position=position)
 
     return grid.scattering, iter_timing
 

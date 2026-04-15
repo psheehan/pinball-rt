@@ -69,6 +69,23 @@ def calculate_Qvalue(array1, array2, percentile=99.0, clip=None):
     
     return Q
 
+@wp.kernel
+def random_direction(direction: wp.array(dtype=wp.vec3),
+                     iphotons: wp.array(dtype=int),
+                     seed: int): # pragma: no cover
+    i = wp.tid()
+    ip = iphotons[i]
+
+    rng = wp.rand_init(seed, i)
+
+    cost = -1. + 2.*wp.randf(rng)
+    sint = wp.sqrt(1.-cost**2.)
+    phi = 2.*np.pi*wp.randf(rng)
+
+    direction[ip][0] = sint*np.cos(phi)
+    direction[ip][1] = sint*np.sin(phi)
+    direction[ip][2] = cost
+
 @wp.struct
 class GridStruct:
     w1: wp.array(dtype=float)
@@ -99,6 +116,7 @@ class GridStruct:
 
     kabs: wp.array4d(dtype=float)
     ksca: wp.array4d(dtype=float)
+    g: wp.array4d(dtype=float)
 
     velocity: wp.array4d(dtype=float)
     microturbulence: wp.array3d(dtype=float)

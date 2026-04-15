@@ -27,6 +27,9 @@ class Camera:
         self.i = np.array([self.r*np.sin(self.incl)*np.cos(phi), \
                 self.r*np.sin(self.incl)*np.sin(phi), \
                 self.r*np.cos(self.incl)])
+        
+        with wp.ScopedDevice(self.grid.device):
+            self.i_wp = wp.vec3(self.i)
 
         self.ex = np.array([-np.sin(phi), np.cos(phi), 0.0])
         self.ey = np.array([-np.cos(self.incl)*np.cos(phi), \
