@@ -47,11 +47,8 @@ class Dust(pl.LightningDataModule):
 
         kunit = kabs.unit
         lam_unit = lam.unit
-        amax_unit = amax.unit
 
         lam = lam.value
-        amax = amax.value
-        p = p
         kabs = kabs.value
         ksca = ksca.value
 
@@ -63,9 +60,6 @@ class Dust(pl.LightningDataModule):
         self.nu = (const.c / (lam * lam_unit)).decompose().to(u.GHz)
         self.kmean = np.mean(kabs) * kunit
         self.lam = lam * lam_unit
-        self.amax = amax * amax_unit
-        self.p = p
-        self.abundances = abundances
         self.kabs = kabs / self.kmean.value
         self.ksca = ksca / self.kmean.value
         self.kext = (kabs + ksca) / self.kmean.value
@@ -74,7 +68,29 @@ class Dust(pl.LightningDataModule):
         self.log10_nu_min = np.log10(self.nu.value.min())
         self.log10_nu_max = np.log10(self.nu.value.max())
 
-        self.temperature = np.logspace(-1.,4.,110)
+        self.amax = amax
+        if amax is not None:
+            self.log10_amax = np.log10(amax.to(u.cm).value)
+        self.p = p
+        self.abundances = abundances
+
+        self.dims = ()
+        self.samples = ()
+        for dim in ["p", "log10_amax", "abundances"]:
+            if hasattr(self, dim) and getattr(self, dim) is not None and getattr(self, dim) is not ():
+                if dim in ["abundances"]:
+                    self.samples += getattr(self, dim)
+                else:
+                    self.samples += (getattr(self, dim),)
+                self.dims += (dim,)
+
+        if len(self.dims) > 0:
+            self.samples = np.vstack(self.samples).T
+        else:
+            self.samples = np.zeros((1,0))
+        self.ndims = len(self.dims) + (len(self.abundances) - 1 if len(abundances) > 0 else 0)
+
+        self.temperature = np.logspace(-1.,4.,1000)
         self.log_temperature = np.log10(self.temperature)
 
     def __getstate__(self):
@@ -129,7 +145,17 @@ class Dust(pl.LightningDataModule):
 
             abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
 
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax)) + (abundances if abundances is not None else ()) + (torch.log10(nu),)), 0, 1)
+        if amax is not None:
+            log10_amax = torch.log10(amax)
+
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(nu),)
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
 
         kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
 
@@ -160,7 +186,17 @@ class Dust(pl.LightningDataModule):
 
             abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
 
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax)) + (abundances if abundances is not None else ()) + (torch.log10(nu),)), 0, 1)
+        if amax is not None:
+            log10_amax = torch.log10(amax)
+
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(nu),)
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
 
         ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
@@ -184,7 +220,17 @@ class Dust(pl.LightningDataModule):
 
             abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
 
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax)) + (abundances if abundances is not None else ()) + (torch.log10(nu),)), 0, 1)
+        if amax is not None:
+            log10_amax = torch.log10(amax)
+
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(nu),)
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
 
         return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
                 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
@@ -207,7 +253,17 @@ class Dust(pl.LightningDataModule):
 
             abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
 
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax)) + (abundances if abundances is not None else ()) + (torch.log10(nu),)), 0, 1)
+        if amax is not None:
+            log10_amax = torch.log10(amax)
+
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(nu),)
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
 
         kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
         ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
@@ -230,8 +286,23 @@ class Dust(pl.LightningDataModule):
     def random_nu_ml(self, p, amax, temperature, abundances=None):
         nphotons = temperature.size
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        test_x = torch.transpose(torch.vstack((torch.tensor(p, dtype=torch.float32), torch.log10(torch.tensor(amax, dtype=torch.float32))) + tuple([torch.tensor(a, dtype=torch.float32) for a in abundances]) + (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)), 0, 1)
-        test_x = self.random_nu_x_scaler.transform(test_x)
+        ksi = torch.arctanh(2*ksi - 1.)
+
+        #test_x = torch.transpose(torch.vstack((torch.tensor(p, dtype=torch.float32), 
+        #                                       torch.log10(torch.tensor(amax, dtype=torch.float32))) + 
+        #                                       tuple([torch.tensor(a, dtype=torch.float32) for a in abundances]) + 
+        #                                       (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)), 0, 1)
+
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)
+
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
+        test_x = self.random_nu_x_scaler.transform(samples)
 
         log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
 
@@ -249,12 +320,27 @@ class Dust(pl.LightningDataModule):
             temperature = temperature[subset]
             if photon_list.dust_abundances is not None:
                 abundances = abundances[subset]
+
+        abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
             
         nphotons = temperature.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
+        ksi = torch.arctanh(2*ksi - 1.)
 
-        test_x = torch.transpose(torch.vstack((p, torch.log10(amax)) + ((torch.transpose(abundances, 0, 1),) if photon_list.dust_abundances is not None else ()) + (torch.log10(temperature), ksi)), 0, 1)
-        test_x = self.random_nu_x_scaler.transform(test_x)
+        if amax is not None:
+            log10_amax = torch.log10(amax)
+
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(temperature), ksi)
+
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
+
+        test_x = self.random_nu_x_scaler.transform(samples)
 
         if nphotons > 250000:
             test_x = TensorDataset(test_x)
@@ -269,7 +355,15 @@ class Dust(pl.LightningDataModule):
         return nu
 
     def ml_planck_mean_opacity(self, p, amax, temperature, abundances=()):
-        samples = torch.transpose(torch.vstack((p, torch.log10(amax)) + abundances + (torch.log10(temperature),)), 0, 1)
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(temperature),)
+
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
 
         return 10.**self.pmo_y_scaler.inverse_transform(self.pmo_model(self.pmo_x_scaler.transform(samples))).detach().flatten()
 
@@ -343,9 +437,9 @@ class Dust(pl.LightningDataModule):
         # Set up the NN
 
         if model == "random_nu":
-            input_size, output_size = 4 + len(self.abundances), 1
+            input_size, output_size = self.ndims + 2, 1
         elif model == "ml_step":
-            input_size, output_size = 7, 5
+            input_size, output_size = 7, self.ndims + 3
 
             if nu_range is None:
                 nu_range = (self.nu.value.min(), self.nu.value.max())
@@ -361,7 +455,7 @@ class Dust(pl.LightningDataModule):
             self.log10_tau_cell_nu0_min = np.log10(tau_range[0])
             self.log10_tau_cell_nu0_max = np.log10(tau_range[1])
         elif model in ["kabs", "ksca","pmo"]:
-            input_size, output_size = 3 + len(self.abundances), 1
+            input_size, output_size = self.ndims + 1, 1
 
         self.initialize_model(model=model, input_size=input_size, output_size=output_size, hidden_units=hidden_units)
 
@@ -443,16 +537,13 @@ class Dust(pl.LightningDataModule):
 
         self.dataset = TensorDataset(X, y)
 
-    def prepare_data_random_nu(self):
-        samples = np.vstack((self.p, np.log10(self.amax.to(u.cm).value)) + 
-                            tuple([a for a in self.abundances])).T
+    def prepare_data_random_nu(self):        
+        samples = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.samples, 1), self.temperature.size, axis=1), 1), self.nu.size, 1)
+
+        temperature = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.temperature, (0, -1)), self.nu.size, axis=0), 0), max(samples.shape[0], 1), axis=0)
+        nu = np.repeat(np.repeat(np.expand_dims(self.nu, (0, -1, -2)), self.temperature.size, axis=2), max(samples.shape[0], 1), axis=0)
         
-        samples = np.repeat(np.expand_dims(np.repeat(np.expand_dims(samples, 1), self.temperature.size, axis=1), 1), self.nu.size, 1)
-            
-        temperature = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.temperature, (0, -1)), self.nu.size, axis=0), 0), samples.shape[0], axis=0)
-        nu = np.repeat(np.repeat(np.expand_dims(self.nu, (0, -1, -2)), self.temperature.size, axis=2), samples.shape[0], axis=0)
-        
-        ksi = scipy.integrate.cumulative_trapezoid(np.repeat(np.expand_dims(self.kabs, (-1, -2)), self.temperature.size, axis=-2) * models.BlackBody(temperature*u.K)(nu), self.nu.to(u.GHz).value, axis=1, initial=0)
+        ksi = scipy.integrate.cumulative_trapezoid(np.repeat(np.expand_dims(self.kabs, (-1, -2)), self.temperature.size, axis=-2) * models.BlackBody(temperature*u.K)(nu), np.log10(self.nu.to(u.GHz).value), axis=1, initial=0)
         ksi /= ksi[:,-1:,:,:]
         
         samples = np.concat((samples, np.log10(temperature), ksi), axis=-1)
@@ -460,15 +551,21 @@ class Dust(pl.LightningDataModule):
         
         targets = np.log10(nu.to(u.GHz).value.flatten())
 
+        samples = samples.astype(np.float32)
+
+        good = np.logical_not(np.logical_or(samples[:,-1] < 2e-8, samples[:,-1] == 1))
+
+        samples, targets = samples[good,:], targets[good]
+
+        samples[:,1] = 2*samples[:,1] - 1
+        samples[:,1] = np.arctanh(samples[:,1])
+
         return samples, targets
 
     def prepare_data_opacity(self, model="kabs"):  
-        samples = np.vstack((self.p, np.log10(self.amax.to(u.cm).value)) + 
-                            tuple([a for a in self.abundances])).T
+        samples = np.moveaxis(np.repeat(np.expand_dims(self.samples, 1), self.nu.size, axis=1), -1, 0)
 
-        samples = np.moveaxis(np.repeat(np.expand_dims(samples, 1), self.nu.size, axis=1), -1, 0)
-
-        samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.nu.to(u.GHz).value), axis=0), samples.shape[1], axis=0), axis=0)), axis=0)
+        samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.nu.to(u.GHz).value), axis=0), max(samples.shape[1], 1), axis=0), axis=0)), axis=0)
         samples = samples.reshape((samples.shape[0], -1)).T
 
         targets = np.log10(getattr(self, model).flatten())
@@ -482,17 +579,14 @@ class Dust(pl.LightningDataModule):
         return self.prepare_data_opacity(model="ksca")
 
     def prepare_data_pmo(self):
-        samples = np.vstack((self.p, np.log10(self.amax.to(u.cm).value)) + 
-                            tuple([a for a in self.abundances])).T
-        
         temperature = np.repeat(np.expand_dims(self.temperature, (0, -1)), self.nu.size, axis=-1)
         nu = np.repeat(np.expand_dims(self.nu, (0, 1)), self.temperature.size, axis=1)
 
         self.pmo = self.kmean.cgs.value * scipy.integrate.trapezoid(models.BlackBody(temperature*u.K)(nu).cgs.value * np.expand_dims(self.kabs, 1), self.nu.to(u.Hz).value, axis=-1) * np.pi / (const.sigma_sb.cgs.value * self.temperature**4)
 
-        samples = np.moveaxis(np.repeat(np.expand_dims(samples, 1), self.temperature.size, axis=1), -1, 0)
+        samples = np.moveaxis(np.repeat(np.expand_dims(self.samples, 1), self.temperature.size, axis=1), -1, 0)
 
-        samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.temperature), axis=0), samples.shape[1], axis=0), axis=0)), axis=0)
+        samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.temperature), axis=0), max(samples.shape[1], 1), axis=0), axis=0)), axis=0)
         samples = samples.reshape((samples.shape[0], -1)).T
 
         targets = np.log10(self.pmo).flatten()
@@ -695,16 +789,19 @@ class Dust(pl.LightningDataModule):
         """
         import matplotlib.pyplot as plt
 
-        index = np.random.randint(0, self.p.shape[0], 1)[0]
+        index = np.random.randint(0, self.samples.shape[0], 1)[0]
 
         if model in ["kabs", "ksca"]:
             nx = self.nu.size
         elif model in ["pmo"]:
             nx = self.temperature.size
 
-        log10_amax = np.repeat(np.log10(self.amax[index].to(u.cm).value), nx)
-        p = np.repeat(self.p[index], nx)
-        abundances = tuple([np.repeat(a[index], nx) for a in self.abundances])
+        if "log10_amax" in self.dims:
+            log10_amax = np.repeat(np.log10(self.amax[index].to(u.cm).value), nx)
+        if "p" in self.dims:
+            p = np.repeat(self.p[index], nx)
+        if "abundances" in self.dims:
+            abundances = tuple([np.repeat(a[index], nx) for a in self.abundances])
         
         log10_lam = np.log10(self.lam.value)
         log10_nu = np.log10(self.nu.to(u.GHz).value)
@@ -712,13 +809,26 @@ class Dust(pl.LightningDataModule):
 
         interpolated = np.log10(getattr(self, model)[index,:])
 
-        print(f"log10_amax: {log10_amax[0]}, p: {p[0]}, abundance: {[abundances[i][0] for i in range(len(abundances))]}")
+        print_str = ""
+        for dim in self.dims:
+            if dim == "abundances":
+                print_str += f"{dim}: {[abundances[i][0] for i in range(len(abundances))]}, "
+            else:
+                print_str += f"{dim}: {locals()[dim][0]}, "
+        print(print_str)
 
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances":
+                samples += abundances
+            else:
+                samples += (locals()[dim],)
+        
         if model in ["kabs", "ksca"]:
-            samples = np.vstack((p, log10_amax) + abundances + (log10_nu,)).T
+            samples = np.vstack(samples + (log10_nu,)).T
             plot_x = log10_lam
         else:
-            samples = np.vstack((p, log10_amax) + abundances + (log10_temperature,)).T
+            samples = np.vstack(samples + (log10_temperature,)).T
             plot_x = log10_temperature
 
         nned = getattr(self, f'{model}_y_scaler').inverse_transform(getattr(self, f'{model}_model')(getattr(self, f'{model}_x_scaler').transform(torch.tensor(samples, dtype=torch.float32)))).detach().numpy()
@@ -746,13 +856,13 @@ class Dust(pl.LightningDataModule):
 
         nu2 = self.random_nu_ml(p, amax, T, abundances=abundances)
 
-        counts, bins, _ = plt.hist(nu2, 100)
+        counts, bins, _ = plt.hist(np.log10(nu2), 100)
 
         bb = models.BlackBody(temperature=T[0] * u.K)
-        pdf = bb(bins[1:]*u.GHz).value * self.ml_kabs(torch.tensor(p[0], dtype=torch.float32).repeat((bins[1:].size,)), 
-                                                      torch.tensor(amax[0], dtype=torch.float32).repeat((bins[1:].size,)), 
-                                                      torch.tensor(bins[1:], dtype=torch.float32), 
-                                                      abundances=tuple([torch.tensor(a[0], dtype=torch.float32).repeat((bins[1:].size,)) for a in abundances])).numpy()
+        pdf = bb(10.**bins[1:]*u.GHz).value * self.ml_kabs(torch.tensor(p[0], dtype=torch.float32).repeat((bins[1:].size,)), 
+                                                           torch.tensor(amax[0], dtype=torch.float32).repeat((bins[1:].size,)), 
+                                                           torch.tensor(10.**bins[1:], dtype=torch.float32), 
+                                                           abundances=tuple([torch.tensor(a[0], dtype=torch.float32).repeat((bins[1:].size,)) for a in abundances])).numpy()
         pdf *= counts.max() / pdf.max()
 
         plt.plot(bins[1:], pdf, '-')
@@ -796,7 +906,13 @@ class Dust(pl.LightningDataModule):
             features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
             targets = np.array(["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"])
         elif model == "random_nu":
-            features = np.array(("p", "log10_amax") + tuple([f"abundance_{i}" for i in range(len(self.abundances))]) + ("log10_temperature", "ksi"))
+            features = ()
+            for dim in self.dims:
+                if dim == "abundances":
+                    features += tuple([f"abundance_{i}" for i in range(len(self.abundances))])
+                else:
+                    features += (dim,)
+            features = np.array(features + ("log10_temperature", "ksi"))
             targets = np.array(["log10_nu"])
 
             y_true = torch.unsqueeze(y_true, 1)
@@ -819,7 +935,7 @@ class Dust(pl.LightningDataModule):
                 if key1 == key2:
                     ax[i,j].hist(df_true[key1], bins=50, histtype='step', density=True)
                     if predict:
-                        ax[i,j].hist(df_pred[key1], bins=250, histtype='step', density=True)
+                        ax[i,j].hist(df_pred[key1], bins=50, histtype='step', density=True)
                 elif i > j:
                     ax[i,j].scatter(df_true[key2], df_true[key1], marker='.', s=1.0, alpha=1.0)
 
@@ -949,10 +1065,9 @@ def load(filename, device="cpu"):
     for attr in ["kabs", "ksca", "pmo", "random_nu"]:
         if f"{attr}_state_dict" in state_dict:
             if attr == "random_nu":
-                input_size = 4
+                input_size = d.ndims + 2
             else:
-                input_size = 3
-            input_size += len(d.abundances)
+                input_size = d.ndims + 1
 
             hidden_units = [state_dict[f'{attr}_state_dict'][key].shape[0] for key in state_dict[f'{attr}_state_dict'] if 'bias' in key][0:-1]
             d.initialize_model(model=attr, input_size=input_size, output_size=1, hidden_units=hidden_units)
