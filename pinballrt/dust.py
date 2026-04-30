@@ -24,7 +24,7 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 wp.config.quiet = True
 
 class Dust(pl.LightningDataModule):
-    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu"):
+    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=1000):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
 
@@ -90,7 +90,7 @@ class Dust(pl.LightningDataModule):
             self.samples = np.zeros((1,0))
         self.ndims = len(self.dims) + (len(self.abundances) - 1 if len(abundances) > 0 else 0)
 
-        self.temperature = np.logspace(-1.,4.,1000)
+        self.temperature = np.logspace(-1.,4.,ntemperatures)
         self.log_temperature = np.log10(self.temperature)
 
     def __getstate__(self):
@@ -424,7 +424,7 @@ class Dust(pl.LightningDataModule):
             The range of frequencies to sample from (in GHz) for the ml_step model. If None, use the full range of the dust opacities.
         """
         self.current_model = model
-        #self.nsamples = nsamples
+        self.nsamples = nsamples
         self.test_split = test_split
         self.valid_split = valid_split
         self.learning = model
@@ -557,8 +557,8 @@ class Dust(pl.LightningDataModule):
 
         samples, targets = samples[good,:], targets[good]
 
-        samples[:,1] = 2*samples[:,1] - 1
-        samples[:,1] = np.arctanh(samples[:,1])
+        samples[:,-1] = 2*samples[:,-1] - 1
+        samples[:,-1] = np.arctanh(samples[:,-1])
 
         return samples, targets
 
@@ -617,7 +617,11 @@ class Dust(pl.LightningDataModule):
             df.to_csv("sim_results.csv")
 
         features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
-        targets = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
+        targets = ["log10_nu0", "log10_T"] + \
+                  (["log10_amax"] if "log10_amax" in self.dims else []) + \
+                  (["p"] if "p" in self.dims else []) + \
+                  ([f"abundance{i}" for i in range(len(self.abundances))]) + \
+                  ["log10_tau_cell_nu0"]
 
         df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
 
@@ -686,11 +690,16 @@ class Dust(pl.LightningDataModule):
 
         photon_list.temperature = wp.array(10.**np.random.uniform(np.log10(temperature_range[0].to(u.K).value), np.log10(temperature_range[1].to(u.K).value), nphotons), dtype=float)
 
-        photon_list.amax = wp.array(10.**np.random.uniform(np.log10(amax_range[0].to(u.cm).value), np.log10(amax_range[1].to(u.cm).value), nphotons), dtype=float)
-        photon_list.p = wp.array(np.random.uniform(p_range[0], p_range[1], nphotons), dtype=float)
+        samples = suggest_opacity_sampling(nphotons, p_range=p_range, amax_range=amax_range, n_dust_subspecies=len(self.abundances)+1, mode="random")
+
+        photon_list.amax = wp.array(samples[:,1], dtype=float)
+        photon_list.p = wp.array(samples[:,0], dtype=float)
+        if len(self.abundances) > 0:
+            photon_list.dust_abundances = wp.array2d(samples[:,2:], dtype=float)
 
         tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
-        photon_list.density = wp.array((tau / (self.kmean * self.interpolate_kabs(photon_list.p.numpy(), photon_list.amax.numpy(), photon_list.frequency.numpy()) * 1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
+        photon_list.density = wp.array((tau / (self.kmean * self.ml_kabs(photon_list=photon_list) * \
+                                                                            1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
         grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step)
 
@@ -723,6 +732,9 @@ class Dust(pl.LightningDataModule):
                        "pitch":ypr[:,1],
                        "direction_yaw":direction_ypr[:,0],
                        "direction_pitch":direction_ypr[:,1]})
+
+        for i in range(len(self.abundances)):
+            df[f"abundance{i}"] = photon_list.dust_abundances.numpy()[:,i]
 
         return df
 
@@ -904,7 +916,11 @@ class Dust(pl.LightningDataModule):
 
         if model == "ml_step":
             features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
-            targets = np.array(["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"])
+            targets = ["log10_nu0", "log10_T"] + \
+                       (["log10_amax"] if "log10_amax" in self.dims else []) + \
+                       (["p"] if "p" in self.dims else []) + \
+                       ([f"abundance{i}" for i in range(len(self.abundances))]) + \
+                       ["log10_tau_cell_nu0"]
         elif model == "random_nu":
             features = ()
             for dim in self.dims:
@@ -1025,6 +1041,57 @@ class Dust(pl.LightningDataModule):
     def copy(self, device="cpu"):
         return load(self.state_dict(), device=device)
 
+def suggest_opacity_sampling(nsamples, p_range=None, amax_range=None, n_dust_subspecies=1, mode='lhs'):
+    """
+    Suggest samples for learning the opacity as a function of the dust properties using Latin Hypercube sampling.
+
+    Parameters
+    ----------
+    nsamples : int
+        The number of samples to generate.
+    p_range : tuple
+        The range of power-law indices to sample from. If None, do not sample over power-law index.
+    amax_range : tuple
+        The range of maximum dust grain sizes to sample from. If None, do not sample over maximum
+        dust grain size.
+    n_dust_subspecies: int
+        The number of component dust species whose abundances may vary. Note that the returned samples will
+        have n_dust_subspecies - 1 abundance samples because the abundances must sum to 1, and the value of the
+        last species abundance is implicit.
+
+    Returns
+    -------
+    samples : numpy.ndarray
+        An array of shape (nsamples, ndims) where ndims is the number of dimensions sampled over (i.e. 1 for each of 
+        p and amax if they are not None, plus n_dust_subspecies - 1 for the dust species abundances).
+    """
+    ndims = 0
+    if p_range is not None:
+        ndims += 1
+    if amax_range is not None:
+        ndims += 1
+    ndims += n_dust_subspecies - 1
+
+    if mode == 'lhs':
+        sampler = scipy.stats.qmc.LatinHypercube(d=ndims)
+        samples = sampler.random(nsamples)
+    elif mode == 'random':
+        samples = np.random.rand(nsamples, ndims)
+    else:
+        raise ValueError("Invalid mode. Must be either 'lhs' or 'random'.")
+
+    index = 0
+    if p_range is not None:
+        samples[:,index] = samples[:,index] * (p_range[1] - p_range[0]) + p_range[0]
+        index += 1
+    if amax_range is not None:
+        samples[:,index] = 10.**(samples[:,index] * (np.log10(amax_range[1].to(u.cm).value) - np.log10(amax_range[0].to(u.cm).value)) + np.log10(amax_range[0].to(u.cm).value))
+        index += 1
+    
+    for i in range(1, n_dust_subspecies-1):
+        samples[:, index+i] = (1. - samples[:, index:index+i].sum(axis=1)) * samples[:, index+i]
+
+    return samples
 
 def load(filename, device="cpu"):
     """
