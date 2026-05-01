@@ -60,21 +60,18 @@ def test_learning(dims):
     index = 0
     if "p" in dims:
         p = samples[index]
-        p_index = index
         index += 1
     else:
         p = 3.5
 
     if "amax" in dims:
         amax = samples[index] * u.cm
-        amax_index = index
         index += 1
     else:
         amax = 1.0*u.micron
 
     if "abundances" in dims:
         silicate_fraction = samples[index]
-        abundances_index = index
         index += 1
         water_fraction = samples[index]
     else:
@@ -97,9 +94,9 @@ def test_learning(dims):
 
     # Create the Dust object.
     d = Dust(lam=wavelengths[0,:], 
-             amax=amax[:,amax_index] if "amax" in dims else None, 
-             p=p[:,p_index] if "p" in dims else None, 
-             abundances=(silicate_fraction[:,abundances_index], water_fraction[:,abundances_index+1]) if "abundances" in dims else (),
+             amax=amax[:,0] if "amax" in dims else None, 
+             p=p[:,0] if "p" in dims else None, 
+             abundances=(silicate_fraction[:,0], water_fraction[:,0]) if "abundances" in dims else (),
              kabs=kappa_abs, 
              ksca=kappa_scat,
              ntemperatures=10)

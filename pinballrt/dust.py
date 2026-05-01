@@ -5,7 +5,6 @@ from .grids import UniformSphericalGrid
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from scipy.spatial.transform import Rotation
 import pandas as pd
-import scipy.interpolate
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -31,15 +30,19 @@ class Dust(pl.LightningDataModule):
         Parameters
         ----------
         lam : astropy.units.Quantity
-            Wavelengths at which the dust opacities are defined.
+            Wavelengths at which the dust opacities are defined. Should be in units that convert to cm, and with a shape of (nwavelengths,).
         kabs : astropy.units.Quantity
-            Absorption coefficients of the dust.
+            Absorption coefficients of the dust. Should be in units that convert to cm^2/g, and with a shape of (nsamples, nwavelengths),
+            where ndims is the number of dimensions in the parameter space (e.g., p, amax, abundances).
         ksca : astropy.units.Quantity
-            Scattering coefficients of the dust.
+            Scattering coefficients of the dust. Should be in units that convert to cm^2/g, and with a shape of (nsamples, nwavelengths),
+            where ndims is the number of dimensions in the parameter space (e.g., p, amax, abundances).
         amax : astropy.units.Quantity
-            Maximum grain size for the size distribution.
+            Maximum grain size for the size distribution. Should be in units that convert to cm, and with a shape of (nsamples,).
         p : float
-            Power-law index for the grain size distribution.
+            Power-law index for the grain size distribution. Should have a shape of (nsamples,)
+        abundances : tuple of np.arrays
+            Tuple of arrays containing the abundances of different dust species. Each array should have a shape of (nsamples,).
         device : str
             Device to run the computations on (e.g., "cpu" or "cuda").
         """

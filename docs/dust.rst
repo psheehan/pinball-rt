@@ -5,6 +5,8 @@ dust
 
 .. autofunction:: load
 
+.. autofunction:: suggest_opacity_sampling
+
 .. autoclass:: Dust
    :show-inheritance:
 
@@ -17,7 +19,6 @@ dust
       ~Dust.test_model
       ~Dust.run_dust_simulation
       ~Dust.plot_opacity_model
-      ~Dust.plot_pmo_model
       ~Dust.plot_random_nu_model
       ~Dust.plot_ml_step
       ~Dust.save
@@ -29,7 +30,6 @@ dust
    .. automethod:: test_model
    .. automethod:: run_dust_simulation
    .. automethod:: plot_opacity_model
-   .. automethod:: plot_pmo_model
    .. automethod:: plot_random_nu_model
    .. automethod:: plot_ml_step
    .. automethod:: save
