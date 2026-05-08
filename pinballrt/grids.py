@@ -61,7 +61,7 @@ class Grid:
 
         self.__dict__.update(state)
 
-    def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, gases=None, abundances=None, 
+    def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, dust_abundances=(), gases=None, abundances=None, 
                                 velocity=None, microturbulence=None):
         with wp.ScopedDevice(self.device):
             if density is not None:
@@ -93,6 +93,17 @@ class Grid:
             if dust is not None:
                 self.dust = dust
                 self.dust.to_device(wp.device_to_torch(wp.get_device()))
+
+            if len(dust_abundances) > 0:
+                self.grid.dust_abundances = wp.array4d(dust_abundances,  dtype=float)
+                self.n_dust_abundances = len(dust_abundances)
+            else:
+                if len(self.dust.abundances) > 0:
+                    self.grid.dust_abundances = wp.array4d(np.ones((len(self.dust.abundances),)+self.shape) * 
+                                                           len(self.dust.abundances) / (len(self.dust.abundances) + 1.), dtype=float)
+                    self.n_dust_abundances = len(self.dust.abundances)
+                else:
+                    self.n_dust_abundances = 0
 
             if gases is not None:
                 self.gases = []
@@ -290,7 +301,8 @@ class Grid:
     @wp.kernel
     def photon_cell_properties(photon_list: PhotonList,
                            grid: GridStruct,
-                           iphotons: wp.array(dtype=int)): # pragma: no cover
+                           iphotons: wp.array(dtype=int),
+                           n_dust_abundances: int): # pragma: no cover
         itemp = wp.tid()
         ip = iphotons[itemp]
 
@@ -300,6 +312,9 @@ class Grid:
         photon_list.density[ip] = grid.dust_density[ix, iy, iz]
         photon_list.amax[ip] = grid.amax[ix, iy, iz]
         photon_list.p[ip] = grid.p[ix, iy, iz]
+    
+        for i in range(n_dust_abundances):
+            photon_list.dust_abundances[ip][i] = grid.dust_abundances[i, ix, iy, iz]
 
     @wp.kernel
     def update_frequency(photon_list: PhotonList,
@@ -400,7 +415,9 @@ class Grid:
 
                 t1 = time.time()
                 planck_mean_opacity = self.dust.ml_planck_mean_opacity(torch.tensor(self.grid.p.numpy().flatten()), torch.tensor(self.grid.amax.numpy().flatten()), 
-                                                                       torch.tensor(old_temperature.flatten(), dtype=torch.float32)).numpy().reshape(self.shape)
+                                                                       torch.tensor(old_temperature.flatten(), dtype=torch.float32), 
+                                                                       abundances=tuple([torch.tensor(self.grid.dust_abundances.numpy()[i].flatten(), dtype=torch.float32) for 
+                                                                                         i in range(self.n_dust_abundances)])).numpy().reshape(self.shape)
                 t2 = time.time()
                 pmo_time += t2 - t1
 
@@ -695,7 +712,7 @@ class Grid:
                     if not learning:
                         wp.launch(kernel=self.photon_cell_properties,
                                   dim=(nphotons,),
-                                  inputs=[photon_list, self.grid, iphotons])
+                                  inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
                     
                     t1 = time.time()
                     self.dust.update_photon_opacities(photon_list=photon_list, iphotons=iphotons)
@@ -856,7 +873,7 @@ class Grid:
                 if nphotons > 0:
                     wp.launch(kernel=self.photon_cell_properties,
                               dim=(nphotons,),
-                              inputs=[photon_list, self.grid, iphotons])
+                              inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
                     
                     t1 = time.time()
                     self.dust.update_photon_opacities(photon_list=photon_list, iphotons=iphotons, grid=self.grid, inu=inu)
@@ -1060,7 +1077,7 @@ class Grid:
 
             wp.launch(kernel=self.photon_cell_properties,
                       dim=(nrays,),
-                      inputs=[ray_list, self.grid, iray])
+                      inputs=[ray_list, self.grid, iray, self.n_dust_abundances])
             
             wp.launch(kernel=self.set_ray_opacities_grid,
                       dim=(nrays, nnu),
@@ -1106,7 +1123,7 @@ class Grid:
                 if nrays > 0:
                     wp.launch(kernel=self.photon_cell_properties,
                               dim=(nrays,),
-                              inputs=[ray_list, self.grid, iray])
+                              inputs=[ray_list, self.grid, iray, self.n_dust_abundances])
 
                     wp.launch(kernel=self.set_ray_opacities_grid,
                               dim=(nrays, nnu),
@@ -1121,10 +1138,13 @@ class Grid:
             ray_list.in_grid = wp.zeros(nrays, dtype=bool)
 
             ray_list.frequency = wp.array(frequency, dtype=float)
+
+            if self.n_dust_abundances > 0:
+                ray_list.dust_abundances = wp.zeros((nrays, self.n_dust_abundances), dtype=float)
     
             wp.launch(kernel=self.photon_cell_properties,
                       dim=(nrays,),
-                      inputs=[ray_list, self.grid, iray])
+                      inputs=[ray_list, self.grid, iray, self.n_dust_abundances])
 
             ray_list.kext = wp.zeros((nrays, frequency.size), dtype=float)
             ray_list.ray_albedo = wp.zeros((nrays, frequency.size), dtype=float)
@@ -1161,7 +1181,7 @@ class Grid:
                 if nrays > 0:
                     wp.launch(kernel=self.photon_cell_properties,
                               dim=(nrays,),
-                              inputs=[ray_list, self.grid, iray])
+                              inputs=[ray_list, self.grid, iray, self.n_dust_abundances])
 
                     wp.launch(kernel=self.set_ray_opacities_grid,
                               dim=(nrays, nnu),
@@ -1227,11 +1247,13 @@ class UniformCartesianGrid(Grid):
             photon_list.temperature = wp.zeros(nphotons, dtype=float)
             photon_list.amax = wp.zeros(nphotons, dtype=float)
             photon_list.p = wp.zeros(nphotons, dtype=float)
+            if self.n_dust_abundances > 0:
+                photon_list.dust_abundances = wp.zeros((nphotons, self.n_dust_abundances), dtype=float)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
                           dim=(nphotons,),
-                          inputs=[photon_list, self.grid, iphotons])
+                          inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
 
         return photon_list
 
@@ -1555,11 +1577,13 @@ class UniformSphericalGrid(Grid):
             photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.amax = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.p = wp.array(np.zeros(nphotons), dtype=float)
+            if self.n_dust_abundances > 0:
+                photon_list.dust_abundances = wp.zeros((nphotons, self.n_dust_abundances), dtype=float)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
                           dim=(nphotons,),
-                          inputs=[photon_list, self.grid, iphotons])
+                          inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
 
         return photon_list
 
@@ -2035,11 +2059,13 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
             photon_list.temperature = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.amax = wp.array(np.zeros(nphotons), dtype=float)
             photon_list.p = wp.array(np.zeros(nphotons), dtype=float)
+            if self.n_dust_abundances > 0:
+                photon_list.dust_abundances = wp.zeros((nphotons, self.n_dust_abundances), dtype=float)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
                           dim=(nphotons,),
-                          inputs=[photon_list, self.grid, iphotons])
+                          inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
 
         return photon_list
     

@@ -68,6 +68,8 @@ class Camera:
         ray_list.temperature = wp.zeros(xflat.size, dtype=float)
         ray_list.amax = wp.zeros(xflat.size, dtype=float)
         ray_list.p = wp.zeros(xflat.size, dtype=float)
+        if self.grid.n_dust_abundances > 0:
+            ray_list.dust_abundances = wp.array2d(np.zeros((xflat.size, self.grid.n_dust_abundances)), dtype=float)
 
         ray_list.radius = wp.array(np.zeros(xflat.shape), dtype=float)
         if isinstance(self.grid, LogUniformSphericalGrid):

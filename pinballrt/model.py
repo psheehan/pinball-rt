@@ -220,6 +220,8 @@ class Model:
         for i, wavelength in enumerate(wavelengths):
             iter_timing = {}
 
+            frequency = const.c / wavelength
+
             for source in self.grid_list[device].sources + [self.grid_list[device].grid_source]:
                 if isinstance(source, DiffuseSource):
                     source.initialize_luminosity_array(wavelength=wavelength)
@@ -248,11 +250,11 @@ class Model:
                 if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
                     total_scattering[i] += torch.tensor((source.luminosity * (self.grid.distance_unit**2 * u.Jy) * \
                                                          source.density / (4.*np.pi * u.steradian * \
-                                                                           (self.grid.grid.dust_density.numpy() * \
-                                                                            self.grid.dust.interpolate_kext(
-                                                                                self.grid.grid.p.numpy(), 
-                                                                                self.grid.grid.amax.numpy(), 
-                                                                                np.ones(self.grid.shape)*wavelength) * \
+                                                                           (wp.to_torch(self.grid.grid.dust_density) * \
+                                                                            self.grid.dust.ml_kext(
+                                                                                wp.to_torch(self.grid.grid.p).flatten(), 
+                                                                                wp.to_torch(self.grid.grid.amax).flatten(), 
+                                                                                torch.ones(self.grid.shape).flatten()*frequency.to(u.GHz).value).reshape(self.grid.shape) * \
                                                          self.grid.distance_unit**-1))).value, 
                                                          device=device)
 

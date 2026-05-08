@@ -453,7 +453,10 @@ class GridSource(DiffuseSource):
                                    self.grid.volume.cpu().numpy()*\
                                    self.grid.dust.ml_kabs(wp.to_torch(self.grid.grid.p).flatten(), 
                                                           wp.to_torch(self.grid.grid.amax).flatten(), 
-                                                          torch.tensor(nu.value, dtype=torch.float32, device=wp.device_to_torch(wp.get_device())).expand(np.prod(self.grid.shape))).cpu().numpy().reshape(self.grid.shape)*\
+                                                          torch.tensor(nu.value, dtype=torch.float32, device=wp.device_to_torch(wp.get_device())
+                                                                       ).expand(np.prod(self.grid.shape)), 
+                                                          abundances=tuple([wp.to_torch(self.grid.grid.dust_abundances)[i].flatten() for i in 
+                                                                            range(self.grid.n_dust_abundances)])).cpu().numpy().reshape(self.grid.shape)*\
                                    self.grid.distance_unit**2*models.BlackBody(temperature=self.grid.grid.temperature.numpy()*u.K)(nu)).to(u.au**2 * u.Jy).value
 
         self.total_lum = self.luminosity.sum()
@@ -467,6 +470,9 @@ class GridSource(DiffuseSource):
         photon_list.temperature = wp.zeros(nphotons, dtype=float)
         photon_list.amax = wp.zeros(nphotons, dtype=float)
         photon_list.p = wp.zeros(nphotons, dtype=float)
+        if self.grid.n_dust_abundances > 0:
+            photon_list.dust_abundances = wp.zeros((nphotons, self.grid.n_dust_abundances), dtype=float)
+
         wp.launch(kernel=self.grid.photon_cell_properties,
                     dim=(nphotons,),
                     inputs=[photon_list, self.grid.grid, wp.array(np.arange(nphotons), dtype=int)])
