@@ -868,7 +868,7 @@ class Dust(pl.LightningDataModule):
 
         index = np.random.randint(0, self.samples.shape[0], 1)[0]
 
-        if model in ["kabs", "ksca"]:
+        if model in ["kabs", "ksca", "g"]:
             nx = self.nu.size
         elif model in ["pmo"]:
             nx = self.temperature.size
@@ -1138,7 +1138,7 @@ class IsotropicDust(Dust):
     @wp.kernel
     def scattering_phase_function_wp(photon_list: PhotonList,
                                      direction: wp.vec3, 
-                                     iphotons: wp.array(dtype=int)):
+                                     iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
@@ -1172,14 +1172,8 @@ class HenyeyGreensteinDust(Dust):
 
         self.g = g
 
-        with wp.ScopedDevice(device):
-            self.g_wp = wp.array(self.g, dtype=float)
-
     def to_device(self, device):
         super().to_device(device)
-
-        with wp.ScopedDevice(device):
-            self.g = wp.array(self.g, dtype=float)
 
         for model in ["g"]:
             if hasattr(self, f"{model}_model"):
@@ -1227,7 +1221,7 @@ class HenyeyGreensteinDust(Dust):
     @wp.kernel
     def scattering_phase_function_heneygreenstein_wp(photon_list: PhotonList,
                                                      direction: wp.vec3, 
-                                                     iphotons: wp.array(dtype=int)):
+                                                     iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
@@ -1303,8 +1297,6 @@ class HenyeyGreensteinDust(Dust):
                           iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
-
-        print("Hello from set_photon_opacities kernel, HG")
 
         photon_list.kabs[ip] = kabs[i]
         photon_list.ksca[ip] = ksca[i]
@@ -1392,16 +1384,8 @@ class GeneralDust(Dust):
         self.scattering_phase_function = scattering_phase_function
         self.theta = theta
 
-        with wp.ScopedDevice(device):
-            self.scattering_phase_function_wp = wp.array(self.scattering_phase_function, dtype=float)
-            self.theta_wp = wp.array(self.theta, dtype=float)
-
     def to_device(self, device):
         super().to_device(device)
-
-        with wp.ScopedDevice(device):
-            self.scattering_phase_function_wp = wp.array(self.scattering_phase_function, dtype=float)
-            self.theta_wp = wp.array(self.theta, dtype=float)
 
     def scatter(self, photon_list, iphotons):
         nphotons = iphotons.size(0)
@@ -1439,7 +1423,7 @@ class GeneralDust(Dust):
 
         test_x = self.random_direction_x_scaler.transform(samples)
 
-        theta = self.random_direction_y_scaler.inverse_transform(self.random_direction_model(test_x).detach())
+        theta = self.random_direction_y_scaler.inverse_transform(self.random_direction_model(test_x).detach()).flatten()
 
         wp.launch(kernel=self.random_direction,
                   dim=(nphotons,),
@@ -1448,6 +1432,7 @@ class GeneralDust(Dust):
                           iphotons, 
                           np.random.randint(0, 100000)])
     
+    @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
                          theta: wp.array(dtype=float),
                          iphotons: wp.array(dtype=int),
@@ -1482,12 +1467,12 @@ class GeneralDust(Dust):
     @wp.kernel
     def scattering_phase_function_general_dust_wp(photon_list: PhotonList,
                                                   scattering_phase_function: wp.array(dtype=float),
-                                                  iphotons: wp.array(dtype=int)):
+                                                  iphotons: wp.array(dtype=int)): # pragma: no cover
 
         i = wp.tid()
         ip = iphotons[i]
 
-        photon_list.scattering_phase_function[ip] = 2 * scattering_phase_function[i]
+        photon_list.scattering_phase_function[ip] = 2. * scattering_phase_function[i]
 
     def ml_scattering_phase_function(self, p=None, amax=None, nu=None, theta=None, photon_list=None, iphotons=None):
         if photon_list is not None:
@@ -1534,10 +1519,10 @@ class GeneralDust(Dust):
 
     def learn(self, model="random_nu", **kwargs):
         if model == "scattering_phase_function":
-            self.input_size, self.output_size = len(self.dims) + 2, 1
+            self.input_size, self.output_size = self.ndims + 2, 1
             self.model_type = "MLP"
         elif model == "random_direction":
-            self.input_size, self.output_size = len(self.dims) + 2, 1
+            self.input_size, self.output_size = self.ndims + 2, 1
             self.model_type = "MLP"
 
         super().learn(model=model, **kwargs)

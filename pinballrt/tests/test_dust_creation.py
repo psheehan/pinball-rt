@@ -1,4 +1,4 @@
-from pinballrt.dust import Dust, load, suggest_opacity_sampling
+from pinballrt.dust import IsotropicDust, HenyeyGreensteinDust, GeneralDust, load, suggest_opacity_sampling
 import numpy as np
 import astropy.units as u
 import pytest
@@ -14,25 +14,31 @@ def test_Dust():
 
     p, amax = np.meshgrid(data["p"], data["amax"], indexing="ij")
 
-    d = Dust(lam=data["lam"]*u.cm, 
-             kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             amax=amax.flatten()*u.cm, 
-             p=p.flatten())
+    d = IsotropicDust(lam=data["lam"]*u.cm, 
+                      kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
+                      ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
+                      amax=amax.flatten()*u.cm, 
+                      p=p.flatten())
 
     assert d.kmean.value == 2206.6072
 
     d.save("amax.dst")
 
 @pytest.mark.parametrize(
-    "dims",
+    "dust_type,dims",
     [
-        pytest.param((), id="None"),
-        pytest.param(("amax","abundances"), id="amax,abundances"),
-        pytest.param(("p","amax","abundances"), id="p,amax,abundances"),
+        pytest.param(IsotropicDust, (), id="IsotropicDust/None"),
+        pytest.param(IsotropicDust, ("amax","abundances"), id="IsotropicDust/amax,abundances"),
+        pytest.param(IsotropicDust, ("p","amax","abundances"), id="IsotropicDust/p,amax,abundances"),
+        pytest.param(HenyeyGreensteinDust, (), id="HenyeyGreensteinDust/None"),
+        pytest.param(HenyeyGreensteinDust, ("p","abundances"), id="HenyeyGreensteinDust/p,abundances"),
+        pytest.param(HenyeyGreensteinDust, ("p","amax","abundances"), id="HenyeyGreensteinDust/p,amax,abundances"),
+        pytest.param(GeneralDust, (), id="GeneralDust/None"),
+        pytest.param(GeneralDust, ("p","abundances"), id="GeneralDust/p,abundances"),
+        pytest.param(GeneralDust, ("p","amax","abundances"), id="GeneralDust/p,amax,abundances"),
     ]
 )
-def test_learning(dims):
+def test_learning(dust_type, dims):
     """
     Test the learn_random_nu method of the Dust class.
     """
@@ -89,21 +95,38 @@ def test_learning(dims):
     kappa_abs = 1.0 * (wavelengths.to(u.micron).value/100.0)**power_law_index * u.cm**2 / u.g + silicate_feature + water_feature
     kappa_scat = 0.5 * (wavelengths.to(u.micron).value/100.0)**power_law_index * u.cm**2 / u.g + silicate_feature + water_feature
 
-    print("kappa_abs:", kappa_abs.min(), kappa_abs.max())
-    print("kappa_scat:", kappa_scat.min(), kappa_scat.max())
-
     # Create the Dust object.
-    d = Dust(lam=wavelengths[0,:], 
-             amax=amax[:,0] if "amax" in dims else None, 
-             p=p[:,0] if "p" in dims else None, 
-             abundances=(silicate_fraction[:,0], water_fraction[:,0]) if "abundances" in dims else (),
-             kabs=kappa_abs, 
-             ksca=kappa_scat,
-             ntemperatures=10)
+    dust_kwargs = {"lam":wavelengths[0,:], 
+                   "amax":amax[:,0] if "amax" in dims else None, 
+                   "p":p[:,0] if "p" in dims else None, 
+                   "abundances":(silicate_fraction[:,0], water_fraction[:,0]) if "abundances" in dims else (),
+                   "kabs":kappa_abs, 
+                   "ksca":kappa_scat,
+                   "ntemperatures":10}
+
+    if dust_type == HenyeyGreensteinDust:
+        g = np.tanh(p - np.log10(wavelengths.to(u.micron).value))
+        dust_kwargs["g"] = g
+    elif dust_type == GeneralDust:
+        g = np.repeat(np.expand_dims(np.tanh(p - np.log10(wavelengths.to(u.micron).value)), axis=-1), 5, axis=-1)
+        theta = np.tile(np.expand_dims(np.linspace(0, 180., 5), axis=(0,1)), (10 if len(dims) > 0 else 1, 10, 1)) * u.deg
+        scattering_phase_function = (1 - g**2) / (4 * np.pi * (1 + g**2 - 2*g*np.cos(theta.to(u.rad).value))**(3/2))
+
+        dust_kwargs["scattering_phase_function"] = scattering_phase_function
+        dust_kwargs["theta"] = theta[0,0,:]
+
+    d = dust_type(**dust_kwargs)
 
     # Test the learn_random_nu method.
 
-    for model in ["kabs","ksca","pmo","random_nu"]:
+    models = ["kabs","ksca","pmo","random_nu"]
+    if dust_type == HenyeyGreensteinDust:
+        models.append("g")
+    if dust_type == GeneralDust:
+        models.append("scattering_phase_function")
+        models.append("random_direction")
+
+    for model in models:
         print('*****************************')
         print(f'{model}')
         print('*****************************')
@@ -141,10 +164,10 @@ def test_dust_pickle():
 
     p, amax = np.meshgrid(data["p"], data["amax"], indexing="ij")
 
-    d = Dust(lam=data["lam"]*u.cm, 
-             kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             amax=amax.flatten()*u.cm, 
-             p=p.flatten())
+    d = IsotropicDust(lam=data["lam"]*u.cm, 
+                      kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
+                      ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
+                      amax=amax.flatten()*u.cm, 
+                      p=p.flatten())
 
     result = dill.loads(dill.dumps(d))
