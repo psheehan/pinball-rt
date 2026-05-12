@@ -10,17 +10,17 @@ def test_Dust():
     Test the Dust class by creating a dust file from input opacity data.
     """
 
-    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
+    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana.npz"))
 
     p, amax = np.meshgrid(data["p"], data["amax"], indexing="ij")
 
     d = Dust(lam=data["lam"]*u.cm, 
-             kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             amax=amax.flatten()*u.cm, 
-             p=p.flatten())
+             kabs=data["kabs"]*u.cm**2/u.g, 
+             ksca=data["ksca"]*u.cm**2/u.g, 
+             amax=amax*u.cm, 
+             p=p)
 
-    assert d.kmean.value == 2206.6072
+    assert d.kmean.value == 4574.907442551958
 
     d.save("amax.dst")
 
@@ -89,9 +89,6 @@ def test_learning(dims):
     kappa_abs = 1.0 * (wavelengths.to(u.micron).value/100.0)**power_law_index * u.cm**2 / u.g + silicate_feature + water_feature
     kappa_scat = 0.5 * (wavelengths.to(u.micron).value/100.0)**power_law_index * u.cm**2 / u.g + silicate_feature + water_feature
 
-    print("kappa_abs:", kappa_abs.min(), kappa_abs.max())
-    print("kappa_scat:", kappa_scat.min(), kappa_scat.max())
-
     # Create the Dust object.
     d = Dust(lam=wavelengths[0,:], 
              amax=amax[:,0] if "amax" in dims else None, 
@@ -137,14 +134,14 @@ def test_dust_pickle():
     Test that Dust classes can be pickled and unpickled.
     """
 
-    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
+    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana.npz"))
 
     p, amax = np.meshgrid(data["p"], data["amax"], indexing="ij")
 
     d = Dust(lam=data["lam"]*u.cm, 
-             kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-             amax=amax.flatten()*u.cm, 
-             p=p.flatten())
+             kabs=data["kabs"]*u.cm**2/u.g, 
+             ksca=data["ksca"]*u.cm**2/u.g, 
+             amax=amax*u.cm, 
+             p=p)
 
     result = dill.loads(dill.dumps(d))
