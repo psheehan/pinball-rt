@@ -10,17 +10,17 @@ def test_Dust():
     Test the Dust class by creating a dust file from input opacity data.
     """
 
-    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
+    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana.npz"))
 
     p, amax = np.meshgrid(data["p"], data["amax"], indexing="ij")
 
     d = IsotropicDust(lam=data["lam"]*u.cm, 
-                      kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-                      ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-                      amax=amax.flatten()*u.cm, 
-                      p=p.flatten())
+                      kabs=data["kabs"]*u.cm**2/u.g, 
+                      ksca=data["ksca"]*u.cm**2/u.g, 
+                      amax=amax*u.cm, 
+                      p=p)
 
-    assert d.kmean.value == 2206.6072
+    assert d.kmean.value == 4574.907442551958
 
     d.save("amax.dst")
 
@@ -42,7 +42,9 @@ def test_learning(dust_type, dims):
     """
     Test the learn_random_nu method of the Dust class.
     """
-
+    import matplotlib
+    matplotlib.use("Agg")
+    
     wavelengths = np.logspace(-1, 4, 10) * u.micron
 
     if "p" in dims:
@@ -160,14 +162,14 @@ def test_dust_pickle():
     Test that Dust classes can be pickled and unpickled.
     """
 
-    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana_wice.npz"))
+    data = np.load(os.path.join(os.path.dirname(__file__), "data/diana.npz"))
 
     p, amax = np.meshgrid(data["p"], data["amax"], indexing="ij")
 
     d = IsotropicDust(lam=data["lam"]*u.cm, 
-                      kabs=data["kabs"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-                      ksca=data["ksca"].reshape((-1, data["lam"].shape[0]))*u.cm**2/u.g, 
-                      amax=amax.flatten()*u.cm, 
-                      p=p.flatten())
+                      kabs=data["kabs"]*u.cm**2/u.g, 
+                      ksca=data["ksca"]*u.cm**2/u.g, 
+                      amax=amax*u.cm, 
+                      p=p)
 
     result = dill.loads(dill.dumps(d))

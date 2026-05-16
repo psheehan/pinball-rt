@@ -604,6 +604,7 @@ class Dust(pl.LightningDataModule):
 
     def prepare_data_random_nu(self):        
         samples = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.samples, 1), self.temperature.size, axis=1), 1), self.nu.size, 1)
+        self.original_indices = np.tile(np.expand_dims(np.arange(self.samples.shape[0]), axis=(-1, -2)), (1, self.temperature.size, self.nu.size)).flatten()
 
         temperature = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.temperature, (0, -1)), self.nu.size, axis=0), 0), max(samples.shape[0], 1), axis=0)
         nu = np.repeat(np.repeat(np.expand_dims(self.nu, (0, -1, -2)), self.temperature.size, axis=2), max(samples.shape[0], 1), axis=0)
@@ -621,6 +622,7 @@ class Dust(pl.LightningDataModule):
         good = np.logical_not(np.logical_or(samples[:,-1] < 2e-8, samples[:,-1] == 1))
 
         samples, targets = samples[good,:], targets[good]
+        self.original_indices = self.original_indices[good]
 
         samples[:,-1] = 2*samples[:,-1] - 1
         samples[:,-1] = np.arctanh(samples[:,-1])
@@ -629,6 +631,7 @@ class Dust(pl.LightningDataModule):
 
     def prepare_data_opacity(self, model="kabs"):  
         samples = np.moveaxis(np.repeat(np.expand_dims(self.samples, 1), self.nu.size, axis=1), -1, 0)
+        self.original_indices = np.repeat(np.expand_dims(np.arange(self.samples.shape[0]), axis=-1), self.nu.size, axis=-1).flatten()
 
         samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.nu.to(u.GHz).value), axis=0), max(samples.shape[1], 1), axis=0), axis=0)), axis=0)
         samples = samples.reshape((samples.shape[0], -1)).T
@@ -650,6 +653,7 @@ class Dust(pl.LightningDataModule):
         self.pmo = self.kmean.cgs.value * scipy.integrate.trapezoid(models.BlackBody(temperature*u.K)(nu).cgs.value * np.expand_dims(self.kabs, 1), self.nu.to(u.Hz).value, axis=-1) * np.pi / (const.sigma_sb.cgs.value * self.temperature**4)
 
         samples = np.moveaxis(np.repeat(np.expand_dims(self.samples, 1), self.temperature.size, axis=1), -1, 0)
+        self.original_indices = np.repeat(np.expand_dims(np.arange(self.samples.shape[0]), axis=-1), self.temperature.size, axis=-1).flatten()
 
         samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.temperature), axis=0), max(samples.shape[1], 1), axis=0), axis=0)), axis=0)
         samples = samples.reshape((samples.shape[0], -1)).T
@@ -855,7 +859,7 @@ class Dust(pl.LightningDataModule):
 
         self.plot_triangle_plots(plot_columns=plot_columns)
 
-    def plot_opacity_model(self, model='kabs'):
+    def plot_opacity_model(self, model='kabs', show_scipy_interpolation=False):
         """
         Plot the learned opacity model against the interpolated opacity.
 
@@ -866,7 +870,10 @@ class Dust(pl.LightningDataModule):
         """
         import matplotlib.pyplot as plt
 
-        index = np.random.randint(0, self.samples.shape[0], 1)[0]
+        if hasattr(self, "test_indices") and len(self.test_indices) > 0:
+            index = np.random.choice(self.test_indices, size=1)[0]
+        else:
+            index = np.random.randint(0, self.samples.shape[0], 1)[0]
 
         if model in ["kabs", "ksca", "g"]:
             nx = self.nu.size
@@ -915,6 +922,18 @@ class Dust(pl.LightningDataModule):
 
         plt.plot(plot_x, interpolated)
         plt.plot(plot_x, nned)
+
+        if show_scipy_interpolation:
+            X = getattr(self, f'{model}_x_scaler').inverse_transform(self.train.dataset.tensors[0][self.train.indices,:]).numpy()
+            y = getattr(self, f'{model}_y_scaler').inverse_transform(self.train.dataset.tensors[1][self.train.indices]).numpy()
+
+            distance = np.sqrt((X[:,0] - self.p[index])**2 + (X[:,1] - np.log10(self.amax[index].to(u.cm).value))**2)
+            good = distance <= np.unique(np.sort(distance))[50]
+            
+            scipy_interpolated = scipy.interpolate.griddata(X[good,:], y[good], samples)
+
+            plt.plot(plot_x, scipy_interpolated)
+        
         plt.show()
 
     def plot_random_nu_model(self, nsamples=100000):
@@ -1049,11 +1068,33 @@ class Dust(pl.LightningDataModule):
     def setup(self, stage=None):
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test") and not self.overwrite:
             return
-        test_size = int(self.test_split * self.nsamples)
-        valid_size = int((self.nsamples - test_size)*self.valid_split)
-        train_size = self.nsamples - test_size - valid_size
-        train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
-        self.train, self.valid = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
+        
+        if self.learning == "ml_step" or self.ndims == 0:
+            test_size = int(self.test_split * self.nsamples)
+            valid_size = int((self.nsamples - test_size)*self.valid_split)
+            train_size = self.nsamples - test_size - valid_size
+            train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
+            self.train, self.valid = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
+        else:
+            train_indices, valid_indices, test_indices = torch.utils.data.random_split(range(self.samples.shape[0]), 
+                                                                                   (1.-(self.test_split + self.valid_split), 
+                                                                                    self.valid_split, self.test_split), 
+                                                                                   generator=torch.Generator().manual_seed(2))
+            self.test_indices = test_indices.indices
+
+            splits = np.repeat(0, self.dataset.tensors[0].size(0))
+            for ind in valid_indices.indices:
+                splits[self.original_indices == ind] = 1
+            for ind in test_indices.indices:
+                splits[self.original_indices == ind] = 2
+
+            train_indices = np.where(splits.flatten() == 0)[0]
+            valid_indices = np.where(splits.flatten() == 1)[0]
+            test_indices = np.where(splits.flatten() == 2)[0]
+
+            self.train = torch.utils.data.Subset(self.dataset, train_indices)
+            self.valid = torch.utils.data.Subset(self.dataset, valid_indices)
+            self.test = torch.utils.data.Subset(self.dataset, test_indices)
 
         if self.overwrite:
             self.overwrite = False
@@ -1529,6 +1570,7 @@ class GeneralDust(Dust):
 
     def prepare_data_scattering_phase_function(self):
         samples = np.repeat(np.repeat(np.expand_dims(np.moveaxis(self.samples, 0, 1), (-1, -2)), self.lam.size, axis=-2), self.theta.size, axis=-1)
+        self.original_indices = np.tile(np.expand_dims(np.arange(self.samples.shape[0]), axis=(-1, -2)), (1, self.nu.size, self.theta.size)).flatten()
 
         samples = np.concat((samples, 
                              np.tile(np.expand_dims(np.log10(self.nu.to(u.GHz).value), 
@@ -1547,6 +1589,7 @@ class GeneralDust(Dust):
         ksi = -1. * scipy.integrate.cumulative_trapezoid(self.scattering_phase_function, np.cos(self.theta), initial=0, axis=-1)
 
         samples = np.repeat(np.repeat(np.expand_dims(np.moveaxis(self.samples, 0, 1), (-1, -2)), self.lam.size, axis=-2), self.theta.size, axis=-1)
+        self.original_indices = np.tile(np.expand_dims(np.arange(self.samples.shape[0]), axis=(-1, -2)), (1, self.nu.size, self.theta.size)).flatten()
         
         samples = np.concat((samples, 
                              np.tile(np.expand_dims(np.log10(self.nu.to(u.GHz).value), 
@@ -1565,6 +1608,7 @@ class GeneralDust(Dust):
         good = np.logical_not(np.logical_or(samples[:,-1] < 2e-8, samples[:,-1] == 1))
 
         samples, targets = samples[good,:], targets[good]
+        self.original_indices = self.original_indices[good]
 
         samples[:,-1] = 2*samples[:,-1] - 1
         samples[:,-1] = np.arctanh(samples[:,-1])
