@@ -797,7 +797,7 @@ class Dust(pl.LightningDataModule):
 
         self.plot_triangle_plots(plot_columns=plot_columns)
 
-    def plot_opacity_model(self, model='kabs'):
+    def plot_opacity_model(self, model='kabs', show_scipy_interpolation=False):
         """
         Plot the learned opacity model against the interpolated opacity.
 
@@ -855,17 +855,20 @@ class Dust(pl.LightningDataModule):
 
         nned = getattr(self, f'{model}_y_scaler').inverse_transform(getattr(self, f'{model}_model')(getattr(self, f'{model}_x_scaler').transform(torch.tensor(samples, dtype=torch.float32)))).detach().numpy()
 
-        X = self.kabs_x_scaler.inverse_transform(self.train.dataset.tensors[0][self.train.indices,:]).numpy()
-        y = self.kabs_y_scaler.inverse_transform(self.train.dataset.tensors[1][self.train.indices]).numpy()
-
-        distance = np.sqrt((X[:,0] - self.p[index])**2 + (X[:,1] - np.log10(self.amax[index].to(u.cm).value))**2)
-        good = distance <= np.unique(np.sort(distance))[50]
-        
-        scipy_interpolated = scipy.interpolate.griddata(X[good,:], y[good], samples)
-
         plt.plot(plot_x, interpolated)
         plt.plot(plot_x, nned)
-        plt.plot(plot_x, scipy_interpolated)
+
+        if show_scipy_interpolation:
+            X = getattr(self, f'{model}_x_scaler').inverse_transform(self.train.dataset.tensors[0][self.train.indices,:]).numpy()
+            y = getattr(self, f'{model}_y_scaler').inverse_transform(self.train.dataset.tensors[1][self.train.indices]).numpy()
+
+            distance = np.sqrt((X[:,0] - self.p[index])**2 + (X[:,1] - np.log10(self.amax[index].to(u.cm).value))**2)
+            good = distance <= np.unique(np.sort(distance))[50]
+            
+            scipy_interpolated = scipy.interpolate.griddata(X[good,:], y[good], samples)
+
+            plt.plot(plot_x, scipy_interpolated)
+        
         plt.show()
 
     def plot_random_nu_model(self, nsamples=100000):

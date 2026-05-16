@@ -36,7 +36,9 @@ def test_learning(dims):
     """
     Test the learn_random_nu method of the Dust class.
     """
-
+    import matplotlib
+    matplotlib.use("Agg")
+    
     wavelengths = np.logspace(-1, 4, 10) * u.micron
 
     if "p" in dims:
