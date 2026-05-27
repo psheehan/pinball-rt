@@ -50,18 +50,22 @@ def test_grid_physical_properties_shapes():
     Test that the grid shapes are correct.
     """
 
+    # Set up the dust.
+
+    d = os.path.join(os.path.dirname(__file__), "data/diana_wice.dst")
+
     # Set up the grid.
     model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
 
     density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
     
-    model.set_physical_properties(density=density, amax=100*u.micron, p=3.5, dust="diana_wice.dst")
+    model.set_physical_properties(density=density, amax=100*u.micron, p=3.5, dust=d)
     
     assert model.grid.grid.dust_density.numpy().shape == model.grid.shape
     assert model.grid.grid.amax.numpy().shape == model.grid.shape
     assert model.grid.grid.p.numpy().shape == model.grid.shape
 
-    model.set_physical_properties(density=density, amax=100, p=3.5, dust="diana_wice.dst")
+    model.set_physical_properties(density=density, amax=100, p=3.5, dust=d)
 
     assert model.grid.grid.dust_density.numpy().shape == model.grid.shape
     assert model.grid.grid.amax.numpy().shape == model.grid.shape

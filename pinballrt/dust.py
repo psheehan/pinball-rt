@@ -355,6 +355,8 @@ class Dust(pl.LightningDataModule):
         return nu
 
     def ml_planck_mean_opacity(self, p, amax, temperature, abundances=()):
+        log10_amax = torch.log10(amax)
+        
         samples = ()
         for dim in self.dims:
             if dim == "abundances" and abundances is not None:
