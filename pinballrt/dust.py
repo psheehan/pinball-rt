@@ -89,7 +89,7 @@ class Dust(pl.LightningDataModule):
         state = self.__dict__.copy()
                 
         for entry in state:
-            if isinstance(getattr(self, entry), wp.types.array):
+            if wp.types.is_array(getattr(self, entry)):
                 state[entry] = getattr(self, entry).numpy()
             else:
                 state[entry] = getattr(self, entry)
