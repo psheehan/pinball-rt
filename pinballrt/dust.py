@@ -26,7 +26,7 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 wp.config.quiet = True
 
 class Dust(pl.LightningDataModule):
-    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=1000):
+    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=300):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
 
@@ -356,15 +356,17 @@ class Dust(pl.LightningDataModule):
 
     def random_nu_ml(self, p, amax, temperature, abundances=None):
         nphotons = temperature.size
-        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
+        ksi = torch.rand(int(nphotons), dtype=torch.float32)
         ksi = torch.arctanh(2*ksi - 1.)
+
+        log10_amax = np.log10(amax)
 
         samples = ()
         for dim in self.dims:
             if dim == "abundances" and abundances is not None:
-                samples += abundances
+                samples += [torch.tensor(a, dtype=torch.float32) for a in abundances]
             else:
-                samples += (eval(dim),)
+                samples += (torch.tensor(eval(dim), dtype=torch.float32),)
         samples += (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)
 
         samples = torch.transpose(torch.vstack(samples), 0, 1)
@@ -602,30 +604,50 @@ class Dust(pl.LightningDataModule):
 
         self.dataset = TensorDataset(X, y)
 
-    def prepare_data_random_nu(self):        
-        samples = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.samples, 1), self.temperature.size, axis=1), 1), self.nu.size, 1)
-        self.original_indices = np.tile(np.expand_dims(np.arange(self.samples.shape[0]), axis=(-1, -2)), (1, self.temperature.size, self.nu.size)).flatten()
+    def prepare_data_random_nu(self):
+        count = 0
+        batch_size = 100
 
-        temperature = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.temperature, (0, -1)), self.nu.size, axis=0), 0), max(samples.shape[0], 1), axis=0)
-        nu = np.repeat(np.repeat(np.expand_dims(self.nu, (0, -1, -2)), self.temperature.size, axis=2), max(samples.shape[0], 1), axis=0)
-        
-        ksi = scipy.integrate.cumulative_trapezoid(np.repeat(np.expand_dims(self.kabs, (-1, -2)), self.temperature.size, axis=-2) * models.BlackBody(temperature*u.K)(nu), np.log10(self.nu.to(u.GHz).value), axis=1, initial=0)
-        ksi /= ksi[:,-1:,:,:]
-        
-        samples = np.concat((samples, np.log10(temperature), ksi), axis=-1)
-        samples = samples.reshape((-1, samples.shape[-1]))
-        
-        targets = np.log10(nu.to(u.GHz).value.flatten())
+        total_samples = []
+        total_targets = []
+        total_original_indices = []
 
-        samples = samples.astype(np.float32)
+        while count < self.samples.shape[0]:
+            n = min(batch_size, self.samples.shape[0] - count)
+            
+            samples = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.samples[count:count+n,:], 1), self.temperature.size, axis=1), 1), self.nu.size, 1)
+            original_indices = np.tile(np.expand_dims(np.arange(self.samples.shape[0])[count:count+n], axis=(-1, -2)), (1, self.temperature.size, self.nu.size)).flatten()
+    
+            temperature = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.temperature*u.K, (0, -1)), self.nu.size, axis=0), 0), max(samples.shape[0], 1), axis=0)
+            nu = np.repeat(np.repeat(np.expand_dims(self.nu, (0, -1, -2)), self.temperature.size, axis=2), max(samples.shape[0], 1), axis=0)
+            
+            ksi = scipy.integrate.cumulative_trapezoid(np.repeat(np.expand_dims(self.kabs[count:count+n,:], (-1, -2)), self.temperature.size, axis=-2) * models.BlackBody(temperature)(nu), np.log10(self.nu.to(u.GHz).value), axis=1, initial=0)
+            ksi /= ksi[:,-1:,:,:]
+            
+            samples = np.concat((samples, np.log10(temperature.to(u.K).value), ksi), axis=-1)
+            samples = samples.reshape((-1, samples.shape[-1]))
+            
+            targets = np.log10(nu.to(u.GHz).value.flatten())
+    
+            samples = samples.astype(np.float32)
+    
+            good = np.logical_not(np.logical_or(samples[:,-1] < 2e-8, samples[:,-1] == 1))
+    
+            samples, targets = samples[good,:], targets[good]
+            original_indices = original_indices[good]
+    
+            samples[:,-1] = 2*samples[:,-1] - 1
+            samples[:,-1] = np.arctanh(samples[:,-1])
 
-        good = np.logical_not(np.logical_or(samples[:,-1] < 2e-8, samples[:,-1] == 1))
+            total_samples.append(samples)
+            total_targets.append(targets)
+            total_original_indices.append(original_indices)
 
-        samples, targets = samples[good,:], targets[good]
-        self.original_indices = self.original_indices[good]
+            count += n
 
-        samples[:,-1] = 2*samples[:,-1] - 1
-        samples[:,-1] = np.arctanh(samples[:,-1])
+        samples = np.concatenate(total_samples, axis=0)
+        targets = np.concatenate(total_targets, axis=0)
+        self.original_indices = np.concatenate(total_original_indices, axis=0)
 
         return samples, targets
 
@@ -711,7 +733,7 @@ class Dust(pl.LightningDataModule):
 
     def run_dust_simulation(self, nphotons=1000, tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), 
                             amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), nu_range=None, use_ml_step=False, 
-                            position=0):
+                            position=0, time_limit=np.inf, device="cpu"):
         """
         Run a dust simulation that can be used to learn an ML-step model with the given parameters.
 
@@ -739,7 +761,7 @@ class Dust(pl.LightningDataModule):
 
         # Set up the grid.
 
-        grid = UniformSphericalGrid(ncells=1, dr=1.0*u.au, mirror=False)
+        grid = UniformSphericalGrid(ncells=1, dr=1.0*u.au, mirror=False, device=device)
 
         density = np.ones(grid.shape) * 1e-16 * u.g / u.cm**3
 
@@ -750,27 +772,28 @@ class Dust(pl.LightningDataModule):
 
         photon_list = grid.emit(nphotons, wavelength="random", scattering=False)
 
-        initial_direction = np.zeros((nphotons, 3), dtype=np.float32)
-        initial_direction[:,0] = 1.
-        photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
+        with wp.ScopedDevice(grid.device):
+            initial_direction = np.zeros((nphotons, 3), dtype=np.float32)
+            initial_direction[:,0] = 1.
+            photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
+    
+            photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0].value), np.log10(nu_range[1].value), nphotons), dtype=float)
+            original_frequency = photon_list.frequency.numpy().copy()
+    
+            photon_list.temperature = wp.array(10.**np.random.uniform(np.log10(temperature_range[0].to(u.K).value), np.log10(temperature_range[1].to(u.K).value), nphotons), dtype=float)
+    
+            samples = suggest_opacity_sampling(nphotons, p_range=p_range, amax_range=amax_range, n_dust_subspecies=len(self.abundances)+1, mode="random")
+    
+            photon_list.amax = wp.array(samples[:,1], dtype=float)
+            photon_list.p = wp.array(samples[:,0], dtype=float)
+            if len(self.abundances) > 0:
+                photon_list.dust_abundances = wp.array2d(samples[:,2:], dtype=float)
+    
+            tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
+            photon_list.density = wp.array((tau / (self.kmean * self.ml_kabs(photon_list=photon_list) * \
+                                                                                1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
 
-        photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0].value), np.log10(nu_range[1].value), nphotons), dtype=float)
-        original_frequency = photon_list.frequency.numpy().copy()
-
-        photon_list.temperature = wp.array(10.**np.random.uniform(np.log10(temperature_range[0].to(u.K).value), np.log10(temperature_range[1].to(u.K).value), nphotons), dtype=float)
-
-        samples = suggest_opacity_sampling(nphotons, p_range=p_range, amax_range=amax_range, n_dust_subspecies=len(self.abundances)+1, mode="random")
-
-        photon_list.amax = wp.array(samples[:,1], dtype=float)
-        photon_list.p = wp.array(samples[:,0], dtype=float)
-        if len(self.abundances) > 0:
-            photon_list.dust_abundances = wp.array2d(samples[:,2:], dtype=float)
-
-        tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
-        photon_list.density = wp.array((tau / (self.kmean * self.ml_kabs(photon_list=photon_list) * \
-                                                                            1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
-
-        grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step)
+        grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step, time_limit=time_limit)
 
         # Calculate roll, pitch, and yaw for the position relative to where it started.
         # Also calculate roll, pitch, and yaw for the direction relative to the radial vector where it exits.
@@ -955,7 +978,7 @@ class Dust(pl.LightningDataModule):
 
         nu2 = self.random_nu_ml(p, amax, T, abundances=abundances)
 
-        counts, bins, _ = plt.hist(np.log10(nu2), 100)
+        counts, bins, _ = plt.hist(np.log10(nu2), 300)
 
         bb = models.BlackBody(temperature=T[0] * u.K)
         pdf = bb(10.**bins[1:]*u.GHz).value * self.ml_kabs(torch.tensor(p[0], dtype=torch.float32).repeat((bins[1:].size,)), 
