@@ -1279,6 +1279,7 @@ class UniformCartesianGrid(Grid):
 
         with wp.ScopedDevice(self.device):
             self.volume = torch.ones((self.grid.n1, self.grid.n2, self.grid.n3), device=wp.device_to_torch(wp.get_device())) * (dx.value * dy.value * dz.value)
+            self.minimum_cell_size = torch.ones((self.grid.n1, self.grid.n2, self.grid.n3), device=wp.device_to_torch(wp.get_device())) * min(dx.value, dy.value, dz.value)
 
     def emit(self, nphotons, wavelength="random", scattering=False, learning=False, timing={}):
 
@@ -1598,6 +1599,20 @@ class UniformSphericalGrid(Grid):
             self.volume = (wp.to_torch(self.grid.w1).to(torch.float64)[1:]**3 - wp.to_torch(self.grid.w1).to(torch.float64)[0:-1]**3)[:,None,None] * \
                     (wp.to_torch(self.grid.cos_w2).to(torch.float64)[0:-1] - wp.to_torch(self.grid.cos_w2).to(torch.float64)[1:])[None,:,None] * \
                     (wp.to_torch(self.grid.w3).to(torch.float64)[1:] - wp.to_torch(self.grid.w3).to(torch.float64)[0:-1]) / 3 * self.volume_scale
+
+            dr, dtheta, dphi = torch.meshgrid(wp.to_torch(self.grid.w1).to(torch.float64)[1:] - wp.to_torch(self.grid.w1).to(torch.float64)[0:-1],
+                                              wp.to_torch(self.grid.w2).to(torch.float64)[1:] - wp.to_torch(self.grid.w2).to(torch.float64)[0:-1],
+                                              wp.to_torch(self.grid.w3).to(torch.float64)[1:] - wp.to_torch(self.grid.w3).to(torch.float64)[0:-1],
+                                              indexing='ij')
+            
+            r = torch.unsqueeze(torch.unsqueeze(0.5 * (wp.to_torch(self.grid.w1).to(torch.float64)[1:] + 
+                                       wp.to_torch(self.grid.w1).to(torch.float64)[0:-1]), 1), 1)
+            
+            minimum_cell_size = torch.concat((torch.unsqueeze(dr, 0),
+                                              torch.unsqueeze(r * dtheta, 0),
+                                              torch.unsqueeze(r * dphi, 0)), dim=0)
+            
+            self.minimum_cell_size = minimum_cell_size.min(dim=0).values
 
     def emit(self, nphotons, wavelength="random", scattering=False, learning=False, timing={}):
         t1 = time.time()
@@ -2077,6 +2092,20 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
             self.volume = (wp.to_torch(self.grid.w1).to(torch.float64)[1:]**3 - wp.to_torch(self.grid.w1).to(torch.float64)[0:-1]**3)[:,None,None] * \
                     (wp.to_torch(self.grid.cos_w2).to(torch.float64)[0:-1] - wp.to_torch(self.grid.cos_w2).to(torch.float64)[1:])[None,:,None] * \
                     (wp.to_torch(self.grid.w3).to(torch.float64)[1:] - wp.to_torch(self.grid.w3).to(torch.float64)[0:-1]) / 3 * self.volume_scale
+
+            dr, dtheta, dphi = torch.meshgrid(wp.to_torch(self.grid.w1).to(torch.float64)[1:] - wp.to_torch(self.grid.w1).to(torch.float64)[0:-1],
+                                              wp.to_torch(self.grid.w2).to(torch.float64)[1:] - wp.to_torch(self.grid.w2).to(torch.float64)[0:-1],
+                                              wp.to_torch(self.grid.w3).to(torch.float64)[1:] - wp.to_torch(self.grid.w3).to(torch.float64)[0:-1],
+                                              indexing='ij')
+            
+            r = torch.unsqueeze(torch.unsqueeze(0.5 * (wp.to_torch(self.grid.w1).to(torch.float64)[1:] + 
+                                       wp.to_torch(self.grid.w1).to(torch.float64)[0:-1]), 1), 1)
+            
+            minimum_cell_size = torch.concat((torch.unsqueeze(dr, 0),
+                                              torch.unsqueeze(r * dtheta, 0),
+                                              torch.unsqueeze(r * dphi, 0)), dim=0)
+            
+            self.minimum_cell_size = minimum_cell_size.min(dim=0).values
 
     def emit(self, nphotons, wavelength="random", scattering=False, learning=False, timing={}):
         t1 = time.time()
