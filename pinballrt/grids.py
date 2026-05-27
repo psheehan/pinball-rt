@@ -33,11 +33,11 @@ class Grid:
                 
         new_dict = {}
         for entry in state['grid'].__dict__:
-            if isinstance(getattr(self.grid, entry), wp.types.array):
+            if wp.types.is_array(getattr(self.grid, entry)):
                 new_dict[entry] = getattr(self.grid, entry).numpy()
             elif isinstance(getattr(self.grid, entry), type(None)):
                 new_dict[entry] = getattr(self.grid, entry)
-            elif isinstance(getattr(self.grid, entry), wp.types.bool):
+            elif isinstance(getattr(self.grid, entry), wp.bool):
                 new_dict[entry] = bool(getattr(self.grid, entry))
             elif isinstance(getattr(self.grid, entry), int):
                 new_dict[entry] = getattr(self.grid, entry)

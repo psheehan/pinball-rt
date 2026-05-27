@@ -103,7 +103,7 @@ class Dust(pl.LightningDataModule):
         state = self.__dict__.copy()
                 
         for entry in state:
-            if isinstance(getattr(self, entry), wp.types.array):
+            if wp.types.is_array(getattr(self, entry)):
                 state[entry] = getattr(self, entry).numpy()
             else:
                 state[entry] = getattr(self, entry)
@@ -423,6 +423,8 @@ class Dust(pl.LightningDataModule):
         return nu
 
     def ml_planck_mean_opacity(self, p, amax, temperature, abundances=()):
+        log10_amax = torch.log10(amax)
+        
         samples = ()
         for dim in self.dims:
             if dim == "abundances" and abundances is not None:

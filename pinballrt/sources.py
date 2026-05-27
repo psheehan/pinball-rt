@@ -475,7 +475,7 @@ class GridSource(DiffuseSource):
 
         wp.launch(kernel=self.grid.photon_cell_properties,
                     dim=(nphotons,),
-                    inputs=[photon_list, self.grid.grid, wp.array(np.arange(nphotons), dtype=int)])
+                    inputs=[photon_list, self.grid.grid, wp.array(np.arange(nphotons), dtype=int), self.grid.n_dust_abundances])
 
         return self.grid.dust.random_nu(photon_list)
 
