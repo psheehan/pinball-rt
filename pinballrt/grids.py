@@ -553,7 +553,7 @@ class Grid:
         photon_list.ksca[ip] = ksca[i]
         photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
 
-    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0):
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -615,7 +615,8 @@ class Grid:
 
             count = 0
             nphotons_done = 0
-            while nphotons > 0:
+            start_time = time.time()
+            while nphotons > 0 and time.time() - start_time < time_limit:
                 #print(nphotons)
                 count += 1
 
