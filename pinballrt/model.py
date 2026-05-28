@@ -330,34 +330,10 @@ class Model:
         if include_gas:
             self.grid.select_lines(lam)
 
-        self.grid.grid.include_dust = include_dust
-        self.grid.grid.include_gas = include_gas
-
-        # Check whether spectral is wavelength or frequency
-
-        if channels.unit.is_equivalent(u.micron):
-            lam = channels.to(u.micron)
-            nu = (const.c / channels).to(u.GHz)
-        elif channels.unit.is_equivalent(u.GHz):
-            nu = channels.to(u.GHz)
-            lam = (const.c / nu).to(u.micron)
-        elif channels.unit.is_equivalent(u.km / u.s):
-            if rest_frequency is None:
-                raise ValueError("rest_frequency must be provided when channels are in velocity units.")
-            nu = (rest_frequency * (1 - channels / const.c)).to(u.GHz)
-            lam = (const.c / nu).to(u.micron)
-        else:
-            raise ValueError("Either lam or nu must be provided.")
-
-        # Check which lines from the gas should be included
-
-        if include_gas:
-            self.grid.select_lines(lam)
-
         # First, run a scattering simulation to get the scattering phase function
 
+        self.grid_list[device].set_grid_opacities(nu)
         if include_dust:
-            self.grid_list[device].set_grid_opacities(nu)
             self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False)
 
         # Now set up the image proper.
@@ -404,7 +380,7 @@ class Model:
                                                                 [njobs]*njobs,)
                                                         ))).mean(axis=0) * u.Jy/u.steradian
 
-        intensity += source_intensity
+            intensity += source_intensity
 
         image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian)))
 

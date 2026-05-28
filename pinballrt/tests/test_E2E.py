@@ -64,7 +64,7 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
     g.set_properties_from_lambda('co.dat')
 
     cube = model.make_image(npix=256, pixel_size=0.2*u.arcsec, channels=np.linspace(-20., 20., 300)*u.km/u.s, rest_frequency=g.nu[2], 
-                            incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device='cpu')
+                            incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device='cpu', include_sources=False)
     mom0 = cube.sum(dim='lam')
 
     # Do the checks.
