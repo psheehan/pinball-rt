@@ -1437,7 +1437,7 @@ class GeneralDust(Dust):
             
         nphotons = iphotons.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.arctanh(2*ksi - 1.)
+        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
 
         if amax is not None:
             log10_amax = torch.log10(amax)
