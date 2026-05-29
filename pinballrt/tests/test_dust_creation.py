@@ -117,6 +117,9 @@ def test_learning(dims):
         d.fit(epochs=10, batch_size=batch_size)
         d.test_model(plot=True)
 
+        if model == "random_nu":
+            d.plot_random_nu_model(100)
+
     # Test the learn_ml_step method.
 
     n_samples = 100
