@@ -329,7 +329,7 @@ class Dust(pl.LightningDataModule):
         samples = ()
         for dim in self.dims:
             if dim == "abundances" and abundances is not None:
-                samples += [torch.tensor(a, dtype=torch.float32) for a in abundances]
+                samples += tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])
             else:
                 samples += (torch.tensor(eval(dim), dtype=torch.float32),)
         samples += (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)
