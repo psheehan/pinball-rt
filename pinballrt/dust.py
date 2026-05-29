@@ -241,41 +241,6 @@ class Dust(pl.LightningDataModule):
         return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
                 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
-    def ml_albedo(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        if photon_list is not None:
-            p = wp.to_torch(photon_list.p)
-            amax = wp.to_torch(photon_list.amax)
-            if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-
-            if nu is None:
-                nu = wp.to_torch(photon_list.frequency)
-            else:
-                if nu.size(0) != p.size(0):
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-
-            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(nu),)
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
-
-        kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
-        ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
-
-        return ksca / (kabs + ksca)
-
     def absorb(self, temperature):
         nphotons = frequency.numpy().size
 
@@ -393,7 +358,7 @@ class Dust(pl.LightningDataModule):
             
         nphotons = temperature.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.arctanh(2*ksi - 1.)
+        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
 
         if amax is not None:
             log10_amax = torch.log10(amax)
