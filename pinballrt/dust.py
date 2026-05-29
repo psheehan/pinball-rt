@@ -254,7 +254,7 @@ class Dust(pl.LightningDataModule):
     def random_nu_ml(self, p, amax, temperature, abundances=None):
         nphotons = temperature.size
         ksi = torch.rand(int(nphotons), dtype=torch.float32)
-        ksi = torch.arctanh(2*ksi - 1.)
+        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
 
         log10_amax = np.log10(amax)
 
