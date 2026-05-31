@@ -348,11 +348,27 @@ class Grid:
 
         photon_list.temperature[ip] = grid.temperature[ix, iy, iz]
         photon_list.density[ip] = grid.dust_density[ix, iy, iz]
-        photon_list.amax[ip] = grid.amax[ix, iy, iz]
-        photon_list.p[ip] = grid.p[ix, iy, iz]
-    
+
+        new_amax = grid.amax[ix, iy, iz]
+        new_p = grid.p[ix, iy, iz]
+
+        updated_dust_properties = False
+        if photon_list.amax[ip] != new_amax or photon_list.p[ip] != new_p:
+            updated_dust_properties = True
+        
+        photon_list.amax[ip] = new_amax
+        photon_list.p[ip] = new_p
+
         for i in range(n_dust_abundances):
-            photon_list.dust_abundances[ip][i] = grid.dust_abundances[i, ix, iy, iz]
+            new_abundance = grid.dust_abundances[i, ix, iy, iz]
+
+            if photon_list.dust_abundances[ip][i] != new_abundance:
+                updated_dust_properties = True
+
+            photon_list.dust_abundances[ip][i] = new_abundance
+
+        if updated_dust_properties:
+            photon_list.opacities_out_of_date[ip] = True
 
     @wp.kernel
     def update_frequency(photon_list: PhotonList,
@@ -363,6 +379,7 @@ class Grid:
         ip = iphotons[i]
 
         photon_list.frequency[ip] = frequency[i]
+        photon_list.opacities_out_of_date[ip] = True
 
     @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
@@ -571,6 +588,8 @@ class Grid:
         photon_list.ksca[ip] = ksca[i]
         photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
 
+        photon_list.opacities_out_of_date[ip] = False
+
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
@@ -604,6 +623,7 @@ class Grid:
             photon_list.ksca = wp.zeros(nphotons, dtype=float)
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
+            photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
             progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
@@ -765,12 +785,14 @@ class Grid:
                                   inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
                     
                     t1 = time.time()
+                    iphotons_opacities = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), 
+                                                                             wp.to_torch(photon_list.opacities_out_of_date))]
                     wp.launch(kernel=self.set_photon_opacities,
-                            dim=(nphotons,),
+                            dim=(iphotons_opacities.size(0),),
                             inputs=[photon_list, 
-                                    wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
-                                    wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
-                                    iphotons])
+                                    wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons_opacities)),
+                                    wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons_opacities)),
+                                    iphotons_opacities])
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 
@@ -822,6 +844,8 @@ class Grid:
         photon_list.ksca[ip] = grid.ksca[inu, ix, iy, iz]
         photon_list.albedo[ip] = photon_list.ksca[ip] / (photon_list.kabs[ip] + photon_list.ksca[ip])
 
+        photon_list.opacities_out_of_date[ip] = False
+
     def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False, timing={}, position=0):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
@@ -849,6 +873,7 @@ class Grid:
             photon_list.ksca = wp.zeros(nphotons, dtype=float)
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
+            photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
             progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
@@ -954,9 +979,11 @@ class Grid:
                               inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
                     
                     t1 = time.time()
+                    iphotons_opacities = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), 
+                                                                             wp.to_torch(photon_list.opacities_out_of_date))]
                     wp.launch(kernel=self.update_photon_opacities, 
-                            dim=(nphotons,),
-                            inputs=[photon_list, self.grid, inu, iphotons])
+                            dim=(iphotons_opacities.size(0),),
+                            inputs=[photon_list, self.grid, inu, iphotons_opacities])
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 
@@ -1233,6 +1260,7 @@ class Grid:
 
             if self.n_dust_abundances > 0:
                 ray_list.dust_abundances = wp.zeros((nrays, self.n_dust_abundances), dtype=float)
+            ray_list.opacities_out_of_date = wp.zeros(nrays, dtype=bool)
     
             wp.launch(kernel=self.photon_cell_properties,
                       dim=(nrays,),
@@ -1341,6 +1369,7 @@ class UniformCartesianGrid(Grid):
             photon_list.p = wp.zeros(nphotons, dtype=float)
             if self.n_dust_abundances > 0:
                 photon_list.dust_abundances = wp.zeros((nphotons, self.n_dust_abundances), dtype=float)
+            photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
@@ -1671,6 +1700,7 @@ class UniformSphericalGrid(Grid):
             photon_list.p = wp.array(np.zeros(nphotons), dtype=float)
             if self.n_dust_abundances > 0:
                 photon_list.dust_abundances = wp.zeros((nphotons, self.n_dust_abundances), dtype=float)
+            photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
@@ -2153,6 +2183,7 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
             photon_list.p = wp.array(np.zeros(nphotons), dtype=float)
             if self.n_dust_abundances > 0:
                 photon_list.dust_abundances = wp.zeros((nphotons, self.n_dust_abundances), dtype=float)
+            photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
             if not learning:
                 wp.launch(kernel=self.photon_cell_properties,
