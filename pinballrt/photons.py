@@ -27,6 +27,8 @@ class PhotonList:
     p: wp.array(dtype=float)
     dust_abundances: wp.array2d(dtype=float)
 
+    opacities_out_of_date: wp.array(dtype=bool)
+
     tau: wp.array(dtype=float)
     total_tau_abs: wp.array(dtype=float)
 

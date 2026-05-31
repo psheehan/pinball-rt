@@ -1334,6 +1334,8 @@ class HenyeyGreensteinDust(Dust):
         photon_list.g[ip] = g[i]
         photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
 
+        photon_list.opacities_out_of_date[ip] = False
+
     @wp.kernel
     def set_photon_opacities_grid(photon_list: PhotonList,
                                   grid: GridStruct,

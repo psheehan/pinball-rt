@@ -472,6 +472,7 @@ class GridSource(DiffuseSource):
         photon_list.p = wp.zeros(nphotons, dtype=float)
         if self.grid.n_dust_abundances > 0:
             photon_list.dust_abundances = wp.zeros((nphotons, self.grid.n_dust_abundances), dtype=float)
+        photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
         wp.launch(kernel=self.grid.photon_cell_properties,
                     dim=(nphotons,),
