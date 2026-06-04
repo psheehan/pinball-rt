@@ -369,15 +369,18 @@ class Model:
             #data_vars={
             #    "intensity": (["x", "y", "lam"], np.zeros((nx, ny, lam.size))),},
             coords={
-                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size),
-                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size),
+                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size.to(u.arcsec)),
+                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size.to(u.arcsec)),
                 "lam": ("lam", lam),
                 "nu": ("lam", (const.c / lam).to(u.GHz)),},
             attrs={
                 "pixel_size": pixel_size,})
 
-        new_x, new_y = xr.broadcast(image.x, image.y)
-        new_x, new_y = new_x.values.flatten(), new_y.values.flatten()
+        new_x_arcsec, new_y_arcsec = xr.broadcast(image.x, image.y)
+        new_x_arcsec, new_y_arcsec = new_x_arcsec.values.flatten() * u.arcsec, new_y_arcsec.values.flatten() * u.arcsec
+        # convert to physical units
+        new_x = (new_x_arcsec * distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
+        new_y = (new_y_arcsec * distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value 
 
         njobs = self.ncores
 
