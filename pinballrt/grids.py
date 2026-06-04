@@ -434,6 +434,12 @@ class Grid:
             self.grid.temperature = wp.array3d(temperature, dtype=float)
 
     @wp.kernel
+    def reset_do_ml_step(photon_list: PhotonList): # pragma: no cover
+        ip = wp.tid()
+
+        photon_list.do_ml_step[ip] = False
+
+    @wp.kernel
     def check_do_ml_step(photon_list: PhotonList,
                           s1: wp.array(dtype=float),
                           s2: wp.array(dtype=float),
@@ -578,7 +584,7 @@ class Grid:
             wp.launch(kernel=self.random_absorb, 
                       dim=(nphotons,), 
                       inputs=[photon_list, iphotons, np.random.randint(0, 100000)])
-
+            
             count = 0
             nphotons_done = 0
             start_time = time.time()
@@ -600,7 +606,7 @@ class Grid:
                 t2 = time.time()
                 tau_distance_time += t2 - t1
 
-                if not learning and use_ml_step:
+                if use_ml_step:
                     t1 = time.time()
                     wp.launch(kernel=self.minimum_wall_distance,
                               dim=(nphotons,),
@@ -610,8 +616,11 @@ class Grid:
 
                 s = torch.minimum(wp.to_torch(s1), wp.to_torch(s2))
 
-                if not learning and use_ml_step:
+                if use_ml_step:
                     t1 = time.time()
+                    wp.launch(kernel=self.reset_do_ml_step,
+                              dim=(nphotons,),
+                              inputs=[photon_list])
                     wp.launch(kernel=self.check_do_ml_step,
                               dim=(nphotons,),
                               inputs=[photon_list, s1, s2, s3, iphotons, self.dust.log10_nu0_min, self.dust.log10_nu0_max, self.dust.log10_T_min, self.dust.log10_T_max])
@@ -623,10 +632,10 @@ class Grid:
                 wp.launch(kernel=self.calculate_deposited_energy,
                           dim=(nphotons,),
                           inputs=[photon_list, self.grid, s, iphotons, learning])
-
+                
                 # Do the ml step here
 
-                if not learning and use_ml_step and iml_photons.size(0) > 0:
+                if use_ml_step and iml_photons.size(0) > 0:
                     t1 = time.time()
                     yaw, pitch, roll = self.ml_step(photon_list, s, iml_photons)
                     t2 = time.time()
@@ -651,10 +660,10 @@ class Grid:
                 wp.launch(kernel=self.reduce_tau,
                            dim=(nphotons,),
                            inputs=[photon_list, s, iphotons])
-
+                
                 # Before we update the locations, we should rotate the direction vector of the ml photons to the new direction after the ml
 
-                if not learning and use_ml_step and iml_photons.size(0) > 0:
+                if use_ml_step and iml_photons.size(0) > 0:
                     t1 = time.time()
                     wp.launch(kernel=self.ml_rotate_direction,
                               dim=(iml_photons.size(0),),
@@ -714,7 +723,7 @@ class Grid:
                         wp.launch(kernel=self.photon_cell_properties,
                                   dim=(nphotons,),
                                   inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
-                    
+                                            
                     t1 = time.time()
                     self.dust.update_photon_opacities(photon_list=photon_list, iphotons=iphotons)
                     t2 = time.time()
@@ -1341,7 +1350,7 @@ class UniformCartesianGrid(Grid):
         if sz2 < s:
             s = sz2
 
-        if s * photon_list.kabs[ip] * grid.dust_density[ix, iy, iz] < 10.**log10_tau_min:
+        if s * photon_list.kabs[ip] * photon_list.density[ip] < 10.**log10_tau_min:
             s = 0.
 
         max_tau_distance = 10.**log10_tau_max / photon_list.alpha[ip]
@@ -1718,7 +1727,7 @@ class UniformSphericalGrid(Grid):
     
         for i in range(iw1, iw1+2):
             sr = abs(photon_list.position[ip][2] - grid.w1[i])
-            if sr < s:
+            if sr < s and grid.w1[i] != 0.:
                 s = sr
 
         # Calculate the distance to the nearest theta wall.
@@ -1747,10 +1756,10 @@ class UniformSphericalGrid(Grid):
                 if sp < s:
                     s = sp
 
-        if s * photon_list.kabs[ip] * grid.dust_density[iw1, iw2, iw3] < log10_tau_min:
+        if s * photon_list.kabs[ip] * photon_list.density[ip] < 10.**log10_tau_min:
             s = 0.
 
-        max_tau_distance = log10_tau_max / photon_list.alpha[ip]
+        max_tau_distance = 10.**log10_tau_max / photon_list.alpha[ip]
 
         distances[ip] = wp.min(s, max_tau_distance)
 
