@@ -161,6 +161,7 @@ class Dust(pl.LightningDataModule):
             else:
                 samples += (eval(dim),)
         samples += (torch.log10(nu),)
+
         samples = torch.transpose(torch.vstack(samples), 0, 1)
 
         kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
@@ -393,7 +394,6 @@ class Dust(pl.LightningDataModule):
             
         nphotons = temperature.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.arctanh(2*ksi - 1.)
 
         if amax is not None:
             log10_amax = torch.log10(amax)
@@ -454,7 +454,9 @@ class Dust(pl.LightningDataModule):
 
     def initialize_model(self, model="random_nu", model_type="MLP", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
         if model_type == 'flow':
-            setattr(self, f"{model}_model", NeuralSplineFlow(input_size, output_size, transforms=len(hidden_units), hidden_features=hidden_units[0]))
+            setattr(self, f"{model}_model", MaskedAutoregressiveFlow(input_size, output_size, transforms=len(hidden_units), hidden_features=hidden_units[0]))
+        elif model == "ml_step_filter":
+            setattr(self, f"{model}_model", MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units, final_activation=nn.Sigmoid))
         else:
             setattr(self, f"{model}_model", MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units))
 
@@ -508,7 +510,7 @@ class Dust(pl.LightningDataModule):
             self.model_type = "flow"
 
             if nu_range is None:
-                nu_range = (self.nu.value.min(), self.nu.value.max())
+                nu_range = (self.nu.min(), self.nu.max())
 
             self.log10_nu0_min = np.log10(nu_range[0].to(u.GHz).value)
             self.log10_nu0_max = np.log10(nu_range[1].to(u.GHz).value)
@@ -522,6 +524,9 @@ class Dust(pl.LightningDataModule):
             self.log10_tau_cell_nu0_max = np.log10(tau_range[1])
         elif model in ["kabs", "ksca", "g", "pmo"]:
             self.input_size, self.output_size = self.ndims + 1, 1
+            self.model_type = "MLP"
+        elif model == "ml_step_filter":
+            self.input_size, self.output_size = 5, 1
             self.model_type = "MLP"
 
         self.initialize_model(model=model, model_type=self.model_type, input_size=self.input_size, output_size=self.output_size, hidden_units=hidden_units)
@@ -596,13 +601,13 @@ class Dust(pl.LightningDataModule):
         X_scaler = StandardScaler()
         X_scaler.fit(X)
         X = X_scaler.transform(X)
-
-        y_scaler = StandardScaler()
-        y_scaler.fit(y)
-        y = y_scaler.transform(y)
-
         setattr(self, f"{self.current_model}_x_scaler", X_scaler)
-        setattr(self, f"{self.current_model}_y_scaler", y_scaler)
+
+        if self.current_model != "ml_step_filter":
+            y_scaler = StandardScaler()
+            y_scaler.fit(y)
+            y = y_scaler.transform(y)
+            setattr(self, f"{self.current_model}_y_scaler", y_scaler)
 
         self.dataset = TensorDataset(X, y)
 
@@ -687,6 +692,13 @@ class Dust(pl.LightningDataModule):
         return samples, targets
 
     def prepare_data_ml_step(self, device='cpu'):
+        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
+        targets = ["log10_nu0", "log10_T"] + \
+                  (["log10_amax"] if "log10_amax" in self.dims else []) + \
+                  (["p"] if "p" in self.dims else []) + \
+                  ([f"abundance{i}" for i in range(len(self.abundances))]) + \
+                  ["log10_tau_cell_nu0"]
+        
         if os.path.exists("sim_results.csv"):
             df = pd.read_csv("sim_results.csv", index_col=0)
 
@@ -700,6 +712,15 @@ class Dust(pl.LightningDataModule):
             self.p_max = df['p'].max()
             self.log10_tau_cell_nu0_min = df['log10_tau_cell_nu0'].min()
             self.log10_tau_cell_nu0_max = df['log10_tau_cell_nu0'].max()
+        elif hasattr(self, "ml_step_filter_model") and os.path.exists("sim_results_pre-filter"):
+            df = pd.read_csv("sim_results_pre-filter.csv", index_col=0)
+
+            df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+
+            finish_probability = 1 - self.ml_step_filter_model(self.ml_step_filter_x_scaler.transform(torch.tensor(df.loc[:,features].values, dtype=torch.float32))).detach().numpy().flatten()
+
+            df = df[finish_probability > 0.999]
+            df.to_csv("sim_results.csv")
         else:
             df = self.run_dust_simulation(nphotons=self.nsamples, 
                                           tau_range=(10.**self.log10_tau_cell_nu0_min, 10.**self.log10_tau_cell_nu0_max),
@@ -708,13 +729,6 @@ class Dust(pl.LightningDataModule):
                                           p_range=(self.p_min, self.p_max), 
                                           nu_range=(10.**self.log10_nu0_min*u.GHz, 10.**self.log10_nu0_max*u.GHz))
             df.to_csv("sim_results.csv")
-
-        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
-        targets = ["log10_nu0", "log10_T"] + \
-                  (["log10_amax"] if "log10_amax" in self.dims else []) + \
-                  (["p"] if "p" in self.dims else []) + \
-                  ([f"abundance{i}" for i in range(len(self.abundances))]) + \
-                  ["log10_tau_cell_nu0"]
 
         df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
 
@@ -731,6 +745,19 @@ class Dust(pl.LightningDataModule):
         self.df = df
         self.nsamples = len(df)
 
+        return samples, targets
+
+    def prepare_data_ml_step_filter(self):
+        df = pd.read_csv("sim_results_pre-filter.csv", index_col=0)
+
+        features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
+        targets = ["in_grid"]
+
+        samples = df.loc[:, features].values
+        targets = df.loc[:, targets].values
+
+        self.nsamples = len(df)
+        
         return samples, targets
 
     def run_dust_simulation(self, nphotons=1000, tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), 
@@ -825,7 +852,8 @@ class Dust(pl.LightningDataModule):
                        "yaw":ypr[:,0],
                        "pitch":ypr[:,1],
                        "direction_yaw":direction_ypr[:,0],
-                       "direction_pitch":direction_ypr[:,1]})
+                       "direction_pitch":direction_ypr[:,1],
+                       "in_grid":photon_list.in_grid.numpy()})
 
         for i in range(len(self.abundances)):
             df[f"abundance{i}"] = photon_list.dust_abundances.numpy()[:,i]
@@ -878,11 +906,12 @@ class Dust(pl.LightningDataModule):
         self.test_split = 0.98
         self.valid_split = 0.01
         self.batch_size = 10000
+        self.overwrite = False
 
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
             del self.train, self.valid, self.test
 
-        self.plot_triangle_plots(plot_columns=plot_columns)
+        self.plot_triangle_plots(plot_columns=plot_columns, nsamples=nsamples)
 
     def plot_opacity_model(self, model='kabs', show_scipy_interpolation=False):
         """
@@ -1094,7 +1123,7 @@ class Dust(pl.LightningDataModule):
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test") and not self.overwrite:
             return
         
-        if self.learning == "ml_step" or self.ndims == 0:
+        if "ml_step" in self.learning or self.ndims == 0:
             test_size = int(self.test_split * self.nsamples)
             valid_size = int((self.nsamples - test_size)*self.valid_split)
             train_size = self.nsamples - test_size - valid_size
@@ -1847,7 +1876,7 @@ def load(filename, device="cpu"):
     return d
 
 class MultiLayerPerceptron(nn.Module):
-    def __init__(self, input_size, output_size, hidden_units=(48, 48, 48)):
+    def __init__(self, input_size, output_size, hidden_units=(48, 48, 48), final_activation=None):
         super().__init__()
         all_layers = [nn.Flatten()]
 
@@ -1858,6 +1887,9 @@ class MultiLayerPerceptron(nn.Module):
             input_size = hidden_unit
 
         all_layers.append(nn.Linear(hidden_units[-1], output_size))
+        if final_activation is not None:
+            all_layers.append(final_activation())
+
         self.model = nn.Sequential(*all_layers)
     
     def forward(self, x):
@@ -1867,6 +1899,10 @@ class MultiLayerPerceptron(nn.Module):
         return nn.functional.mse_loss(self(x), y)
 
 class NeuralSplineFlow(zuko.flows.NSF):
+    def condition(self, y):
+        return self(y)
+    
+class MaskedAutoregressiveFlow(zuko.flows.autoregressive.MAF):
     def condition(self, y):
         return self(y)
 
