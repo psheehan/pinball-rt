@@ -34,10 +34,18 @@ Then set up a model and run:
    model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
 
    density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
+   
    amax = np.ones(model.grid.shape) * u.cm
    amax[4,4,4] = 1.0 * u.micron
 
-   model.set_physical_properties(density=density, dust="diana_wice.dst", amax=amax)
+   mass_fraction_carbon = np.ones(model.grid.shape) * 0.15
+   mass_fraction_carbon[4,4,4] = 0.5
+
+   model.set_physical_properties(density=density, 
+                                 dust="diana.iso.dst", 
+                                 amax=amax, 
+                                 dust_abundances=(mass_fraction_carbon,))
+
    model.add_sources(star)
 
    # Calculate the temperature structure.

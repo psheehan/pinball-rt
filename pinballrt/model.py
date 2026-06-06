@@ -65,7 +65,8 @@ class Model:
             self.pool = SerialPool()
 
     def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, 
-                                gases=None, abundances=None, velocity=None, microturbulence=None):
+                                dust_abundances=(), gases=None, abundances=None, velocity=None, 
+                                microturbulence=None):
         """
         Set the physical properties of the grid.
         
@@ -83,6 +84,8 @@ class Model:
         p : float or array-like, optional
             The dust grain size distribution power-law slope. Can be specified as a single value to be constant over
             the grid, or as an array with a spatially varying value.
+        dust_abundances : tuple, optional
+            The abundances of the constituent dust species that make up the dust agglomerate.
         gases : Gas, optional
             List of gas species to include in the grid.
         abundances : dict, optional
@@ -95,7 +98,8 @@ class Model:
         for device in self.grid_list:
             self.grid_list[device].set_physical_properties(density=density, dusttogasratio=dusttogasratio,
                                                            dust=load(dust) if isinstance(dust, str) else dust,
-                                                           amax=amax, p=p, gases=gases, abundances=abundances,
+                                                           amax=amax, p=p, dust_abundances=dust_abundances,
+                                                           gases=gases, abundances=abundances,
                                                            velocity=velocity, microturbulence=microturbulence)
 
     def add_sources(self, sources):
