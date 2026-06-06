@@ -99,7 +99,14 @@ class Grid:
                 self.dust.to_device(wp.device_to_torch(wp.get_device()))
 
             if len(dust_abundances) > 0:
-                self.grid.dust_abundances = wp.array4d(dust_abundances,  dtype=float)
+                dust_abundances_array = ()
+                for da in dust_abundances:
+                    if isinstance(da, (int, float)):
+                        dust_abundances_array += (np.ones((1,) + density.shape) * da,)
+                    elif isinstance(da, np.ndarray):
+                        dust_abundances_array += (da[np.newaxis, ...],)
+
+                self.grid.dust_abundances = wp.array4d(np.concatenate(dust_abundances_array, axis=0), dtype=float)
                 self.n_dust_abundances = len(dust_abundances)
             else:
                 if len(self.dust.abundances) > 0:
