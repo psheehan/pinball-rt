@@ -83,12 +83,16 @@ class Grid:
                         self.grid.amax = wp.array3d(np.ones(density.shape) * amax.to(u.cm).value, dtype=float)
                     else:
                         self.grid.amax = wp.array3d(amax.to(u.cm).value, dtype=float)
+            else:
+                self.grid.amax = wp.array3d(np.ones(density.shape) * dust.fiducial_values["amax"].to(u.cm), dtype=float)
 
             if p is not None:
                 if isinstance(p, (int, float)):
                     self.grid.p = wp.array3d(np.ones(density.shape) * p, dtype=float)
                 elif isinstance(p, np.ndarray):
                     self.grid.p = wp.array3d(p, dtype=float)
+            else:
+                self.grid.p = wp.array3d(np.ones(density.shape) * dust.fiducial_values["p"], dtype=float)
 
             if dust is not None:
                 self.dust = dust
@@ -99,8 +103,8 @@ class Grid:
                 self.n_dust_abundances = len(dust_abundances)
             else:
                 if len(self.dust.abundances) > 0:
-                    self.grid.dust_abundances = wp.array4d(np.ones((len(self.dust.abundances),)+self.shape) * 
-                                                           len(self.dust.abundances) / (len(self.dust.abundances) + 1.), dtype=float)
+                    self.grid.dust_abundances = wp.array4d(np.array(self.dust.fiducial_values["abundances"])[:,*((np.newaxis,)*3)] * 
+                                                           np.ones((len(self.dust.abundances),)+self.shape), dtype=float)
                     self.n_dust_abundances = len(self.dust.abundances)
                 else:
                     self.n_dust_abundances = 0

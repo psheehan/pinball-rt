@@ -22,8 +22,11 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 
 wp.config.quiet = True
 
+default_fiducial_values = {"amax": 1.0*u.mm, "p": 3.5}
+
 class Dust(pl.LightningDataModule):
-    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=300):
+    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=300, 
+                 fiducial_values={}):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
 
@@ -92,6 +95,14 @@ class Dust(pl.LightningDataModule):
         else:
             self.samples = np.zeros((1,0))
         self.ndims = len(self.dims) + (len(self.abundances) - 1 if len(abundances) > 0 else 0)
+
+        self.fiducial_values = fiducial_values
+        for dim in self.dims:
+            if dim.replace("log10_","") not in self.fiducial_values:
+                if dim != "abundances":
+                    self.fiducial_values[dim.replace("log10_","")] = default_fiducial_values[dim.replace("log10_","")]
+                elif len(self.abundances) > 0:
+                    self.fiducial_values["abundances"] = np.ones(len(self.abundances)) / (len(self.abundances) + 1.)
 
         self.temperature = np.logspace(-1.,4.,ntemperatures)
         self.log_temperature = np.log10(self.temperature)
@@ -1029,6 +1040,7 @@ class Dust(pl.LightningDataModule):
                 "abundances": self.abundances,
                 "kabs": self.kabs*self.kmean,
                 "ksca": self.ksca*self.kmean,
+                "fiducial_values": self.fiducial_values,
             },
         }
 
