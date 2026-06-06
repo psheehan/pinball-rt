@@ -103,7 +103,7 @@ class Grid:
                 self.n_dust_abundances = len(dust_abundances)
             else:
                 if len(self.dust.abundances) > 0:
-                    self.grid.dust_abundances = wp.array4d(np.array(self.dust.fiducial_values["abundances"])[:,*((np.newaxis,)*3)] * 
+                    self.grid.dust_abundances = wp.array4d(np.array(self.dust.fiducial_values["abundances"])[:, np.newaxis, np.newaxis, np.newaxis] * 
                                                            np.ones((len(self.dust.abundances),)+self.shape), dtype=float)
                     self.n_dust_abundances = len(self.dust.abundances)
                 else:
