@@ -32,11 +32,22 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
     model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
 
     density = np.ones(model.grid.shape)*1.0e-14 * u.g / u.cm**3
-    amax = np.ones(model.grid.shape) * u.cm
+    
     if isinstance(model.grid, UniformCartesianGrid):
+        amax = np.ones(model.grid.shape) * u.cm
         amax[4, 4, 4] = 1.0 * u.micron
-    else:
-        amax[0, :, :] = 1.0 * u.micron
+        abundances = (0.15,)
+        p = None
+    elif isinstance(model.grid, UniformSphericalGrid):
+        amax = None
+        abundances = (np.ones(model.grid.shape) * 0.15,)
+        abundances[0][0, :, :] = 0.5
+        p = 3.75
+    elif isinstance(model.grid, LogUniformSphericalGrid):
+        amax = 1.0 * u.cm
+        abundances = ()
+        p = np.ones(model.grid.shape) * 3.5
+        p[0, :, :] = 3.75
 
     if isinstance(model.grid, UniformCartesianGrid):
         vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
@@ -48,7 +59,8 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
                                  np.zeros(model.grid.grid.n3), indexing='ij')
     velocity = np.concatenate((vx[np.newaxis], vy[np.newaxis], vz[np.newaxis]), axis=0) * (-1.0 * u.km / u.s)
 
-    model.set_physical_properties(density=density, dust=d, amax=amax, p=3.5, gases=[os.path.join(os.path.dirname(__file__), "data/co.dat")], 
+    model.set_physical_properties(density=density, dust=d, amax=amax, p=p, dust_abundances=abundances,
+                                  gases=[os.path.join(os.path.dirname(__file__), "data/co.dat")], 
                                   abundances=[1.0e-4], microturbulence=0.2 * u.km / u.s, velocity=velocity)
     model.add_sources([BlackbodyStar(),
                        DiffuseSource(model.grid, lambda nu: 4*np.pi**2 * u.steradian * (0.035*u.R_sun)**2 * models.BlackBody(2000.*u.K)(nu), 10.*u.au**-3),
