@@ -251,9 +251,10 @@ class Model:
                                                          source.density / (4.*np.pi * u.steradian * \
                                                                            (wp.to_torch(self.grid.grid.dust_density) * \
                                                                             self.grid.dust.ml_kext(
-                                                                                wp.to_torch(self.grid.grid.p).flatten(), 
-                                                                                wp.to_torch(self.grid.grid.amax).flatten(), 
-                                                                                torch.ones(self.grid.shape).flatten()*frequency.to(u.GHz).value).reshape(self.grid.shape) * \
+                                                                                p=wp.to_torch(self.grid.grid.p).flatten(), 
+                                                                                amax=wp.to_torch(self.grid.grid.amax).flatten(), 
+                                                                                nu=torch.ones(self.grid.shape).flatten()*frequency.to(u.GHz).value,
+                                                                                abundances=tuple([wp.to_torch(self.grid.grid.dust_abundances)[i].flatten() for i in range(self.grid.n_dust_abundances)])).reshape(self.grid.shape) * \
                                                          self.grid.distance_unit**-1))).value, 
                                                          device=device)
 

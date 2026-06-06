@@ -26,7 +26,7 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
 
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/diana_wice.dst")
+    d = os.path.join(os.path.dirname(__file__), "data/diana.iso.dst")
 
     # Set up the grid.
     model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
