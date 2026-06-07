@@ -25,7 +25,7 @@ def test_grid_pickle(grid_class, grid_kwargs, percentile, return_vals=False):
 
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/diana_wice.dst")
+    d = os.path.join(os.path.dirname(__file__), "data/diana.iso.dst")
 
     # Set up the grid.
     model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
@@ -52,7 +52,7 @@ def test_grid_physical_properties_shapes():
 
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/diana_wice.dst")
+    d = os.path.join(os.path.dirname(__file__), "data/diana.iso.dst")
 
     # Set up the grid.
     model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
