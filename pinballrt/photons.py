@@ -23,6 +23,7 @@ class PhotonList:
     absorb: wp.array(dtype=bool)
     amax: wp.array(dtype=float)
     p: wp.array(dtype=float)
+    dust_abundances: wp.array2d(dtype=float)
 
     tau: wp.array(dtype=float)
     total_tau_abs: wp.array(dtype=float)

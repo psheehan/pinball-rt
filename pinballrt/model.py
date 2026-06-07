@@ -65,7 +65,8 @@ class Model:
             self.pool = SerialPool()
 
     def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, 
-                                gases=None, abundances=None, velocity=None, microturbulence=None):
+                                dust_abundances=(), gases=None, abundances=None, velocity=None, 
+                                microturbulence=None):
         """
         Set the physical properties of the grid.
         
@@ -83,6 +84,8 @@ class Model:
         p : float or array-like, optional
             The dust grain size distribution power-law slope. Can be specified as a single value to be constant over
             the grid, or as an array with a spatially varying value.
+        dust_abundances : tuple, optional
+            The abundances of the constituent dust species that make up the dust agglomerate.
         gases : Gas, optional
             List of gas species to include in the grid.
         abundances : dict, optional
@@ -95,7 +98,8 @@ class Model:
         for device in self.grid_list:
             self.grid_list[device].set_physical_properties(density=density, dusttogasratio=dusttogasratio,
                                                            dust=load(dust) if isinstance(dust, str) else dust,
-                                                           amax=amax, p=p, gases=gases, abundances=abundances,
+                                                           amax=amax, p=p, dust_abundances=dust_abundances,
+                                                           gases=gases, abundances=abundances,
                                                            velocity=velocity, microturbulence=microturbulence)
 
     def add_sources(self, sources):
@@ -220,6 +224,8 @@ class Model:
         for i, wavelength in enumerate(wavelengths):
             iter_timing = {}
 
+            frequency = const.c / wavelength
+
             for source in self.grid_list[device].sources + [self.grid_list[device].grid_source]:
                 if isinstance(source, DiffuseSource):
                     source.initialize_luminosity_array(wavelength=wavelength)
@@ -247,11 +253,12 @@ class Model:
                 if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
                     total_scattering[i] += torch.tensor((source.luminosity * (self.grid.distance_unit**2 * u.Jy) * \
                                                          source.density / (4.*np.pi * u.steradian * \
-                                                                           (self.grid.grid.dust_density.numpy() * \
-                                                                            self.grid.dust.interpolate_kext(
-                                                                                self.grid.grid.p.numpy(), 
-                                                                                self.grid.grid.amax.numpy(), 
-                                                                                np.ones(self.grid.shape)*wavelength) * \
+                                                                           (wp.to_torch(self.grid.grid.dust_density) * \
+                                                                            self.grid.dust.ml_kext(
+                                                                                p=wp.to_torch(self.grid.grid.p).flatten(), 
+                                                                                amax=wp.to_torch(self.grid.grid.amax).flatten(), 
+                                                                                nu=torch.ones(self.grid.shape).flatten()*frequency.to(u.GHz).value,
+                                                                                abundances=tuple([wp.to_torch(self.grid.grid.dust_abundances)[i].flatten() for i in range(self.grid.n_dust_abundances)])).reshape(self.grid.shape) * \
                                                          self.grid.distance_unit**-1))).value, 
                                                          device=device)
 
@@ -328,34 +335,10 @@ class Model:
         if include_gas:
             self.grid.select_lines(lam)
 
-        self.grid.grid.include_dust = include_dust
-        self.grid.grid.include_gas = include_gas
-
-        # Check whether spectral is wavelength or frequency
-
-        if channels.unit.is_equivalent(u.micron):
-            lam = channels.to(u.micron)
-            nu = (const.c / channels).to(u.GHz)
-        elif channels.unit.is_equivalent(u.GHz):
-            nu = channels.to(u.GHz)
-            lam = (const.c / nu).to(u.micron)
-        elif channels.unit.is_equivalent(u.km / u.s):
-            if rest_frequency is None:
-                raise ValueError("rest_frequency must be provided when channels are in velocity units.")
-            nu = (rest_frequency * (1 - channels / const.c)).to(u.GHz)
-            lam = (const.c / nu).to(u.micron)
-        else:
-            raise ValueError("Either lam or nu must be provided.")
-
-        # Check which lines from the gas should be included
-
-        if include_gas:
-            self.grid.select_lines(lam)
-
         # First, run a scattering simulation to get the scattering phase function
 
+        self.grid_list[device].set_grid_opacities(nu)
         if include_dust:
-            self.grid_list[device].set_grid_opacities(nu)
             self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False)
 
         # Now set up the image proper.
@@ -402,7 +385,7 @@ class Model:
                                                                 [njobs]*njobs,)
                                                         ))).mean(axis=0) * u.Jy/u.steradian
 
-        intensity += source_intensity
+            intensity += source_intensity
 
         image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian)))
 
