@@ -1149,9 +1149,9 @@ class Grid:
             nrays = iray.size(0)
 
             while nrays > 0:
-                # wp.launch(kernel=self.check_pixel_too_large,
-                #           dim=(nrays,),
-                #           inputs=[ray_list, pixel_size, (self.volume**(1./3)).to(torch.float32), iray])
+                wp.launch(kernel=self.check_pixel_too_large,
+                          dim=(nrays,),
+                          inputs=[ray_list, pixel_size, (self.volume**(1./3)).to(torch.float32), iray])
 
                 wp.launch(kernel=self.next_wall_distance,
                           dim=(nrays,),
