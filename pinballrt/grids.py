@@ -1303,6 +1303,7 @@ class UniformCartesianGrid(Grid):
             dx, dy, dz = dx, dx, dx
 
         self.distance_unit = dx.unit
+        self.coordinate_system = "cartesian"
 
         _w1 = np.linspace(-0.5*n1*dx.value, 0.5*n1*dx.value, n1+1)
         _w2 = np.linspace(-0.5*n2*dy.value, 0.5*n2*dy.value, n2+1)
@@ -1601,6 +1602,7 @@ class UniformSphericalGrid(Grid):
             n1, n2, n3 = ncells
 
         self.distance_unit = dr.unit
+        self.coordinate_system = "spherical"
 
         _w1 = np.linspace(0, n1*dr.value, n1+1)
         if mirror:
