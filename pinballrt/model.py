@@ -1,5 +1,6 @@
 import astropy.constants as const
 import astropy.units as u
+import astropy_xarray
 
 from .sources import DiffuseSource, EnergySource
 from .grids import Grid
@@ -358,21 +359,26 @@ class Model:
         physical_pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
 
         image = xr.Dataset(
-            #data_vars={
-            #    "intensity": (["x", "y", "lam"], np.zeros((nx, ny, lam.size))),},
             coords={
-                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size.to(u.arcsec)),
-                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size.to(u.arcsec)),
-                "lam": ("lam", lam),
-                "nu": ("lam", (const.c / lam).to(u.GHz)),},
+                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size.value),
+                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size.value),
+                "lam": ("lam", lam.value),
+                "nu": ("lam", (const.c / lam).to(u.GHz).value),},
             attrs={
-                "pixel_size": pixel_size,})
+                "pixel_size": pixel_size,}).astropy.quantify(x=pixel_size.unit,
+                                                             y=pixel_size.unit,
+                                                             lam=lam.unit,
+                                                             nu=nu.unit)
 
-        new_x_arcsec, new_y_arcsec = xr.broadcast(image.x, image.y)
-        new_x_arcsec, new_y_arcsec = new_x_arcsec.values.flatten() * u.arcsec, new_y_arcsec.values.flatten() * u.arcsec
+        new_x, new_y = xr.broadcast(image.x.astropy.dequantify(), 
+                                    image.y.astropy.dequantify())
+        new_x, new_y = new_x.astropy.quantify(), new_y.astropy.quantify()
+
         # convert to physical units
-        new_x = (new_x_arcsec * distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
-        new_y = (new_y_arcsec * distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value 
+        new_x = (new_x * distance).astropy.to(self.grid.distance_unit, 
+                                              equivalencies=u.dimensionless_angles()).values.flatten()
+        new_y = (new_y * distance).astropy.to(self.grid.distance_unit, 
+                                              equivalencies=u.dimensionless_angles()).values.flatten()
 
         njobs = self.ncores
 
@@ -399,7 +405,7 @@ class Model:
 
             intensity += source_intensity
 
-        image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian)))
+        image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian).value)).astropy.quantify(intensity=u.Jy / u.steradian)
 
         return image
 

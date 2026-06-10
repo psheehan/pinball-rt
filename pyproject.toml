@@ -23,6 +23,7 @@ dependencies = [
   "scipy",
   "tqdm",
   "xarray",
+  "astropy-xarray",
   "zuko", 
   "schwimmbad",
   "requests",
