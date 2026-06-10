@@ -73,7 +73,7 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
                              incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, nphotons=1000000, include_gas=False)
 
     g = Gas()
-    g.set_properties_from_lambda('co.dat')
+    g.set_properties_from_lambda(os.path.join(os.path.dirname(__file__), "data/co.dat"))
 
     cube = model.make_image(npix=256, pixel_size=0.2*u.arcsec, channels=np.linspace(-20., 20., 300)*u.km/u.s, rest_frequency=g.nu[2], 
                             incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device='cpu', include_sources=False)
