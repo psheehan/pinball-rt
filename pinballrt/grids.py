@@ -64,13 +64,20 @@ class Grid:
     def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, dust_abundances=(), gases=None, abundances=None, 
                                 velocity=None, microturbulence=None):
         with wp.ScopedDevice(self.device):
-            if density is not None:
-                self.grid.dust_density = wp.array3d((density * dusttogasratio * dust.kmean).to(1. / self.distance_unit).value, dtype=float)
-                self.grid.gas_density = wp.array3d(density.to(u.g / u.cm**3), dtype=float)
+            if dust is not None:
+                self.dust = dust
+                self.dust.to_device(wp.device_to_torch(wp.get_device()))
 
-                self.grid.energy = wp.zeros(density.shape, dtype=float)
-                self.grid.temperature = wp.array3d(np.ones(density.shape) * 0.1, dtype=float)
-                self.dust_mass = (density * dusttogasratio * self.volume.cpu().numpy() * self.distance_unit**3).decompose()
+            if density is not None:
+                if hasattr(self, "dust"):
+                    self.grid.dust_density = wp.array3d((density * dusttogasratio * self.dust.kmean).to(1. / self.distance_unit).value, dtype=float)
+                    self.grid.gas_density = wp.array3d(density.to(u.g / u.cm**3), dtype=float)
+
+                    self.grid.energy = wp.zeros(density.shape, dtype=float)
+                    self.grid.temperature = wp.array3d(np.ones(density.shape) * 0.1, dtype=float)
+                    self.dust_mass = (density * dusttogasratio * self.volume.cpu().numpy() * self.distance_unit**3).decompose()
+                else:
+                    raise ValueError("Density properties cannot be set without already having or concurrently specifying dust properties.")
 
             if amax is not None:
                 if isinstance(amax, (int, float)):
@@ -83,20 +90,12 @@ class Grid:
                         self.grid.amax = wp.array3d(np.ones(density.shape) * amax.to(u.cm).value, dtype=float)
                     else:
                         self.grid.amax = wp.array3d(amax.to(u.cm).value, dtype=float)
-            else:
-                self.grid.amax = wp.array3d(np.ones(density.shape) * dust.fiducial_values["amax"].to(u.cm), dtype=float)
 
             if p is not None:
                 if isinstance(p, (int, float)):
                     self.grid.p = wp.array3d(np.ones(density.shape) * p, dtype=float)
                 elif isinstance(p, np.ndarray):
                     self.grid.p = wp.array3d(p, dtype=float)
-            else:
-                self.grid.p = wp.array3d(np.ones(density.shape) * dust.fiducial_values["p"], dtype=float)
-
-            if dust is not None:
-                self.dust = dust
-                self.dust.to_device(wp.device_to_torch(wp.get_device()))
 
             if len(dust_abundances) > 0:
                 dust_abundances_array = ()
@@ -108,13 +107,6 @@ class Grid:
 
                 self.grid.dust_abundances = wp.array4d(np.concatenate(dust_abundances_array, axis=0), dtype=float)
                 self.n_dust_abundances = len(dust_abundances)
-            else:
-                if len(self.dust.abundances) > 0:
-                    self.grid.dust_abundances = wp.array4d(np.array(self.dust.fiducial_values["abundances"])[:, np.newaxis, np.newaxis, np.newaxis] * 
-                                                           np.ones((len(self.dust.abundances),)+self.shape), dtype=float)
-                    self.n_dust_abundances = len(self.dust.abundances)
-                else:
-                    self.n_dust_abundances = 0
 
             if gases is not None:
                 self.gases = []
@@ -130,9 +122,6 @@ class Grid:
 
             if velocity is not None:
                 self.grid.velocity = wp.array4d((velocity / const.c).decompose(), dtype=float)
-            else:
-                if gases is not None:
-                    self.grid.velocity = wp.array4d(np.zeros((3, self.shape[0], self.shape[1], self.shape[2])), dtype=float)
 
             if microturbulence is not None:
                 if isinstance(microturbulence, (int, float)):
@@ -144,9 +133,41 @@ class Grid:
                         self.grid.microturbulence = wp.array3d(np.ones(self.shape)*microturbulence.to(u.km / u.s).value, dtype=float)
                     else:
                         self.grid.microturbulence = wp.array3d(microturbulence.to(u.km / u.s), dtype=float)
-            else:
-                if gases is not None:
-                    self.grid.microturbulence = wp.array3d(np.zeros(self.shape), dtype=float)
+
+    def check_physical_properties(self, include_dust=True, include_gas=False):
+        if include_dust:
+            if self.grid.dust_density is None:
+                raise ValueError("Dust density is not set in the grid.")
+
+            if not hasattr(self, "dust"):
+                raise ValueError("Dust properties are not set in the grid.")
+            
+            if self.grid.amax is None and "amax" in self.dust.fiducial_values:
+                self.grid.amax = wp.array3d(np.ones(self.shape) * self.dust.fiducial_values["amax"].to(u.cm), dtype=float)
+
+            if self.grid.p is None and "p" in self.dust.fiducial_values:
+                self.grid.p = wp.array3d(np.ones(self.shape) * self.dust.fiducial_values["p"], dtype=float)
+
+            if self.grid.dust_abundances is None:
+                if "abundances" in self.dust.fiducial_values and len(self.dust.abundances) > 0:
+                    self.grid.dust_abundances = wp.array4d(np.array(self.dust.fiducial_values["abundances"])[:, np.newaxis, np.newaxis, np.newaxis] * 
+                                                            np.ones((len(self.dust.abundances),)+self.shape), dtype=float)
+                    self.n_dust_abundances = len(self.dust.abundances)
+                else:
+                    self.n_dust_abundances = 0
+
+        if include_gas:
+            if self.grid.gas_density is None:
+                raise ValueError("Gas density is not set in the grid.")
+
+            if not hasattr(self, "gases"):
+                raise ValueError("No gases have been added to the grid.")
+
+            if self.grid.velocity is None:
+                self.grid.velocity = wp.array4d(np.zeros((3, self.shape[0], self.shape[1], self.shape[2])), dtype=float)
+
+            if self.grid.microturbulence is None:
+                self.grid.microturbulence = wp.array3d(np.zeros(self.shape), dtype=float)
 
     def add_sources(self, sources):
         """

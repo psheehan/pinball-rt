@@ -1,6 +1,7 @@
 from pinballrt.sources import BlackbodyStar, DiffuseSource, EnergySource, ExternalSource
 from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
+from pinballrt.dust import load
 
 import astropy.units as u
 from astropy.modeling import models
@@ -71,4 +72,44 @@ def test_grid_physical_properties_shapes():
     assert model.grid.grid.amax.numpy().shape == model.grid.shape
     assert model.grid.grid.p.numpy().shape == model.grid.shape
 
+def test_grid_default_physical_properties():
+    """
+    Test that the grid default physical properties are correct when unspecified.
+    """
+
+    # Set up the dust and gas.
+
+    d = load(os.path.join(os.path.dirname(__file__), "data/diana.iso.dst"))
+
+    # Set up the grid.
+    model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
+
+    with pytest.raises(ValueError):
+        model.grid_list["cpu"].check_physical_properties(include_dust=True, include_gas=True)
+
+    density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
+    with pytest.raises(ValueError):
+        model.set_physical_properties(density=density)
     
+    model.set_physical_properties(dust=d)
+
+    with pytest.raises(ValueError):
+        model.grid_list["cpu"].check_physical_properties(include_dust=True, include_gas=True)
+
+    density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
+    model.set_physical_properties(density=density)
+
+    with pytest.raises(ValueError):
+        model.grid_list["cpu"].check_physical_properties(include_dust=True, include_gas=True)
+
+    model.set_physical_properties(gases=[os.path.join(os.path.dirname(__file__), "data/co.dat")])
+    
+    model.grid_list["cpu"].check_physical_properties(include_dust=True, include_gas=True)
+
+    assert np.all(np.abs(model.grid_list["cpu"].grid.amax.numpy() - d.fiducial_values["amax"].to(u.cm).value) < 1e-7)
+    assert np.all(np.abs(model.grid_list["cpu"].grid.p.numpy() - d.fiducial_values["p"]) < 1e-7)
+    if "abundances" in d.fiducial_values:
+        assert np.all([np.all(np.abs(model.grid_list["cpu"].grid.dust_abundances.numpy()[i] - d.fiducial_values["abundances"][i]) < 1e-7) for i in range(len(d.fiducial_values["abundances"]))])
+
+    assert np.all(model.grid_list["cpu"].grid.velocity.numpy() == 0.0)
+    assert np.all(model.grid_list["cpu"].grid.microturbulence.numpy() == 0.0)
