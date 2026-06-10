@@ -132,6 +132,9 @@ class Model:
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+        
+        self.grid_list[device].check_physical_properties(include_dust=True, include_gas=False)
+
         for source in self.grid_list[device].sources:
             if isinstance(source, DiffuseSource):
                 source.initialize_luminosity_array(wavelength="random")
@@ -210,6 +213,9 @@ class Model:
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+
+        self.grid_list[device].check_physical_properties(include_dust=True, include_gas=False)
+
         for dev in self.grid_list:
             with wp.ScopedDevice(self.grid_list[dev].device):
                 self.grid_list[dev].scattering = torch.zeros((len(wavelengths),)+self.grid_list[dev].shape, 
@@ -302,6 +308,8 @@ class Model:
             The device to use for the simulation (default is "cpu").
         """
 
+        self.grid_list[device].check_physical_properties(include_dust=include_dust, include_gas=include_gas)
+
         if isinstance(npix, int):
             nx, ny = npix, npix
         elif isinstance(npix, (list, tuple, np.ndarray)):
@@ -311,8 +319,8 @@ class Model:
             pixel_size = ((1.25*self.grid.grid_size()*self.grid.distance_unit / distance).decompose()*
                           u.radian).to(u.arcsec) / npix
 
-        self.grid.grid.include_dust = include_dust
-        self.grid.grid.include_gas = include_gas
+        self.grid_list[device].grid.include_dust = include_dust
+        self.grid_list[device].grid.include_gas = include_gas
 
         # Check whether spectral is wavelength or frequency
 
@@ -338,6 +346,7 @@ class Model:
         # First, run a scattering simulation to get the scattering phase function
 
         self.grid_list[device].set_grid_opacities(nu)
+        
         if include_dust:
             self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False)
 
