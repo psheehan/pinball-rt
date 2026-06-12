@@ -19,7 +19,7 @@ the following sections.
 
 from pinballrt.utils import EPSILON
 from .photons import PhotonList
-from .utils import GridStruct
+from .utils import GridStruct, random_direction
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -409,7 +409,7 @@ class DiffuseSource:
 
             photon_list.direction = wp.array(np.zeros((nphotons, 3)), dtype=wp.vec3)
             photon_list.direction_frame = wp.array(np.zeros((nphotons, 3)), dtype=wp.vec3)
-            wp.launch(kernel=self.grid.random_direction,
+            wp.launch(kernel=random_direction,
                         dim=(nphotons,),
                         inputs=[photon_list.direction, torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device())), np.random.randint(0, 100000)])
             

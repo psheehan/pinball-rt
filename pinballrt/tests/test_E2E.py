@@ -13,20 +13,20 @@ import os
 import pytest
 
 test_data = [
-    (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, 98.0),
-    (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, 93.0),
-    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, 73.0),
+    (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0),
+    (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0),
+    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "iso", 73.0),
 ]
 
-@pytest.mark.parametrize("grid_class,grid_kwargs,percentile", test_data)
-def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
+@pytest.mark.parametrize("grid_class,grid_kwargs,dust,percentile", test_data)
+def test_E2E(grid_class, grid_kwargs, dust, percentile, return_vals=False):
     """
     Test the end-to-end functionality of the UniformCartesianGrid model running all the way through.
     """
 
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/diana.iso.dst")
+    d = os.path.join(os.path.dirname(__file__), f"data/diana.{dust}.dst")
 
     # Set up the grid.
     model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
@@ -111,7 +111,7 @@ def update_test(test, grid_class):
     if not found:
         raise ValueError(f"Grid class {grid_class} not found in test data. Please add it to the test_data list in test_E2E.py.")
     
-    temperature, scattering, image, mom0 = test(grid_class, data[1], data[2], return_vals=True)
+    temperature, scattering, image, mom0 = test(grid_class, data[1], data[2], data[3], return_vals=True)
 
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_temperature.npz"), temperature=temperature)
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_scattering.npz"), scattering=scattering)

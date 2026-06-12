@@ -2,23 +2,28 @@ Creating a dust model
 =====================
 
 Before running a radiative transfer simulation, you need to create a dust model that defines the optical properties of 
-the dust grains in your simulation. Pinball-rt provides a :class:`~pinballrt.dust.Dust` class that allows you to create and manipulate dust 
-models. To set up a dust model, the absorption and scattering opacities as a function of wavelength and grain size 
-distribution parameters (maximum dust grain size, size distribution power-law index, and sub-species relative abundances) are needed. At present, these 
-must be obtained from external sources and provided to pinball-rt. Here we'll use simple power-law prescription, but in
-practice you would typically use opacities derived from laboratory measurements or Mie theory calculations. Note that 
-the opacities should include astropy units to ensure that there is no ambiguity.
+the dust grains in your simulation. Pinball-rt provides a :class:`~pinballrt.dust.Dust` class that allows you to create 
+and manipulate dust models. In practice, there are three more specific dust models available: 
+:class:`~pinballrt.dust.IsotropicDust`, :class:`~pinballrt.dust.HenyeyGreensteinDust`, and 
+:class:`~pinballrt.dust.GeneralDust` that inherit from :class:`~pinballrt.dust.Dust` and enable more specific control 
+over dust scattering properties. To set up a dust model, the absorption and scattering opacities as a function of wavelength 
+and grain size distribution parameters (maximum dust grain size, size distribution power-law index, and sub-species 
+relative abundances) are needed. At present, these must be obtained from external sources and provided to pinball-rt. 
+Here we'll use simple power-law prescription, but in practice you would typically use opacities derived from laboratory 
+measurements or Mie theory calculations. Note that the opacities should include astropy units to ensure that there is no 
+ambiguity.
 
 To enable maximum flexibility, opacities do not need to be provided on a regular grid. Instead, the opacities should be 
 provided at some number (nsamples) of points in the N-dimensional parameter space defined by relevant inputs for determining
 the opacity (maximum grain size, size distribution power-law index, sub-species abundances), and for each sample they
-should be provided at a specified set of wavelengths. The Dust class will then use machine learning to learn the opacities 
-at any point in the parameter space during the simulation. A helper-function, :func:`~pinballrt.dust.suggest_opacity_sampling` is provided to
-help provide efficient sampling of the parameter space, but the user is free to provide any set of samples they choose.
+should be provided at a specified set of wavelengths. The :class:`~pinballrt.dust.Dust` class will then use machine learning 
+to learn the opacities at any point in the parameter space during the simulation. A helper-function, 
+:func:`~pinballrt.dust.suggest_opacity_sampling` is provided to help provide efficient sampling of the parameter space, 
+but the user is free to provide any set of samples they choose.
 
 .. code-block:: python
 
-   from pinballrt.dust import Dust, suggest_opacity_sampling
+   from pinballrt.dust import IsotropicDust, suggest_opacity_sampling
    import numpy as np
    import astropy.units as u
 
@@ -42,27 +47,25 @@ help provide efficient sampling of the parameter space, but the user is free to 
    kappa_abs = 1.0 * (wavelengths.to(u.micron)/100.0)**power_law_index * u.cm**2 / u.g
    kappa_scat = 0.5 * (wavelengths.to(u.micron)/100.0)**power_law_index * u.cm**2 / u.g
 
-   # Create the Dust object.
-   dust = Dust(lam=wavelengths[0,:], 
-               amax=amax[:,0], 
-               p=p[:,0], 
-               kabs=kappa_abs, 
-               ksca=kappa_scat)
+   # Create the IsotropicDust object.
+   dust = IsotropicDust(lam=wavelengths[0,:], 
+                         amax=amax[:,0], 
+                         p=p[:,0], 
+                         kabs=kappa_abs, 
+                         ksca=kappa_scat)
 
-This creates a Dust object with the specified opacities, however a few additional steps are needed before the dust model can be used in a 
-radiative transfer simulation. The Dust object uses a machine learning model to produce opacity values during the simulation, as well as to 
+This creates an :class:`~pinballrt.dust.IsotropicDust` object with the specified opacities, however a few additional steps are needed before the dust model can be used in a 
+radiative transfer simulation. The :class:`~pinballrt.dust.IsotropicDust` object uses a machine learning model to produce opacity values during the simulation, as well as to 
 randomnly sample photon frequencies emitted by dust grains during the simulation, but these models need to be trained first. To set up the 
 training, we use the :meth:`~pinballrt.dust.Dust.learn` method. For example, to set up the model to learn the absorption opacity:
 
 .. code-block:: python
 
    # Set up the training parameters.
-   dust.learn(
-       model="kabs",
-       test_fraction=0.1,
-       val_fraction=0.1,
-       hidden_units=(48, 48, 48),
-   )
+   dust.learn(model="kabs",
+              test_fraction=0.1,
+              val_fraction=0.1,
+              hidden_units=(48, 48, 48))
 
 This example sets up a simple neural network model with three hidden layers of 48 units each to learn the dust absorption opacity. The training 
 will use the kabs samples provided above, which had 100 samples across dust properties at 100 wavelengths for 10,000 total samples, with 10% of 
@@ -86,13 +89,13 @@ a simulation. In short:
 .. code-block:: python
 
    for model in ["ksca", "pmo", "random_nu"]:
-      if model in ["kabs", "ksca"]:
-         d.learn(model=model, hidden_units=(16,)*6, overwrite=True)
-      else:
-         d.learn(model=model, hidden_units=(48,)*3, overwrite=True)
+       if model in ["kabs", "ksca"]:
+          d.learn(model=model, hidden_units=(16,)*6, overwrite=True)
+       else:
+          d.learn(model=model, hidden_units=(48,)*3, overwrite=True)
 
-   d.fit(epochs=300, batch_size=1000)
-   d.test_model(plot=True)
+       d.fit(epochs=300, batch_size=1000)
+       d.test_model(plot=True)
 
 This will further create models to produce the scattering opacity, planck mean opacity, and random frequencies sampled from the dust emission spectrum. 
 Having to train the dust model before every simulation would be inefficient, so once the model is trained it can be saved to a file using the :meth:`~pinballrt.dust.Dust.save` method, 
@@ -116,6 +119,52 @@ pinball-rt provides a pre-trained dust model that can be used directly without n
 
    # Load the pre-trained dust model.
    dust = load("yso.dst")
+
+Creating a Henyey-Greenstein dust model follows the same process as above, but with the addition of needing to train a model to produce the scattering asymmetry parameter (g) as a function of wavelength and dust properties:
+
+.. code-block:: python
+
+   from pinballrt.dust import HenyeyGreensteinDust
+
+   g = np.tanh(p - np.log10(wavelengths.to(u.micron).value))
+
+   # Create the Henyey-Greenstein dust model.
+   dust = HenyeyGreensteinDust(lam=wavelengths[0,:], 
+                               amax=amax[:,0], 
+                               p=p[:,0], 
+                               kabs=kappa_abs, 
+                               ksca=kappa_scat,
+                               g=g)
+
+   d.learn(model="g", hidden_units=(16,)*6, overwrite=True)
+
+   d.fit(epochs=300, batch_size=1000)
+   d.test_model(plot=True)
+
+Similarly, the most general dust model, :class:`~pinballrt.dust.GeneralDust`, follows the same process but with the addition of needing to train a model to produce the scattering phase function as a function of wavelength, scattering angle and dust properties, and additionally to randomly sample scattering angles during the simulation:
+
+.. code-block:: python
+
+   from pinballrt.dust import GeneralDust
+
+   g = np.repeat(np.expand_dims(np.tanh(p - np.log10(wavelengths.to(u.micron).value)), axis=-1), 5, axis=-1)
+   theta = np.tile(np.expand_dims(np.linspace(0, 180., 5), axis=(0,1)), (10 if len(dims) > 0 else 1, 10, 1)) * u.deg
+   scattering_phase_function = (1 - g**2) / (4 * np.pi * (1 + g**2 - 2*g*np.cos(theta.to(u.rad).value))**(3/2))
+
+   # Create the General dust model.
+   dust = GeneralDust(lam=wavelengths[0,:], 
+                      amax=amax[:,0], 
+                      p=p[:,0], 
+                      kabs=kappa_abs, 
+                      ksca=kappa_scat,
+                      scattering_phase_function=scattering_phase_function
+                      theta=theta[0,0,:])
+
+   for model in ["scattering_phase_function", "random_direction"]:
+       d.learn(model=model, hidden_units=(16,)*6, overwrite=True)
+
+       d.fit(epochs=300, batch_size=1000)
+       d.test_model(plot=True)
 
 Learning to step through high optical depth regions
 ---------------------------------------------------
