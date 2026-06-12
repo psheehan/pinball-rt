@@ -23,6 +23,24 @@ from .photons import PhotonList
 
 from torch.distributions.multivariate_normal import MultivariateNormal
 
+import torch
+from pytorch_lightning.plugins.io import TorchCheckpointIO
+from lightning_fabric.utilities.cloud_io import get_filesystem
+from typing import Any, Callable, Optional
+
+class CustomCheckpointIO(TorchCheckpointIO):
+    def save_checkpoint(self, checkpoint: dict, path: str, storage_options: Optional[Any] = None) -> None:
+        if storage_options is not None:
+            raise TypeError(
+                "`Trainer.save_checkpoint(..., storage_options=...)` with `storage_options` arg"
+                f" is not supported for `{self.__class__.__name__}`. Please implement your custom `CheckpointIO`"
+                " to define how you'd like to use `storage_options`."
+            )
+        # Override save_checkpoint to use a specific protocol
+        fs = get_filesystem(path)
+        fs.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(checkpoint, path, pickle_protocol=4)
+
 wp.config.quiet = True
 
 default_fiducial_values = {"amax": 1.0*u.mm, "p": 3.5}
@@ -436,7 +454,7 @@ class Dust(pl.LightningDataModule):
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48),
             tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), 
-            nu_range=None, overwrite=False):
+            nu_range=None, overwrite=False, checkpoint=True, pickle_protocol=2):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -506,8 +524,21 @@ class Dust(pl.LightningDataModule):
 
         self.dustLM = DustLightningModule(getattr(self, model+"_model"))
 
-        self.trainer = pl.Trainer(max_epochs=0, callbacks=[pl.callbacks.ModelCheckpoint(save_last=True, 
-                                                                                        dirpath=f'{model}_lightning_logs')])
+        if checkpoint:
+            callbacks = [pl.callbacks.ModelCheckpoint(save_last=True, 
+                                                      dirpath=f'{model}_lightning_logs')]
+            if pickle_protocol >= 4:
+                plugins = [CustomCheckpointIO()]
+            else:
+                plugins = None
+        else:
+            callbacks = None
+            plugins = None
+
+        self.trainer = pl.Trainer(max_epochs=0,
+                                  enable_checkpointing=checkpoint,
+                                  callbacks=callbacks,
+                                  plugins=plugins)
 
     def fit(self, epochs=10, batch_size=100, num_workers=1, ckpt_path=None):
         '''
@@ -636,7 +667,10 @@ class Dust(pl.LightningDataModule):
         samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.nu.to(u.GHz).value), axis=0), max(samples.shape[1], 1), axis=0), axis=0)), axis=0)
         samples = samples.reshape((samples.shape[0], -1)).T
 
-        targets = np.log10(getattr(self, model).flatten())
+        if model == "g":
+            targets = getattr(self, model).flatten()
+        else:
+            targets = np.log10(getattr(self, model).flatten())
 
         return samples, targets
 
@@ -1189,7 +1223,8 @@ class IsotropicDust(Dust):
 
 
 class HenyeyGreensteinDust(Dust):
-    def __init__(self, lam=None, kabs=None, ksca=None, g=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=1000):
+    def __init__(self, lam=None, kabs=None, ksca=None, g=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=1000, 
+                 fiducial_values={}):
         """
         Initialize the Henyey-Greenstein dust model.
 
@@ -1211,7 +1246,7 @@ class HenyeyGreensteinDust(Dust):
             The device to place the dust properties on ("cpu" or "cuda").
         """
         super().__init__(lam=lam, kabs=kabs, ksca=ksca, amax=amax, p=p, abundances=abundances, device=device, 
-                         ntemperatures=ntemperatures)
+                         ntemperatures=ntemperatures, fiducial_values=fiducial_values)
 
         self.g = g
 
@@ -1392,7 +1427,7 @@ class HenyeyGreensteinDust(Dust):
 
 class GeneralDust(Dust):
     def __init__(self, lam=None, kabs=None, ksca=None, scattering_phase_function=None, theta=None, amax=None, 
-                 p=None, abundances=(), device="cpu", ntemperatures=1000):
+                 p=None, abundances=(), device="cpu", ntemperatures=1000, fiducial_values={}):
         """
         Initialize the General dust model.
 
@@ -1416,7 +1451,7 @@ class GeneralDust(Dust):
             The device to place the dust properties on ("cpu" or "cuda").
         """
         super().__init__(lam=lam, kabs=kabs, ksca=ksca, amax=amax, p=p, abundances=abundances, device=device, 
-                         ntemperatures=ntemperatures)
+                         ntemperatures=ntemperatures, fiducial_values=fiducial_values)
 
         # Ensure that the scattering phase function is normalized for each combination of p, amax, and nu.
 
