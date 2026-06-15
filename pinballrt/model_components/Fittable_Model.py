@@ -1,16 +1,17 @@
 from ..model import Model
-from ..grids import Grid
+from ..grids import Grid, UniformSphericalGrid
 import numpy as np
 import astropy.units as u
 
 class Fittable_Model(Model):
     default_params = {}
+    model_name = "fittable_model"
+    density_coordinates = "cylindrical"
     def __init__(self, grid: Grid, grid_kwargs={}, ncores=1, mpi=False, model_params={}):
         super().__init__(grid, grid_kwargs=grid_kwargs, ncores=ncores, mpi=mpi)
 
-        self.model_params = self.default_params.copy()
-        self.set_attributes(model_params)
-        self.model_name = "generic_fittable_model"
+        self.model_params = {}
+        self.set_attributes(self.default_params)
 
     def density(self):
         raise NotImplementedError("The density method must be implemented in the subclass.")
@@ -20,12 +21,8 @@ class Fittable_Model(Model):
             setattr(self, key, value)
             self.model_params[key] = value
 
-    def set_parameters(self, model_params={}, dusttogasratio=0.01, dust=None, amax=None,
-                       p=None, dust_abundances=(), gases=None, abundances=None, velocity=None,
-                       microturbulence=None, density_coordinates="cylindrical"):
-        
+    def density_grid(self, model_params={}):
         self.set_attributes(model_params)
-
         if self.grid.coordinate_system == "cartesian":
             # get bin edges and centers
             x_edges = self.grid.grid.w1.numpy() * u.au
@@ -58,8 +55,21 @@ class Fittable_Model(Model):
             zz = rr * np.cos(tt)
         
         # compute density grid
-        if density_coordinates == "cylindrical":
-            density_grid = self.density(rcyl, zz)
+        if self.density_coordinates == "cylindrical":
+            return self.density(rcyl, zz)
+        elif self.density_coordinates == "spherical":
+            return self.density(rr, tt, pp)
+        
 
+    def set_parameters(self, model_params={}, dusttogasratio=0.01, dust=None, amax=None,
+                       p=None, dust_abundances=(), gases=None, abundances=None, velocity=None,
+                       microturbulence=None, density_coordinates="cylindrical"):
+        
+        density_grid = self.density_grid(model_params=model_params)
         self.set_physical_properties(density_grid, dusttogasratio, dust, amax, p, dust_abundances,
                                      gases, abundances, velocity, microturbulence)
+        
+    def __add__(self, other):
+        from .CompoundModel import CompoundModel
+        return CompoundModel(self, other, grid=UniformSphericalGrid, 
+                             grid_kwargs={"ncells": (99, 99, 1), "dr": 2.0 *u.au})

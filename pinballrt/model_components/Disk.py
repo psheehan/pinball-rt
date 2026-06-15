@@ -12,20 +12,8 @@ class Disk(Fittable_Model):
                                "h_0": 0.05*u.au,
                                "beta": 1.0}
 
-    def __init__(self, grid: Grid, grid_kwargs={}, ncores=1, mpi=False, model_params={}):
-        super().__init__(grid, grid_kwargs=grid_kwargs, ncores=ncores, mpi=mpi, model_params=model_params)
-
-        self.model_params = {"mass": 1e3*u.Msun,
-                               "rin": 0.1*u.au,
-                               "rout": 100.0*u.au,
-                               "gamma": 1.0,
-                               "h_0": 0.05*u.au,
-                               "beta": 1.0}
-        
-        for key, value in model_params.items():
-            model_params[key] = value
-        
-        self.model_name = "Disk"
+    model_name = "disk"
+    density_coordinates = "cylindrical"
 
     def surface_density(self, r):
         sigma0 = ((2.0 - self.gamma) * self.mass / (2.0 * np.pi * self.rout**2))
