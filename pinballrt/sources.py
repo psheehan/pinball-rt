@@ -27,9 +27,17 @@ import scipy.integrate
 import warp as wp
 import numpy as np
 import torch
+import copy
 import time
 
-class SphericalSource:
+class Source:
+    def copy(self):
+        return copy.deepcopy(self)
+    
+    def set_grid(self, grid):
+        self.grid = grid
+
+class SphericalSource(Source):
     r"""
     Sphercal sources, e.g. stars, emit photons from the surface of a sphere in a random outward direction. They can be 
     created using the `SphericalSource` class, which takes the total luminosity of the source as well as the spectrum of the source
@@ -213,7 +221,7 @@ class BlackbodyStar(SphericalSource):
         self.random_nu_CPD /= self.random_nu_CPD[-1]
 
 class ExternalSource(SphericalSource):
-    def __init__(self, grid, intensity, frequency=None):
+    def __init__(self, intensity, frequency=None):
         """
         An external isotropic radiation source surrounding the simulation grid. External sources emit photons inward from 
         a sphere just beyond the outer boundary of the grid. It can be specified in terms of the specific intensity as a 
@@ -251,37 +259,42 @@ class ExternalSource(SphericalSource):
         frequency : `astropy.units.Quantity`, optional
             The frequency array over which the intensity is defined. If not provided, it will be generated based on the grid's dust properties.
         """
+        self.frequency = frequency
+        self.intensity = intensity
+
+    def set_grid(self, grid):
+        super().set_grid(grid)
+
         radius = grid.grid_size()*grid.distance_unit / 2.
 
-        if frequency is None:
-            frequency = np.logspace(np.log10(grid.dust.nu.value.min()), np.log10(grid.dust.nu.value.max()), 1000) * grid.dust.nu.unit
-        self.grid = grid
+        if self.frequency is None:
+            self.frequency = np.logspace(np.log10(grid.dust.nu.value.min()), np.log10(grid.dust.nu.value.max()), 1000) * grid.dust.nu.unit
 
-        super().__init__(luminosity=4.*np.pi**2*u.steradian*radius**2*scipy.integrate.trapezoid(intensity(frequency), frequency),
-                         frequency=frequency,
-                         intensity=intensity,
+        super().__init__(luminosity=4.*np.pi**2*u.steradian*radius**2*scipy.integrate.trapezoid(self.intensity(self.frequency), self.frequency),
+                         frequency=self.frequency,
+                         intensity=self.intensity,
                          x=0., y=0., z=0.)
 
     def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
         photon_list = super().emit(nphotons, distance_unit, wavelength, simulation, device, timing)
 
-        # Flip directions to point inward
-        photon_list.direction = wp.array2d(-photon_list.direction.numpy(), dtype=wp.vec3)
-
-        # Check the distance to the outer wall of the grid and move photons just inside
-        s = wp.zeros(nphotons, dtype=float)
-
-        wp.launch(kernel=self.grid.outer_wall_distance,
-                dim=(nphotons,),
-                inputs=[photon_list, self.grid.grid, s])
-        s = wp.to_torch(s)
-        will_be_in_grid = s < torch.inf
-        iwill_be_in_grid = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))[will_be_in_grid]
-        wp.launch(kernel=self.grid.move,
-                    dim=iwill_be_in_grid.shape,
-                    inputs=[photon_list, s, iwill_be_in_grid])
-
         with wp.ScopedDevice(device):
+            # Flip directions to point inward
+            photon_list.direction = wp.array2d(-photon_list.direction.numpy(), dtype=wp.vec3)
+
+            # Check the distance to the outer wall of the grid and move photons just inside
+            s = wp.zeros(nphotons, dtype=float)
+
+            wp.launch(kernel=self.grid.outer_wall_distance,
+                    dim=(nphotons,),
+                    inputs=[photon_list, self.grid.grid, s])
+            s = wp.to_torch(s)
+            will_be_in_grid = s < torch.inf
+            iwill_be_in_grid = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))[will_be_in_grid]
+            wp.launch(kernel=self.grid.move,
+                        dim=iwill_be_in_grid.shape,
+                        inputs=[photon_list, s, iwill_be_in_grid])
+
             photon_list.position = wp.array(wp.to_torch(photon_list.position), dtype=wp.vec3)
             photon_list.direction = wp.array(wp.to_torch(photon_list.direction), dtype=wp.vec3)
             photon_list.frequency = wp.array(wp.to_torch(photon_list.frequency), dtype=float)
@@ -290,8 +303,8 @@ class ExternalSource(SphericalSource):
 
         return photon_list
 
-class DiffuseSource:
-    def __init__(self, grid, spectrum, density, frequency=None):
+class DiffuseSource(Source):
+    def __init__(self, spectrum, density, frequency=None):
         r"""
         A diffuse source emitting photons from within the simulation grid. Diffuse sources emit photons from random locations 
         withing the grid, with a probability of emission from each cell proportional to the luminosity of that cell. 
@@ -329,28 +342,33 @@ class DiffuseSource:
         frequency : `astropy.units.Quantity`, optional
             The frequency array over which the spectrum is defined. If not provided, it will be generated based on the grid's dust properties.
         """
-        self.grid = grid
-        if density.ndim == 3:
-            self.density = density
-        else:
-            self.density = np.tile(density, self.grid.shape)
+        self.spectrum = spectrum
+        self.density = density
+        self.frequency = frequency
 
-        if callable(spectrum):
-            if frequency is None:
-                self.frequency = np.logspace(np.log10(self.grid.dust.nu.value.min()), np.log10(self.grid.dust.nu.value.max()), 1000) * self.grid.dust.nu.unit
-            else:
-                self.frequency = frequency
-            self.spectrum = spectrum(self.frequency)
-            self.intensity = spectrum
+    def set_grid(self, grid):
+        super().set_grid(grid)
+
+        if self.density.ndim == 3:
+            pass
         else:
-            if frequency is None:
+            self.density = np.tile(self.density, self.grid.shape)
+
+        if callable(self.spectrum):
+            if self.frequency is None:
+                self.frequency = np.logspace(np.log10(self.grid.dust.nu.value.min()), np.log10(self.grid.dust.nu.value.max()), 1000) * self.grid.dust.nu.unit
+            self.intensity = self.spectrum
+            self.spectrum = self.intensity(self.frequency)
+            
+        else:
+            if self.frequency is None:
                 raise ValueError("Frequency array must be provided if spectrum is not callable.")
-            self.frequency = frequency
-            self.spectrum = spectrum
             self.log10_intensity_func = np.interp1d(np.log10(self.frequency.to(u.GHz).value), np.log10(self.spectrum.value), kind='linear')
             self.intensity = lambda nu: 10**self.log10_intensity_func(np.log10(nu.to(u.GHz).value)) * self.spectrum.unit
 
-        self.total_luminosity = ((self.grid.volume.cpu().numpy()*self.grid.distance_unit**3 * density).sum() *scipy.integrate.trapezoid(self.intensity(self.frequency), self.frequency)).to(u.L_sun)
+        print("bloop")
+        self.total_luminosity = ((self.grid.volume.cpu().numpy()*self.grid.distance_unit**3 * self.density).sum() *scipy.integrate.trapezoid(self.intensity(self.frequency), self.frequency)).to(u.L_sun)
+        print("blop")
 
         self.random_nu_CPD = scipy.integrate.cumulative_trapezoid(self.intensity(self.frequency), self.frequency, initial=0.)
         self.random_nu_CPD /= self.random_nu_CPD[-1]
@@ -480,7 +498,7 @@ class GridSource(DiffuseSource):
         return self.grid.dust.random_nu(photon_list)
 
 class EnergySource(GridSource):
-    def __init__(self, grid, energy_density):
+    def __init__(self, energy_density):
         """
         A diffuse energy source that directly injects energy into the grid based on a specified energy density, and then the grid
         reradiates that energy away based on the temperature and dust properties in the cell. They should be specified in terms of
@@ -503,9 +521,11 @@ class EnergySource(GridSource):
         energy_density : `astropy.units.Quantity`
             The energy density distribution of the source within the grid. It should be specified in units such that when multiplied by the cell volume, the result is compatible with ergs / s.
         """
-        super().__init__(grid)
         self.energy_density = energy_density
-        self.luminosity = energy_density * self.grid.volume.cpu().numpy() * self.grid.distance_unit**3
+        
+    def set_grid(self, grid):
+        self.grid = grid
+        self.luminosity = self.energy_density * self.grid.volume.cpu().numpy() * self.grid.distance_unit**3
         self.total_lum = self.luminosity.sum()
 
     def initialize_luminosity_array(self, wavelength):

@@ -42,7 +42,7 @@ class Model:
         """
         self.grid_list = {"cpu":grid(**grid_kwargs, device='cpu')}
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = grid(**grid_kwargs, device=d)
+            self.grid_list["cuda"] = grid(**grid_kwargs, device="cuda")
             self.grid = self.grid_list["cuda"]
         else:
             self.grid = self.grid_list["cpu"]
@@ -140,7 +140,7 @@ class Model:
             if isinstance(source, DiffuseSource):
                 source.initialize_luminosity_array(wavelength="random")
 
-        told = self.grid.grid.temperature.numpy().copy()
+        told = self.grid_list[device].grid.temperature.numpy().copy()
 
         timing = {}
         count = 0
@@ -149,7 +149,7 @@ class Model:
 
             print("Iteration", count)
             treallyold = told.copy()
-            told = self.grid.grid.temperature.numpy().copy()
+            told = self.grid_list[device].grid.temperature.numpy().copy()
 
             njobs = self.ncores * nbatch
 
@@ -168,20 +168,20 @@ class Model:
 
             total_energy = np.mean(np.array(total_energy), axis=0)
             with wp.ScopedDevice(self.grid.device):
-                self.grid.grid.energy = wp.array3d(total_energy, dtype=float)
+                self.grid_list[device].grid.energy = wp.array3d(total_energy, dtype=float)
 
             t1 = time.time()
-            self.grid.update_grid(timing=iter_timing)
+            self.grid_list[device].update_grid(timing=iter_timing)
             t2 = time.time()
             iter_timing["Update grid temperature time"] = t2 - t1
 
             for dev in self.grid_list:
                 with wp.ScopedDevice(self.grid_list[dev].device):
-                        self.grid_list[dev].grid.temperature = wp.array3d(self.grid.grid.temperature.numpy(), dtype=float)
-                        self.grid_list[dev].grid.energy = wp.zeros(self.grid.shape, dtype=float)
+                        self.grid_list[dev].grid.temperature = wp.array3d(self.grid_list[device].grid.temperature.numpy(), dtype=float)
+                        self.grid_list[dev].grid.energy = wp.zeros(self.grid_list[device].shape, dtype=float)
 
             if count > 1:
-                R = np.maximum(told/self.grid.grid.temperature.numpy(), self.grid.grid.temperature.numpy()/told)
+                R = np.maximum(told/self.grid_list[device].grid.temperature.numpy(), self.grid_list[device].grid.temperature.numpy()/told)
                 Rold = np.maximum(told/treallyold, treallyold/told)
 
                 Q = np.percentile(R, p)
@@ -258,15 +258,15 @@ class Model:
 
             for source in self.grid_list[device].sources:
                 if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
-                    total_scattering[i] += torch.tensor((source.luminosity * (self.grid.distance_unit**2 * u.Jy) * \
+                    total_scattering[i] += torch.tensor((source.luminosity * (self.grid_list[device].distance_unit**2 * u.Jy) * \
                                                          source.density / (4.*np.pi * u.steradian * \
-                                                                           (wp.to_torch(self.grid.grid.dust_density) * \
-                                                                            self.grid.dust.ml_kext(
-                                                                                p=wp.to_torch(self.grid.grid.p).flatten(), 
-                                                                                amax=wp.to_torch(self.grid.grid.amax).flatten(), 
-                                                                                nu=torch.ones(self.grid.shape).flatten()*frequency.to(u.GHz).value,
-                                                                                abundances=tuple([wp.to_torch(self.grid.grid.dust_abundances)[i].flatten() for i in range(self.grid.n_dust_abundances)])).reshape(self.grid.shape) * \
-                                                         self.grid.distance_unit**-1))).value, 
+                                                                           (wp.to_torch(self.grid_list[device].grid.dust_density) * \
+                                                                            self.grid_list[device].dust.ml_kext(
+                                                                                p=wp.to_torch(self.grid_list[device].grid.p).flatten(), 
+                                                                                amax=wp.to_torch(self.grid_list[device].grid.amax).flatten(), 
+                                                                                nu=torch.ones(self.grid_list[device].shape, device=device).flatten()*frequency.to(u.GHz).value,
+                                                                                abundances=tuple([wp.to_torch(self.grid_list[device].grid.dust_abundances)[i].flatten() for i in range(self.grid_list[device].n_dust_abundances)])).reshape(self.grid_list[device].shape)).cpu().numpy() * \
+                                                         self.grid_list[device].distance_unit**-1)).value, 
                                                          device=device)
 
             for dev in self.grid_list:
@@ -342,7 +342,7 @@ class Model:
         # Check which lines from the gas should be included
 
         if include_gas:
-            self.grid.select_lines(lam)
+            self.grid_list[device].select_lines(lam)
 
         # First, run a scattering simulation to get the scattering phase function
 
