@@ -28,7 +28,7 @@ def test_E2E(grid_class, grid_kwargs, percentile, device, return_vals=False):
     Test the end-to-end functionality of the UniformCartesianGrid model running all the way through.
     """
 
-    if wp.get_cuda_device_count() == 0:
+    if wp.get_cuda_device_count() == 0 and device == "cuda":
         pytest.skip("CUDA not available on this machine.")
 
     # Set up the dust.
@@ -74,17 +74,17 @@ def test_E2E(grid_class, grid_kwargs, percentile, device, return_vals=False):
                        EnergySource(0.001*u.L_sun * u.au**-3), 
                        ExternalSource(models.BlackBody(2.7*u.K))])
 
-    model.thermal_mc(nphotons=200000, use_ml_step=False, Qthresh=1.045, Delthresh=1.02, device="cuda")
+    model.thermal_mc(nphotons=200000, use_ml_step=False, Qthresh=1.045, Delthresh=1.02, device=device)
 
     image = model.make_image(npix=256, pixel_size=0.2*u.arcsec, channels=np.array([1., 1000.])*u.micron, 
                              incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, nphotons=1000000, include_gas=False,
-                             device="cuda")
+                             device=device)
 
     g = Gas()
     g.set_properties_from_lambda(os.path.join(os.path.dirname(__file__), "data/co.dat"))
 
     cube = model.make_image(npix=256, pixel_size=0.2*u.arcsec, channels=np.linspace(-20., 20., 300)*u.km/u.s, rest_frequency=g.nu[2], 
-                            incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device='cuda', include_sources=False)
+                            incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device=device, include_sources=False)
     mom0 = cube.sum(dim='lam')
 
     # Do the checks.
