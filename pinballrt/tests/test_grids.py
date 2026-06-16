@@ -40,9 +40,9 @@ def test_grid_pickle(grid_class, grid_kwargs, percentile, return_vals=False):
 
     model.set_physical_properties(density=density, dust=d, amax=amax, p=3.5)
     model.add_sources([BlackbodyStar(),
-                       DiffuseSource(model.grid, lambda nu: 4*np.pi**2 * u.steradian * (0.035*u.R_sun)**2 * models.BlackBody(2000.*u.K)(nu), 10.*u.au**-3),
-                       EnergySource(model.grid, 0.001*u.L_sun * u.au**-3), 
-                       ExternalSource(model.grid, models.BlackBody(2.7*u.K))])
+                       DiffuseSource(lambda nu: 4*np.pi**2 * u.steradian * (0.035*u.R_sun)**2 * models.BlackBody(2000.*u.K)(nu), 10.*u.au**-3),
+                       EnergySource(0.001*u.L_sun * u.au**-3), 
+                       ExternalSource(models.BlackBody(2.7*u.K))])
 
     result = dill.loads(dill.dumps(model.grid))
 

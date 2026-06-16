@@ -135,39 +135,40 @@ class Grid:
                         self.grid.microturbulence = wp.array3d(microturbulence.to(u.km / u.s), dtype=float)
 
     def check_physical_properties(self, include_dust=True, include_gas=False):
-        if include_dust:
-            if self.grid.dust_density is None:
-                raise ValueError("Dust density is not set in the grid.")
+        with wp.ScopedDevice(self.device):
+            if include_dust:
+                if self.grid.dust_density is None:
+                    raise ValueError("Dust density is not set in the grid.")
 
-            if not hasattr(self, "dust"):
-                raise ValueError("Dust properties are not set in the grid.")
-            
-            if self.grid.amax is None and "amax" in self.dust.fiducial_values:
-                self.grid.amax = wp.array3d(np.ones(self.shape) * self.dust.fiducial_values["amax"].to(u.cm), dtype=float)
+                if not hasattr(self, "dust"):
+                    raise ValueError("Dust properties are not set in the grid.")
+                
+                if self.grid.amax is None and "amax" in self.dust.fiducial_values:
+                    self.grid.amax = wp.array3d(np.ones(self.shape) * self.dust.fiducial_values["amax"].to(u.cm), dtype=float)
 
-            if self.grid.p is None and "p" in self.dust.fiducial_values:
-                self.grid.p = wp.array3d(np.ones(self.shape) * self.dust.fiducial_values["p"], dtype=float)
+                if self.grid.p is None and "p" in self.dust.fiducial_values:
+                    self.grid.p = wp.array3d(np.ones(self.shape) * self.dust.fiducial_values["p"], dtype=float)
 
-            if self.grid.dust_abundances is None:
-                if "abundances" in self.dust.fiducial_values and len(self.dust.abundances) > 0:
-                    self.grid.dust_abundances = wp.array4d(np.array(self.dust.fiducial_values["abundances"])[:, np.newaxis, np.newaxis, np.newaxis] * 
-                                                            np.ones((len(self.dust.abundances),)+self.shape), dtype=float)
-                    self.n_dust_abundances = len(self.dust.abundances)
-                else:
-                    self.n_dust_abundances = 0
+                if self.grid.dust_abundances is None:
+                    if "abundances" in self.dust.fiducial_values and len(self.dust.abundances) > 0:
+                        self.grid.dust_abundances = wp.array4d(np.array(self.dust.fiducial_values["abundances"])[:, np.newaxis, np.newaxis, np.newaxis] * 
+                                                                np.ones((len(self.dust.abundances),)+self.shape), dtype=float)
+                        self.n_dust_abundances = len(self.dust.abundances)
+                    else:
+                        self.n_dust_abundances = 0
 
-        if include_gas:
-            if self.grid.gas_density is None:
-                raise ValueError("Gas density is not set in the grid.")
+            if include_gas:
+                if self.grid.gas_density is None:
+                    raise ValueError("Gas density is not set in the grid.")
 
-            if not hasattr(self, "gases"):
-                raise ValueError("No gases have been added to the grid.")
+                if not hasattr(self, "gases"):
+                    raise ValueError("No gases have been added to the grid.")
 
-            if self.grid.velocity is None:
-                self.grid.velocity = wp.array4d(np.zeros((3, self.shape[0], self.shape[1], self.shape[2])), dtype=float)
+                if self.grid.velocity is None:
+                    self.grid.velocity = wp.array4d(np.zeros((3, self.shape[0], self.shape[1], self.shape[2])), dtype=float)
 
-            if self.grid.microturbulence is None:
-                self.grid.microturbulence = wp.array3d(np.zeros(self.shape), dtype=float)
+                if self.grid.microturbulence is None:
+                    self.grid.microturbulence = wp.array3d(np.zeros(self.shape), dtype=float)
 
     def add_sources(self, sources):
         """
@@ -182,9 +183,14 @@ class Grid:
             self.sources = []
 
         if isinstance(sources, list):
-            self.sources += sources
+            new_sources = [s.copy() for s in sources]   
         else:
-            self.sources += [sources]
+            new_sources = [sources.copy()]
+
+        for s in new_sources:
+            s.set_grid(self)
+
+        self.sources += new_sources
 
     def base_emit(self, nphotons, wavelength="random", scattering=False, timing={}):
         with wp.ScopedDevice(self.device):
