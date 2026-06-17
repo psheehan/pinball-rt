@@ -17,6 +17,8 @@ class PhotonList:
     alpha: wp.array(dtype=float)
     kabs: wp.array(dtype=float)
     ksca: wp.array(dtype=float)
+    g: wp.array(dtype=float)
+    scattering_phase_function: wp.array(dtype=float)
     albedo: wp.array(dtype=float)
     kext: wp.array2d(dtype=float)
     ray_albedo: wp.array2d(dtype=float)
@@ -24,6 +26,8 @@ class PhotonList:
     amax: wp.array(dtype=float)
     p: wp.array(dtype=float)
     dust_abundances: wp.array2d(dtype=float)
+
+    opacities_out_of_date: wp.array(dtype=bool)
 
     tau: wp.array(dtype=float)
     total_tau_abs: wp.array(dtype=float)

@@ -7,6 +7,15 @@ dust
 
 .. autofunction:: suggest_opacity_sampling
 
+.. autoclass:: IsotropicDust
+   :show-inheritance:
+
+.. autoclass:: HenyeyGreensteinDust
+   :show-inheritance:
+
+.. autoclass:: GeneralDust
+   :show-inheritance:
+
 .. autoclass:: Dust
    :show-inheritance:
 

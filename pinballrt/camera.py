@@ -27,6 +27,9 @@ class Camera:
         self.i = np.array([self.r*np.sin(self.incl)*np.cos(phi), \
                 self.r*np.sin(self.incl)*np.sin(phi), \
                 self.r*np.cos(self.incl)])
+        
+        with wp.ScopedDevice(self.grid.device):
+            self.i_wp = wp.vec3(self.i)
 
         self.ex = np.array([-np.sin(phi), np.cos(phi), 0.0])
         self.ey = np.array([-np.cos(self.incl)*np.cos(phi), \
@@ -67,6 +70,7 @@ class Camera:
         ray_list.p = wp.zeros(xflat.size, dtype=float)
         if self.grid.n_dust_abundances > 0:
             ray_list.dust_abundances = wp.array2d(np.zeros((xflat.size, self.grid.n_dust_abundances)), dtype=float)
+        ray_list.opacities_out_of_date = wp.zeros(xflat.size, dtype=bool)
 
         ray_list.radius = wp.array(np.zeros(xflat.shape), dtype=float)
         if isinstance(self.grid, LogUniformSphericalGrid):
