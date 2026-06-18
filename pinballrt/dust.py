@@ -171,7 +171,8 @@ class Dust(pl.LightningDataModule):
         samples += (torch.log10(nu),)
         samples = torch.transpose(torch.vstack(samples), 0, 1)
 
-        kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
+        with torch.no_grad():
+            kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
 
         return kabs
 
@@ -212,7 +213,8 @@ class Dust(pl.LightningDataModule):
         samples += (torch.log10(nu),)
         samples = torch.transpose(torch.vstack(samples), 0, 1)
 
-        ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
+        with torch.no_grad():
+            ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
         return ksca
 
@@ -246,8 +248,9 @@ class Dust(pl.LightningDataModule):
         samples += (torch.log10(nu),)
         samples = torch.transpose(torch.vstack(samples), 0, 1)
 
-        return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
-                10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
+        with torch.no_grad():
+            return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
+                    10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
     def absorb(self, temperature):
         nphotons = frequency.numpy().size
@@ -280,7 +283,8 @@ class Dust(pl.LightningDataModule):
         samples = torch.transpose(torch.vstack(samples), 0, 1)
         test_x = self.random_nu_x_scaler.transform(samples)
 
-        log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
+        with torch.no_grad():
+            log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
 
         return 10.**log10_nu.numpy()
 
@@ -322,9 +326,11 @@ class Dust(pl.LightningDataModule):
             test_x = TensorDataset(test_x)
             loader = DataLoader(test_x, batch_size=250000)
 
-            log10_nu = torch.cat([torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(X).detach()), self.log10_nu_min, self.log10_nu_max) for X, in loader], 0)
+            with torch.no_grad():
+                log10_nu = torch.cat([torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(X).detach()), self.log10_nu_min, self.log10_nu_max) for X, in loader], 0)
         else:
-            log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
+            with torch.no_grad():
+                log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
         
         nu = wp.from_torch(10.**torch.flatten(log10_nu))
 
@@ -343,7 +349,8 @@ class Dust(pl.LightningDataModule):
 
         samples = torch.transpose(torch.vstack(samples), 0, 1)
 
-        return 10.**self.pmo_y_scaler.inverse_transform(self.pmo_model(self.pmo_x_scaler.transform(samples))).detach().flatten()
+        with torch.no_grad():
+            return 10.**self.pmo_y_scaler.inverse_transform(self.pmo_model(self.pmo_x_scaler.transform(samples))).detach().flatten()
 
     def ml_step(self, photon_list, s, iphotons):
         nphotons = iphotons.size(0)
