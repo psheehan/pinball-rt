@@ -161,7 +161,9 @@ class Model:
                                         [nphotons]*njobs,
                                         [njobs]*njobs,
                                         [use_ml_step]*njobs))
-            total_energy = [r[0] for r in result]
+            results = [r for r in result]
+            total_energy = [r[0] for r in results]
+            iter_timing["photon propagation"] = dict(zip([str(i) for i in range(njobs)], [r[1] for r in results]))
             time.sleep(0.1)
             t2 = time.time()
             iter_timing["Total Time"] = t2 - t1
@@ -180,6 +182,8 @@ class Model:
                         self.grid_list[dev].grid.temperature = wp.array3d(self.grid_list[device].grid.temperature.numpy(), dtype=float)
                         self.grid_list[dev].grid.energy = wp.zeros(self.grid_list[device].shape, dtype=float)
 
+            timing[str(count)] = iter_timing
+
             if count > 1:
                 R = np.maximum(told/self.grid_list[device].grid.temperature.numpy(), self.grid_list[device].grid.temperature.numpy()/told)
                 Rold = np.maximum(told/treallyold, treallyold/told)
@@ -195,7 +199,6 @@ class Model:
             else:
                 print(count)
 
-            timing[str(count)] = iter_timing
             count += 1
 
         if return_timing:
@@ -248,7 +251,9 @@ class Model:
                                        [njobs]*njobs,
                                        [wavelength]*njobs,
                                        [i]*njobs,))
-            total_scattering = [r[0] for r in result]
+            results = [r for r in result]
+            total_scattering = [r[0] for r in results]
+            iter_timing["photon propagation"] = dict(zip([str(i) for i in range(njobs)], [r[1] for r in results]))
             time.sleep(0.1)
             t2 = time.time()
             iter_timing["Total Time"] = t2 - t1
@@ -278,7 +283,7 @@ class Model:
             return timing
 
     def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, 
-                   include_dust=True, include_gas=True, include_sources=True, nphotons=100000, device="cpu"):
+                   include_dust=True, include_gas=True, include_sources=True, nphotons=100000, device="cpu", return_timing=False):
         """
         Create an image from the dust distribution.
 
@@ -308,6 +313,8 @@ class Model:
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+
+        timing = {}
 
         self.grid_list[device].check_physical_properties(include_dust=include_dust, include_gas=include_gas)
 
@@ -349,7 +356,7 @@ class Model:
         self.grid_list[device].set_grid_opacities(nu)
         
         if include_dust:
-            self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False)
+            timing["scattering"] = self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False, return_timing=True)
 
         # Now set up the image proper.
 
@@ -382,6 +389,7 @@ class Model:
 
         njobs = self.ncores
 
+        t1 = time.time()
         intensity = np.array(list(self.pool.map(make_image_raytracing_task, 
                                                 zip([self.camera_list[device]]*njobs, 
                                                      np.array_split(new_x, self.ncores), 
@@ -391,8 +399,11 @@ class Model:
                                                      [physical_pixel_size]*njobs,
                                                      [image.nu]*njobs)
                                                 ))).sum(axis=0) * (u.Jy / u.steradian)
+        t2 = time.time()
+        timing["raytracing"] = t2 - t1
 
         if include_sources:
+            t1 = time.time()
             source_intensity = np.array(list(self.pool.map(make_image_source_task, 
                                                         zip([self.camera_list[device]]*njobs, 
                                                                 SeedSequence(np.random.randint(10000)).spawn(njobs),
@@ -402,12 +413,17 @@ class Model:
                                                                 [physical_pixel_size]*njobs,
                                                                 [njobs]*njobs,)
                                                         ))).mean(axis=0) * u.Jy/u.steradian
+            t2 = time.time()
+            timing["source raytracing"] = t2 - t1
 
             intensity += source_intensity
 
         image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian).value)).astropy.quantify(intensity=u.Jy / u.steradian)
 
-        return image
+        if return_timing:
+            return image, timing
+        else:
+            return image
 
     def make_spectrum(self, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, nphotons=10000, device="cpu"):
         """
