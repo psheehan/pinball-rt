@@ -141,8 +141,8 @@ class SphericalSource(Source):
         return photon_list
     
     def emit_rays(self, nu, distance_unit, ez, nrays, physical_pixel_size, device="cpu"):
-        theta = torch.pi*torch.rand(nrays, device=device)
-        phi = 2*torch.pi*torch.rand(nrays, device=device)
+        theta = np.pi*torch.rand(nrays, device=device, dtype=torch.float32)
+        phi = 2*np.pi*torch.rand(nrays, device=device, dtype=torch.float32)
 
         position = torch.hstack((torch.unsqueeze(self.radius.to(distance_unit).value*torch.sin(theta)*torch.cos(phi), 1),
                                  torch.unsqueeze(self.radius.to(distance_unit).value*torch.sin(theta)*torch.sin(phi), 1),
