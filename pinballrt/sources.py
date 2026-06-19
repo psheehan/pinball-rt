@@ -122,12 +122,17 @@ class SphericalSource(Source):
             t2 = time.time()
             timing["Random frequency generation"] = t2 - t1
         else:
-            frequency = wp.from_torch(torch.ones(nphotons, device=device, dtype=torch.float32) * (const.c / wavelength).to(u.GHz).value)
+            frequency = wp.from_torch(torch.ones(nphotons, device=device, dtype=torch.float32) * \
+                                      (const.c / wavelength).to(u.GHz).value)
 
         if simulation == "thermal":
-            photon_energy = torch.ones(nphotons, device=device, dtype=torch.float32) * (self.luminosity.to(u.L_sun).value / nphotons)
+            photon_energy = torch.ones(nphotons, device=device, dtype=torch.float32) * \
+                (self.luminosity.to(u.L_sun).value / nphotons)
         elif simulation == "scattering":
-            photon_energy = torch.ones(nphotons, device=device, dtype=torch.float32) * ((4.*np.pi**2*u.steradian*self.radius**2*self.intensity(wp.to_torch(frequency)[0]*u.GHz)).to(distance_unit**2 * u.Jy).value / nphotons)
+            photon_energy = torch.ones(nphotons, device=device, dtype=torch.float32) * \
+                ((4.*np.pi**2*u.steradian*self.radius**2*self.intensity(
+                        wp.to_torch(frequency)[0].cpu()*u.GHz)
+                    ).to(distance_unit**2 * u.Jy).value / nphotons)
 
         with wp.ScopedDevice(device):
             photon_list = PhotonList()
@@ -150,7 +155,8 @@ class SphericalSource(Source):
         
         direction = torch.unsqueeze(torch.tensor(ez, dtype=torch.float32, device=device), 0).repeat(nrays, 1)
 
-        intensity = (self.intensity(nu.data)*np.pi).to(u.Jy / u.steradian).value * ((self.radius / physical_pixel_size).decompose()**2).value
+        intensity = (self.intensity(nu.data)*np.pi).to(u.Jy / u.steradian).value * \
+            ((self.radius / physical_pixel_size).decompose()**2).value
         intensity = torch.unsqueeze(torch.tensor(intensity, dtype=torch.float32, device=device), 0).repeat(nrays, 1)
         tau_intensity = torch.zeros((nrays, nu.size), dtype=torch.float32, device=device)
 
