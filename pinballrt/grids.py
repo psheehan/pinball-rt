@@ -590,7 +590,8 @@ class Grid:
 
         photon_list.opacities_out_of_date[ip] = False
 
-    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf):
+    def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
+                          progress=True):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -625,7 +626,8 @@ class Grid:
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
             photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
-            progress_bar = tqdm(total=nphotons, position=position, leave=True)
+            if progress:
+                progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
             iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
             nphotons = iphotons.size(0)
@@ -752,7 +754,8 @@ class Grid:
 
                 t1 = time.time()
                 iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
-                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                if progress:
+                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
                 nphotons_done = iphotons_original.size(0) - iphotons.size(0)
                 nphotons = iphotons.size(0)
                 t2 = time.time()
@@ -772,7 +775,8 @@ class Grid:
 
                 t1 = time.time()
                 iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
-                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                if progress:
+                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
                 nphotons_done = iphotons_original.size(0) - iphotons.size(0)
                 nphotons = iphotons.size(0)
                 t2 = time.time()
@@ -796,7 +800,8 @@ class Grid:
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 
-            progress_bar.close()
+            if progress:
+                progress_bar.close()
 
             timing["next_wall_time"] = next_wall_time
             timing["dust_interpolation_time"] = dust_interpolation_time
@@ -846,7 +851,7 @@ class Grid:
 
         photon_list.opacities_out_of_date[ip] = False
 
-    def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False, timing={}, position=0):
+    def propagate_photons_scattering(self, photon_list: PhotonList, inu: int, debug=False, timing={}, position=0, progress=True):
         with wp.ScopedDevice(self.device):
             nphotons = photon_list.position.numpy().shape[0]
             iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
@@ -875,7 +880,8 @@ class Grid:
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
             photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
 
-            progress_bar = tqdm(total=nphotons, position=position, leave=True)
+            if progress:
+                progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
             iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
             nphotons = iphotons.size(0)
@@ -949,7 +955,8 @@ class Grid:
 
                 t1 = time.time()
                 iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
-                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                if progress:
+                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
                 nphotons_done = iphotons_original.size(0) - iphotons.size(0)
                 nphotons = iphotons.size(0)
                 t2 = time.time()
@@ -967,7 +974,8 @@ class Grid:
 
                 t1 = time.time()
                 iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
-                progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
+                if progress:
+                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
                 nphotons_done = iphotons_original.size(0) - iphotons.size(0)
                 nphotons = iphotons.size(0)
                 t2 = time.time()
@@ -987,7 +995,8 @@ class Grid:
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 
-            progress_bar.close()
+            if progress:
+                progress_bar.close()
 
             timing["next_wall_time"] = next_wall_time
             timing["dust_interpolation_time"] = dust_interpolation_time
