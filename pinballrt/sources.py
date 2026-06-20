@@ -113,7 +113,7 @@ class SphericalSource(Source):
         sint = torch.sqrt(1-cost**2)
         phi = 2*torch.pi*torch.rand(nphotons, device=device, dtype=torch.float32)
 
-        direction = torch.unsqueeze(cost, 1)*r_hat + torch.unsqueeze(torch.exp(sint*torch.cos(phi)), 1)*phi_hat + torch.unsqueeze(sint*torch.sin(phi), 1)*theta_hat
+        direction = torch.unsqueeze(cost, 1)*r_hat + torch.unsqueeze(sint*torch.cos(phi), 1)*phi_hat + torch.unsqueeze(sint*torch.sin(phi), 1)*theta_hat
         direction_frame = torch.unsqueeze(cost, 1)*r_hat + torch.unsqueeze(sint*torch.cos(phi), 1)*phi_hat + torch.unsqueeze(sint*torch.sin(phi), 1)*theta_hat
 
         if wavelength == "random":
@@ -164,7 +164,7 @@ class SphericalSource(Source):
             ray_list = PhotonList()
             ray_list.position = wp.from_torch(position, dtype=wp.vec3)
             ray_list.direction = wp.from_torch(direction, dtype=wp.vec3)
-            ray_list.direction_frame = wp.from_torch(direction, dtype=wp.vec3)
+            ray_list.direction_frame = wp.from_torch(copy.deepcopy(direction), dtype=wp.vec3)
             ray_list.indices = wp.zeros(position.shape, dtype=int)
             ray_list.intensity = wp.from_torch(intensity)
             ray_list.tau_intensity = wp.from_torch(tau_intensity)
