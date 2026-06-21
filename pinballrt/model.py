@@ -116,7 +116,7 @@ class Model:
             self.grid_list[device].add_sources(sources)
 
     def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", 
-                   return_timing=False, nbatch=1):
+                   return_timing=False, nbatch=1, progress=True):
         """
         Perform a thermal Monte Carlo simulation.
 
@@ -147,7 +147,9 @@ class Model:
         while count < 10:
             iter_timing = {}
 
-            print("Iteration", count)
+            if progress:
+                print("Iteration", count)
+
             treallyold = told.copy()
             told = self.grid_list[device].grid.temperature.numpy().copy()
 
@@ -160,7 +162,8 @@ class Model:
                                         SeedSequence(np.random.randint(10000)).spawn(njobs),
                                         [nphotons]*njobs,
                                         [njobs]*njobs,
-                                        [use_ml_step]*njobs))
+                                        [use_ml_step]*njobs,
+                                        [progress]*njobs))
             results = [r for r in result]
             total_energy = [r[0] for r in results]
             iter_timing["photon propagation"] = dict(zip([str(i) for i in range(njobs)], [r[1] for r in results]))
@@ -193,18 +196,21 @@ class Model:
 
                 Del = max(Q/Qold, Qold/Q)
 
-                print(count, Q, Del)
+                if progress:
+                    print(count, Q, Del)
+
                 if Q < Qthresh and Del < Delthresh:
                     break
             else:
-                print(count)
+                if progress:
+                    print(count)
 
             count += 1
 
         if return_timing:
             return timing
 
-    def scattering_mc(self, nphotons, wavelengths, device="cpu", return_timing=False, nbatch=1, set_grid_opacities=True):
+    def scattering_mc(self, nphotons, wavelengths, device="cpu", return_timing=False, nbatch=1, set_grid_opacities=True, progress=True):
         """
         Perform a scattering Monte Carlo simulation.
 
@@ -250,7 +256,8 @@ class Model:
                                        [nphotons]*njobs,
                                        [njobs]*njobs,
                                        [wavelength]*njobs,
-                                       [i]*njobs,))
+                                       [i]*njobs,
+                                       [progress]*njobs))
             results = [r for r in result]
             total_scattering = [r[0] for r in results]
             iter_timing["photon propagation"] = dict(zip([str(i) for i in range(njobs)], [r[1] for r in results]))
@@ -283,7 +290,8 @@ class Model:
             return timing
 
     def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, 
-                   include_dust=True, include_gas=True, include_sources=True, nphotons=100000, device="cpu", return_timing=False):
+                   include_dust=True, include_gas=True, include_sources=True, nphotons=100000, device="cpu", return_timing=False,
+                   progress=True):
         """
         Create an image from the dust distribution.
 
@@ -356,7 +364,8 @@ class Model:
         self.grid_list[device].set_grid_opacities(nu)
         
         if include_dust:
-            timing["scattering"] = self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False, return_timing=True)
+            timing["scattering"] = self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False, return_timing=True,
+                                                      progress=progress)
 
         # Now set up the image proper.
 
@@ -456,20 +465,20 @@ class Model:
         return spectrum
     
 def thermal_mc_task(args):
-    grid, position, s, nphotons, njobs, use_ml_step = args
+    grid, position, s, nphotons, njobs, use_ml_step, progress = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
     photon_list = grid.emit(int(nphotons / njobs), timing=iter_timing)
-    grid.propagate_photons(photon_list, use_ml_step=use_ml_step, timing=iter_timing, position=position)
+    grid.propagate_photons(photon_list, use_ml_step=use_ml_step, timing=iter_timing, position=position, progress=progress)
 
     return grid.grid.energy.numpy(), iter_timing
 
 def scattering_mc_task(args):
-    grid, position, s, nphotons, njobs, wavelength, i = args
+    grid, position, s, nphotons, njobs, wavelength, i, progress = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
     photon_list = grid.emit(int(nphotons / njobs), wavelength, scattering=True, timing=iter_timing)
-    grid.propagate_photons_scattering(photon_list, i, timing=iter_timing, position=position)
+    grid.propagate_photons_scattering(photon_list, i, timing=iter_timing, position=position, progress=progress)
 
     return grid.scattering, iter_timing
 
