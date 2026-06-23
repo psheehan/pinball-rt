@@ -454,7 +454,7 @@ class Dust(pl.LightningDataModule):
 
     def initialize_model(self, model="random_nu", model_type="MLP", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
         if model_type == 'flow':
-            setattr(self, f"{model}_model", MaskedAutoregressiveFlow(input_size, output_size, transforms=len(hidden_units), hidden_features=hidden_units[0]))
+            setattr(self, f"{model}_model", RealNVP(input_size, output_size, transforms=len(hidden_units), hidden_features=hidden_units[0]))
         elif model == "ml_step_filter":
             setattr(self, f"{model}_model", MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units, final_activation=nn.Sigmoid))
         else:
@@ -1898,6 +1898,10 @@ class MultiLayerPerceptron(nn.Module):
 
     def loss(self, x, y):
         return nn.functional.mse_loss(self(x), y)
+    
+class RealNVP(zuko.flows.coupling.NICE):
+    def condition(self, y):
+        return self(y)
 
 class NeuralSplineFlow(zuko.flows.NSF):
     def condition(self, y):
