@@ -692,13 +692,6 @@ class Dust(pl.LightningDataModule):
         return samples, targets
 
     def prepare_data_ml_step(self, device='cpu'):
-        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
-        targets = ["log10_nu0", "log10_T"] + \
-                  (["log10_amax"] if "log10_amax" in self.dims else []) + \
-                  (["p"] if "p" in self.dims else []) + \
-                  ([f"abundance{i}" for i in range(len(self.abundances))]) + \
-                  ["log10_tau_cell_nu0"]
-        
         if os.path.exists("sim_results.csv"):
             df = pd.read_csv("sim_results.csv", index_col=0)
 
@@ -712,11 +705,12 @@ class Dust(pl.LightningDataModule):
             self.p_max = df['p'].max()
             self.log10_tau_cell_nu0_min = df['log10_tau_cell_nu0'].min()
             self.log10_tau_cell_nu0_max = df['log10_tau_cell_nu0'].max()
-        elif hasattr(self, "ml_step_filter_model") and os.path.exists("sim_results_pre-filter"):
+        elif hasattr(self, "ml_step_filter_model") and os.path.exists("sim_results_pre-filter.csv"):
             df = pd.read_csv("sim_results_pre-filter.csv", index_col=0)
 
             df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
 
+            features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
             finish_probability = 1 - self.ml_step_filter_model(self.ml_step_filter_x_scaler.transform(torch.tensor(df.loc[:,features].values, dtype=torch.float32))).detach().numpy().flatten()
 
             df = df[finish_probability > 0.999]
@@ -729,6 +723,13 @@ class Dust(pl.LightningDataModule):
                                           p_range=(self.p_min, self.p_max), 
                                           nu_range=(10.**self.log10_nu0_min*u.GHz, 10.**self.log10_nu0_max*u.GHz))
             df.to_csv("sim_results.csv")
+
+        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
+        targets = ["log10_nu0", "log10_T"] + \
+                  (["log10_amax"] if "log10_amax" in self.dims else []) + \
+                  (["p"] if "p" in self.dims else []) + \
+                  ([f"abundance{i}" for i in range(len(self.abundances))]) + \
+                  ["log10_tau_cell_nu0"]
 
         df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
 
