@@ -23,10 +23,31 @@ from .photons import PhotonList
 
 from torch.distributions.multivariate_normal import MultivariateNormal
 
+import torch
+from pytorch_lightning.plugins.io import TorchCheckpointIO
+from lightning_fabric.utilities.cloud_io import get_filesystem
+from typing import Any, Callable, Optional
+
+class CustomCheckpointIO(TorchCheckpointIO):
+    def save_checkpoint(self, checkpoint: dict, path: str, storage_options: Optional[Any] = None) -> None:
+        if storage_options is not None:
+            raise TypeError(
+                "`Trainer.save_checkpoint(..., storage_options=...)` with `storage_options` arg"
+                f" is not supported for `{self.__class__.__name__}`. Please implement your custom `CheckpointIO`"
+                " to define how you'd like to use `storage_options`."
+            )
+        # Override save_checkpoint to use a specific protocol
+        fs = get_filesystem(path)
+        fs.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(checkpoint, path, pickle_protocol=4)
+
 wp.config.quiet = True
 
+default_fiducial_values = {"amax": 1.0*u.mm, "p": 3.5}
+
 class Dust(pl.LightningDataModule):
-    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=300):
+    def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=300, 
+                 fiducial_values={}):
         """
         Initialize the Dust module with wavelength, absorption, and scattering coefficients.
 
@@ -95,6 +116,14 @@ class Dust(pl.LightningDataModule):
         else:
             self.samples = np.zeros((1,0))
         self.ndims = len(self.dims) + (len(self.abundances) - 1 if len(abundances) > 0 else 0)
+
+        self.fiducial_values = fiducial_values
+        for dim in self.dims:
+            if dim.replace("log10_","") not in self.fiducial_values:
+                if dim != "abundances":
+                    self.fiducial_values[dim.replace("log10_","")] = default_fiducial_values[dim.replace("log10_","")]
+                elif len(self.abundances) > 0:
+                    self.fiducial_values["abundances"] = np.ones(len(self.abundances)) / (len(self.abundances) + 1.)
 
         self.temperature = np.logspace(-1.,4.,ntemperatures)
         self.log_temperature = np.log10(self.temperature)
@@ -242,41 +271,6 @@ class Dust(pl.LightningDataModule):
         return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
                 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
-    def ml_albedo(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        if photon_list is not None:
-            p = wp.to_torch(photon_list.p)
-            amax = wp.to_torch(photon_list.amax)
-            if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-
-            if nu is None:
-                nu = wp.to_torch(photon_list.frequency)
-            else:
-                if nu.size(0) != p.size(0):
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-
-            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(nu),)
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
-
-        kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
-        ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
-
-        return ksca / (kabs + ksca)
-
     def absorb(self, temperature):
         nphotons = frequency.numpy().size
 
@@ -358,14 +352,14 @@ class Dust(pl.LightningDataModule):
     def random_nu_ml(self, p, amax, temperature, abundances=None):
         nphotons = temperature.size
         ksi = torch.rand(int(nphotons), dtype=torch.float32)
-        ksi = torch.arctanh(2*ksi - 1.)
+        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
 
         log10_amax = np.log10(amax)
 
         samples = ()
         for dim in self.dims:
             if dim == "abundances" and abundances is not None:
-                samples += [torch.tensor(a, dtype=torch.float32) for a in abundances]
+                samples += tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])
             else:
                 samples += (torch.tensor(eval(dim), dtype=torch.float32),)
         samples += (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)
@@ -394,6 +388,7 @@ class Dust(pl.LightningDataModule):
             
         nphotons = temperature.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
+        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
 
         if amax is not None:
             log10_amax = torch.log10(amax)
@@ -462,7 +457,7 @@ class Dust(pl.LightningDataModule):
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48),
             tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), 
-            nu_range=None, overwrite=False):
+            nu_range=None, overwrite=False, checkpoint=True, pickle_protocol=2):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -535,8 +530,21 @@ class Dust(pl.LightningDataModule):
 
         self.dustLM = DustLightningModule(getattr(self, model+"_model"))
 
-        self.trainer = pl.Trainer(max_epochs=0, callbacks=[pl.callbacks.ModelCheckpoint(save_last=True, 
-                                                                                        dirpath=f'{model}_lightning_logs')])
+        if checkpoint:
+            callbacks = [pl.callbacks.ModelCheckpoint(save_last=True, 
+                                                      dirpath=f'{model}_lightning_logs')]
+            if pickle_protocol >= 4:
+                plugins = [CustomCheckpointIO()]
+            else:
+                plugins = None
+        else:
+            callbacks = None
+            plugins = None
+
+        self.trainer = pl.Trainer(max_epochs=0,
+                                  enable_checkpointing=checkpoint,
+                                  callbacks=callbacks,
+                                  plugins=plugins)
 
     def fit(self, epochs=10, batch_size=100, num_workers=1, ckpt_path=None):
         '''
@@ -665,7 +673,10 @@ class Dust(pl.LightningDataModule):
         samples = np.concat((samples, np.expand_dims(np.repeat(np.expand_dims(np.log10(self.nu.to(u.GHz).value), axis=0), max(samples.shape[1], 1), axis=0), axis=0)), axis=0)
         samples = samples.reshape((samples.shape[0], -1)).T
 
-        targets = np.log10(getattr(self, model).flatten())
+        if model == "g":
+            targets = getattr(self, model).flatten()
+        else:
+            targets = np.log10(getattr(self, model).flatten())
 
         return samples, targets
 
@@ -1175,6 +1186,7 @@ class Dust(pl.LightningDataModule):
                 "abundances": self.abundances,
                 "kabs": self.kabs*self.kmean,
                 "ksca": self.ksca*self.kmean,
+                "fiducial_values": self.fiducial_values,
             },
         }
 
@@ -1242,7 +1254,8 @@ class IsotropicDust(Dust):
 
 
 class HenyeyGreensteinDust(Dust):
-    def __init__(self, lam=None, kabs=None, ksca=None, g=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=1000):
+    def __init__(self, lam=None, kabs=None, ksca=None, g=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=1000, 
+                 fiducial_values={}):
         """
         Initialize the Henyey-Greenstein dust model.
 
@@ -1264,7 +1277,7 @@ class HenyeyGreensteinDust(Dust):
             The device to place the dust properties on ("cpu" or "cuda").
         """
         super().__init__(lam=lam, kabs=kabs, ksca=ksca, amax=amax, p=p, abundances=abundances, device=device, 
-                         ntemperatures=ntemperatures)
+                         ntemperatures=ntemperatures, fiducial_values=fiducial_values)
 
         self.g = g
 
@@ -1445,7 +1458,7 @@ class HenyeyGreensteinDust(Dust):
 
 class GeneralDust(Dust):
     def __init__(self, lam=None, kabs=None, ksca=None, scattering_phase_function=None, theta=None, amax=None, 
-                 p=None, abundances=(), device="cpu", ntemperatures=1000):
+                 p=None, abundances=(), device="cpu", ntemperatures=1000, fiducial_values={}):
         """
         Initialize the General dust model.
 
@@ -1469,7 +1482,7 @@ class GeneralDust(Dust):
             The device to place the dust properties on ("cpu" or "cuda").
         """
         super().__init__(lam=lam, kabs=kabs, ksca=ksca, amax=amax, p=p, abundances=abundances, device=device, 
-                         ntemperatures=ntemperatures)
+                         ntemperatures=ntemperatures, fiducial_values=fiducial_values)
 
         # Ensure that the scattering phase function is normalized for each combination of p, amax, and nu.
 
@@ -1502,7 +1515,7 @@ class GeneralDust(Dust):
             
         nphotons = iphotons.size(0)
         ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.arctanh(2*ksi - 1.)
+        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
 
         if amax is not None:
             log10_amax = torch.log10(amax)

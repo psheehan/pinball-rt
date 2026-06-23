@@ -13,30 +13,41 @@ import os
 import pytest
 
 test_data = [
-    (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, 98.0),
-    (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, 93.0),
-    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, 73.0),
+    (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0),
+    (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0),
+    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "iso", 73.0),
 ]
 
-@pytest.mark.parametrize("grid_class,grid_kwargs,percentile", test_data)
-def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
+@pytest.mark.parametrize("grid_class,grid_kwargs,dust,percentile", test_data)
+def test_E2E(grid_class, grid_kwargs, dust, percentile, return_vals=False):
     """
     Test the end-to-end functionality of the UniformCartesianGrid model running all the way through.
     """
 
     # Set up the dust.
 
-    d = os.path.join(os.path.dirname(__file__), "data/diana_wice.dst")
+    d = os.path.join(os.path.dirname(__file__), f"data/diana.{dust}.dst")
 
     # Set up the grid.
     model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
 
     density = np.ones(model.grid.shape)*1.0e-14 * u.g / u.cm**3
-    amax = np.ones(model.grid.shape) * u.cm
+    
     if isinstance(model.grid, UniformCartesianGrid):
+        amax = np.ones(model.grid.shape) * u.cm
         amax[4, 4, 4] = 1.0 * u.micron
-    else:
-        amax[0, :, :] = 1.0 * u.micron
+        abundances = (0.15,)
+        p = None
+    elif isinstance(model.grid, UniformSphericalGrid):
+        amax = None
+        abundances = (np.ones(model.grid.shape) * 0.15,)
+        abundances[0][0, :, :] = 0.5
+        p = 3.75
+    elif isinstance(model.grid, LogUniformSphericalGrid):
+        amax = 1.0 * u.cm
+        abundances = ()
+        p = np.ones(model.grid.shape) * 3.5
+        p[0, :, :] = 3.75
 
     if isinstance(model.grid, UniformCartesianGrid):
         vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
@@ -48,7 +59,8 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
                                  np.zeros(model.grid.grid.n3), indexing='ij')
     velocity = np.concatenate((vx[np.newaxis], vy[np.newaxis], vz[np.newaxis]), axis=0) * (-1.0 * u.km / u.s)
 
-    model.set_physical_properties(density=density, dust=d, amax=amax, p=3.5, gases=[os.path.join(os.path.dirname(__file__), "data/co.dat")], 
+    model.set_physical_properties(density=density, dust=d, amax=amax, p=p, dust_abundances=abundances,
+                                  gases=[os.path.join(os.path.dirname(__file__), "data/co.dat")], 
                                   abundances=[1.0e-4], microturbulence=0.2 * u.km / u.s, velocity=velocity)
     model.add_sources([BlackbodyStar(),
                        DiffuseSource(model.grid, lambda nu: 4*np.pi**2 * u.steradian * (0.035*u.R_sun)**2 * models.BlackBody(2000.*u.K)(nu), 10.*u.au**-3),
@@ -64,7 +76,7 @@ def test_E2E(grid_class, grid_kwargs, percentile, return_vals=False):
     g.set_properties_from_lambda('co.dat')
 
     cube = model.make_image(npix=256, pixel_size=0.2*u.arcsec, channels=np.linspace(-20., 20., 300)*u.km/u.s, rest_frequency=g.nu[2], 
-                            incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device='cpu')
+                            incl=45.*u.degree, pa=45.*u.degree, distance=1.*u.pc, include_dust=False, device='cpu', include_sources=False)
     mom0 = cube.sum(dim='lam')
 
     # Do the checks.
@@ -99,7 +111,7 @@ def update_test(test, grid_class):
     if not found:
         raise ValueError(f"Grid class {grid_class} not found in test data. Please add it to the test_data list in test_E2E.py.")
     
-    temperature, scattering, image, mom0 = test(grid_class, data[1], data[2], return_vals=True)
+    temperature, scattering, image, mom0 = test(grid_class, data[1], data[2], data[3], return_vals=True)
 
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_temperature.npz"), temperature=temperature)
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_scattering.npz"), scattering=scattering)
