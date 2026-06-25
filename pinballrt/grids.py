@@ -422,12 +422,10 @@ class Grid:
 
         photon_list.absorb[ip] = wp.randf(rng) > photon_list.albedo[ip]
 
-    def interact(self, photon_list: PhotonList, iabsorb, nabsorb, interact, iphotons, scattering=False, learning=False):
-        nphotons = iphotons.size(0)
-
+    def interact(self, photon_list: PhotonList, iabsorb, nabsorb, iinteract, ninteract, scattering=False, learning=False):
         wp.launch(kernel=self.random_direction,
-                  dim=(nphotons,),
-                  inputs=[photon_list.direction, iphotons, np.random.randint(0, 100000)])
+                  dim=(ninteract,),
+                  inputs=[photon_list.direction, iinteract, np.random.randint(0, 100000)])
 
         t1 = time.time()
         if not scattering and nabsorb > 0:
@@ -444,21 +442,21 @@ class Grid:
         absorb_random_nu_time = t2 - t1
     
         seed = np.random.randint(0, 100000)
-        wp.launch(kernel=self.random_tau, dim=(nphotons,), inputs=[photon_list, iphotons, seed])
+        wp.launch(kernel=self.random_tau, dim=(ninteract,), inputs=[photon_list, iinteract, seed])
         if not scattering:
             seed = np.random.randint(0, 100000)
-            wp.launch(kernel=self.random_absorb, dim=(nphotons,), inputs=[photon_list, iphotons, seed])
+            wp.launch(kernel=self.random_absorb, dim=(ninteract,), inputs=[photon_list, iinteract, seed])
 
         t1 = time.time()
         wp.launch(kernel=self.photon_loc,
-                  dim=(interact.sum(),),
-                  inputs=[photon_list, self.grid, iphotons])
+                  dim=(ninteract,),
+                  inputs=[photon_list, self.grid, iinteract])
         t2 = time.time()
         photon_loc_time = t2 - t1
 
         wp.launch(kernel=self.check_in_grid,
-                  dim=(nphotons,),
-                  inputs=[photon_list, self.grid, iphotons])
+                  dim=(ninteract,),
+                  inputs=[photon_list, self.grid, iinteract])
 
         return photon_loc_time, absorb_random_nu_time
 
@@ -623,6 +621,18 @@ class Grid:
             idx = wp.atomic_add(n_random_nu_updates, 0, 1)
             random_nu_update_indices[idx] = ip
 
+    @wp.kernel
+    def collect_interaction_indices(photon_list: PhotonList,
+                                    iphotons: wp.array(dtype=int),
+                                    interaction_indices: wp.array(dtype=int),
+                                    n_interactions: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = iphotons[i]
+
+        if photon_list.in_grid[ip] and photon_list.tau[ip] <= 1e-5:
+            idx = wp.atomic_add(n_interactions, 0, 1)
+            interaction_indices[idx] = ip
+
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
                           progress=True):
         with wp.ScopedDevice(self.device):
@@ -665,6 +675,8 @@ class Grid:
             n_opacity_updates = wp.zeros(1, dtype=int)
             random_nu_update_indices = wp.zeros(nphotons, dtype=int)
             n_random_nu_updates = wp.zeros(1, dtype=int)
+            interaction_indices = wp.zeros(nphotons, dtype=int)
+            n_interactions = wp.zeros(1, dtype=int)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
@@ -702,15 +714,14 @@ class Grid:
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
-            wp.launch(kernel=self.random_absorb, 
-                      dim=(nphotons,), 
+            wp.launch(kernel=self.random_absorb,
+                      dim=(nphotons,),
                       inputs=[photon_list, iphotons, np.random.randint(0, 100000)])
 
             count = 0
             nphotons_done = 0
             start_time = time.time()
             while nphotons > 0 and time.time() - start_time < time_limit:
-                #print(nphotons)
                 count += 1
 
                 t1 = time.time()
@@ -776,8 +787,8 @@ class Grid:
                 deposit_energy_time += t2 - t1
 
                 wp.launch(kernel=self.reduce_tau,
-                           dim=(nphotons,),
-                           inputs=[photon_list, s, iphotons])
+                          dim=(nphotons,),
+                          inputs=[photon_list, s, iphotons])
 
                 # Before we update the locations, we should rotate the direction vector of the ml photons to the new direction after the ml
 
@@ -797,7 +808,7 @@ class Grid:
                           inputs=[photon_list, self.grid, iphotons])
                 t2 = time.time()
                 photon_loc_time += t2 - t1
-                    
+
                 t1 = time.time()
                 wp.launch(kernel=self.check_in_grid,
                           dim=(nphotons,),
@@ -817,6 +828,15 @@ class Grid:
                 t1 = time.time()
                 wp.launch(kernel=self.reset_counter,
                           dim=(1,),
+                          inputs=[n_interactions])
+                wp.launch(kernel=self.collect_interaction_indices,
+                          dim=(nphotons,),
+                          inputs=[photon_list, iphotons, interaction_indices, n_interactions])
+                n_interactions_torch = wp.to_torch(n_interactions)
+                n_interactions_value = int(n_interactions_torch[0].item())
+
+                wp.launch(kernel=self.reset_counter,
+                          dim=(1,),
                           inputs=[n_random_nu_updates])
                 wp.launch(kernel=self.collect_random_nu_update_indices,
                           dim=(nphotons,),
@@ -824,20 +844,17 @@ class Grid:
                 n_random_nu_updates_torch = wp.to_torch(n_random_nu_updates)
                 n_random_nu_updates_value = int(n_random_nu_updates_torch[0].item())
 
-                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, wp.to_torch(photon_list.in_grid))
-                interaction_indices = iphotons_original[interaction]
                 tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(
                     photon_list,
                     random_nu_update_indices,
                     n_random_nu_updates_value,
-                    interaction,
                     interaction_indices,
+                    n_interactions_value,
                     learning=learning,
                 )
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 absorb_random_nu_time += tmp_absorb_random_nu_time
-                #absorb_time += tmp_time
                 photon_loc_time += tmp_photon_loc_time
 
                 t1 = time.time()
@@ -959,6 +976,8 @@ class Grid:
             photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
             opacity_update_indices = wp.zeros(nphotons, dtype=int)
             n_opacity_updates = wp.zeros(1, dtype=int)
+            interaction_indices = wp.zeros(nphotons, dtype=int)
+            n_interactions = wp.zeros(1, dtype=int)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
@@ -1043,11 +1062,22 @@ class Grid:
                 removing_photons_time += t2 - t1
 
                 t1 = time.time()
-                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, wp.to_torch(photon_list.in_grid))
-                interaction_indices = iphotons_original[interaction]
-                absorb = torch.logical_and(interaction, wp.to_torch(photon_list.absorb))
-                absorb_indices = iphotons_original[absorb]
-                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, scattering=True)
+                wp.launch(kernel=self.reset_counter,
+                          dim=(1,),
+                          inputs=[n_interactions])
+                wp.launch(kernel=self.collect_interaction_indices,
+                          dim=(nphotons,),
+                          inputs=[photon_list, iphotons, interaction_indices, n_interactions])
+                n_interactions_torch = wp.to_torch(n_interactions)
+                n_interactions_value = int(n_interactions_torch[0].item())
+                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(
+                    photon_list,
+                    interaction_indices,
+                    0,
+                    interaction_indices,
+                    n_interactions_value,
+                    scattering=True,
+                )
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 #absorb_time += tmp_time
