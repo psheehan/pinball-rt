@@ -422,7 +422,7 @@ class Grid:
 
         photon_list.absorb[ip] = wp.randf(rng) > photon_list.albedo[ip]
 
-    def interact(self, photon_list: PhotonList, absorb, iabsorb, interact, iphotons, scattering=False, learning=False):
+    def interact(self, photon_list: PhotonList, iabsorb, nabsorb, interact, iphotons, scattering=False, learning=False):
         nphotons = iphotons.size(0)
 
         wp.launch(kernel=self.random_direction,
@@ -430,9 +430,12 @@ class Grid:
                   inputs=[photon_list.direction, iphotons, np.random.randint(0, 100000)])
 
         t1 = time.time()
-        nabsorb = iabsorb.size(0)
         if not scattering and nabsorb > 0:
-            new_frequency = self.dust.random_nu(photon_list, subset=absorb)
+            new_frequency = self.dust.random_nu(
+                photon_list,
+                opacity_update_indices=iabsorb,
+                n_cached_samples=nabsorb,
+            )
             
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
@@ -608,6 +611,18 @@ class Grid:
             idx = wp.atomic_add(n_opacity_updates, 0, 1)
             opacity_update_indices[idx] = ip
 
+    @wp.kernel
+    def collect_random_nu_update_indices(photon_list: PhotonList,
+                                         iphotons: wp.array(dtype=int),
+                                         random_nu_update_indices: wp.array(dtype=int),
+                                         n_random_nu_updates: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = iphotons[i]
+
+        if photon_list.in_grid[ip] and photon_list.tau[ip] <= 1e-5 and photon_list.absorb[ip]:
+            idx = wp.atomic_add(n_random_nu_updates, 0, 1)
+            random_nu_update_indices[idx] = ip
+
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
                           progress=True):
         with wp.ScopedDevice(self.device):
@@ -644,10 +659,12 @@ class Grid:
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
             photon_list.opacities_out_of_date = wp.ones(nphotons, dtype=bool)
 
-            n_features = self.dust.ndims + 1
+            n_features = self.dust.ndims + 2
             photon_list.ml_opacity_features = wp.zeros((nphotons, n_features), dtype=float)
             opacity_update_indices = wp.zeros(nphotons, dtype=int)
             n_opacity_updates = wp.zeros(1, dtype=int)
+            random_nu_update_indices = wp.zeros(nphotons, dtype=int)
+            n_random_nu_updates = wp.zeros(1, dtype=int)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
@@ -798,11 +815,25 @@ class Grid:
                 removing_photons_time += t2 - t1
 
                 t1 = time.time()
+                wp.launch(kernel=self.reset_counter,
+                          dim=(1,),
+                          inputs=[n_random_nu_updates])
+                wp.launch(kernel=self.collect_random_nu_update_indices,
+                          dim=(nphotons,),
+                          inputs=[photon_list, iphotons, random_nu_update_indices, n_random_nu_updates])
+                n_random_nu_updates_torch = wp.to_torch(n_random_nu_updates)
+                n_random_nu_updates_value = int(n_random_nu_updates_torch[0].item())
+
                 interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, wp.to_torch(photon_list.in_grid))
                 interaction_indices = iphotons_original[interaction]
-                absorb = torch.logical_and(interaction, wp.to_torch(photon_list.absorb))
-                absorb_indices = iphotons_original[absorb]
-                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, learning=learning)
+                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(
+                    photon_list,
+                    random_nu_update_indices,
+                    n_random_nu_updates_value,
+                    interaction,
+                    interaction_indices,
+                    learning=learning,
+                )
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 absorb_random_nu_time += tmp_absorb_random_nu_time
