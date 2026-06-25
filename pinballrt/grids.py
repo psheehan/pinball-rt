@@ -633,6 +633,35 @@ class Grid:
             idx = wp.atomic_add(n_interactions, 0, 1)
             interaction_indices[idx] = ip
 
+    @wp.kernel
+    def fill_identity_indices(indices: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        indices[i] = i
+
+    @wp.kernel
+    def collect_active_photon_indices(photon_list: PhotonList,
+                                      input_indices: wp.array(dtype=int),
+                                      active_indices: wp.array(dtype=int),
+                                      n_active: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = input_indices[i]
+
+        if photon_list.in_grid[ip]:
+            idx = wp.atomic_add(n_active, 0, 1)
+            active_indices[idx] = ip
+
+    @wp.kernel
+    def collect_active_scattering_photon_indices(photon_list: PhotonList,
+                                                 input_indices: wp.array(dtype=int),
+                                                 active_indices: wp.array(dtype=int),
+                                                 n_active: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = input_indices[i]
+
+        if photon_list.in_grid[ip] and photon_list.total_tau_abs[ip] < 30.0:
+            idx = wp.atomic_add(n_active, 0, 1)
+            active_indices[idx] = ip
+
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
                           progress=True):
         with wp.ScopedDevice(self.device):
@@ -677,19 +706,31 @@ class Grid:
             n_random_nu_updates = wp.zeros(1, dtype=int)
             interaction_indices = wp.zeros(nphotons, dtype=int)
             n_interactions = wp.zeros(1, dtype=int)
+            n_active_photons = wp.zeros(1, dtype=int)
+            active_photon_indices = wp.zeros(nphotons, dtype=int)
+            next_active_photon_indices = wp.zeros(nphotons, dtype=int)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
-            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
-            nphotons = iphotons.size(0)
+            wp.launch(kernel=self.fill_identity_indices,
+                      dim=(nphotons,),
+                      inputs=[active_photon_indices])
+            iphotons = active_photon_indices
 
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
                       inputs=[photon_list, self.grid, iphotons])
-            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
-            nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-            nphotons = iphotons.size(0)
+            wp.launch(kernel=self.reset_counter,
+                      dim=(1,),
+                      inputs=[n_active_photons])
+            wp.launch(kernel=self.collect_active_photon_indices,
+                      dim=(nphotons,),
+                      inputs=[photon_list, iphotons, next_active_photon_indices, n_active_photons])
+            n_active_photons_torch = wp.to_torch(n_active_photons)
+            nphotons = int(n_active_photons_torch[0].item())
+            iphotons, next_active_photon_indices = next_active_photon_indices, iphotons
+            nphotons_done = iphotons_original.size(0) - nphotons
 
             t1 = time.time()
             wp.launch(kernel=self.reset_counter,
@@ -817,11 +858,18 @@ class Grid:
                 in_grid_time += t2 - t1
 
                 t1 = time.time()
-                iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+                wp.launch(kernel=self.reset_counter,
+                          dim=(1,),
+                          inputs=[n_active_photons])
+                wp.launch(kernel=self.collect_active_photon_indices,
+                          dim=(nphotons,),
+                          inputs=[photon_list, iphotons, next_active_photon_indices, n_active_photons])
+                n_active_photons_torch = wp.to_torch(n_active_photons)
+                nphotons = int(n_active_photons_torch[0].item())
+                iphotons, next_active_photon_indices = next_active_photon_indices, iphotons
                 if progress:
-                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
-                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-                nphotons = iphotons.size(0)
+                    progress_bar.update(iphotons_original.size(0) - nphotons - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - nphotons
                 t2 = time.time()
                 removing_photons_time += t2 - t1
 
@@ -858,11 +906,18 @@ class Grid:
                 photon_loc_time += tmp_photon_loc_time
 
                 t1 = time.time()
-                iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+                wp.launch(kernel=self.reset_counter,
+                          dim=(1,),
+                          inputs=[n_active_photons])
+                wp.launch(kernel=self.collect_active_photon_indices,
+                          dim=(nphotons,),
+                          inputs=[photon_list, iphotons, next_active_photon_indices, n_active_photons])
+                n_active_photons_torch = wp.to_torch(n_active_photons)
+                nphotons = int(n_active_photons_torch[0].item())
+                iphotons, next_active_photon_indices = next_active_photon_indices, iphotons
                 if progress:
-                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
-                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-                nphotons = iphotons.size(0)
+                    progress_bar.update(iphotons_original.size(0) - nphotons - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - nphotons
                 t2 = time.time()
                 removing_photons_time += t2 - t1
 
@@ -978,19 +1033,31 @@ class Grid:
             n_opacity_updates = wp.zeros(1, dtype=int)
             interaction_indices = wp.zeros(nphotons, dtype=int)
             n_interactions = wp.zeros(1, dtype=int)
+            n_active_photons = wp.zeros(1, dtype=int)
+            active_photon_indices = wp.zeros(nphotons, dtype=int)
+            next_active_photon_indices = wp.zeros(nphotons, dtype=int)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
-            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
-            nphotons = iphotons.size(0)
+            wp.launch(kernel=self.fill_identity_indices,
+                      dim=(nphotons,),
+                      inputs=[active_photon_indices])
+            iphotons = active_photon_indices
 
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
                       inputs=[photon_list, self.grid, iphotons])
-            iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
-            nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-            nphotons = iphotons.size(0)
+            wp.launch(kernel=self.reset_counter,
+                      dim=(1,),
+                      inputs=[n_active_photons])
+            wp.launch(kernel=self.collect_active_scattering_photon_indices,
+                      dim=(nphotons,),
+                      inputs=[photon_list, iphotons, next_active_photon_indices, n_active_photons])
+            n_active_photons_torch = wp.to_torch(n_active_photons)
+            nphotons = int(n_active_photons_torch[0].item())
+            iphotons, next_active_photon_indices = next_active_photon_indices, iphotons
+            nphotons_done = iphotons_original.size(0) - nphotons
 
             t1 = time.time()
             wp.launch(kernel=self.update_photon_opacities, 
@@ -1053,11 +1120,18 @@ class Grid:
                 in_grid_time += t2 - t1
 
                 t1 = time.time()
-                iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
+                wp.launch(kernel=self.reset_counter,
+                          dim=(1,),
+                          inputs=[n_active_photons])
+                wp.launch(kernel=self.collect_active_scattering_photon_indices,
+                          dim=(nphotons,),
+                          inputs=[photon_list, iphotons, next_active_photon_indices, n_active_photons])
+                n_active_photons_torch = wp.to_torch(n_active_photons)
+                nphotons = int(n_active_photons_torch[0].item())
+                iphotons, next_active_photon_indices = next_active_photon_indices, iphotons
                 if progress:
-                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
-                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-                nphotons = iphotons.size(0)
+                    progress_bar.update(iphotons_original.size(0) - nphotons - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - nphotons
                 t2 = time.time()
                 removing_photons_time += t2 - t1
 
@@ -1083,11 +1157,18 @@ class Grid:
                 #absorb_time += tmp_time
 
                 t1 = time.time()
-                iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
+                wp.launch(kernel=self.reset_counter,
+                          dim=(1,),
+                          inputs=[n_active_photons])
+                wp.launch(kernel=self.collect_active_scattering_photon_indices,
+                          dim=(nphotons,),
+                          inputs=[photon_list, iphotons, next_active_photon_indices, n_active_photons])
+                n_active_photons_torch = wp.to_torch(n_active_photons)
+                nphotons = int(n_active_photons_torch[0].item())
+                iphotons, next_active_photon_indices = next_active_photon_indices, iphotons
                 if progress:
-                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
-                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-                nphotons = iphotons.size(0)
+                    progress_bar.update(iphotons_original.size(0) - nphotons - nphotons_done)
+                nphotons_done = iphotons_original.size(0) - nphotons
                 t2 = time.time()
                 removing_photons_time += t2 - t1
 
