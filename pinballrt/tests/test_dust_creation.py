@@ -150,3 +150,127 @@ def test_dust_pickle():
              p=p)
 
     result = dill.loads(dill.dumps(d))
+
+
+@pytest.mark.parametrize(
+    ("include_p", "include_amax", "expected_n_features"),
+    [
+        pytest.param(False, False, 1, id="frequency-only"),
+        pytest.param(True, False, 2, id="p-only"),
+        pytest.param(False, True, 2, id="amax-only"),
+        pytest.param(True, True, 3, id="p-and-amax"),
+    ],
+)
+def test_ml_opacity_feature_cache(include_p, include_amax, expected_n_features):
+    """Test that cached ML opacity features only include active Dust dims plus frequency."""
+    import torch
+    import warp as wp
+    from pinballrt.photons import PhotonList
+
+    wavelengths = np.logspace(-1, 4, 10) * u.micron
+    p_vals = np.array([3.0, 3.2, 3.4, 3.6], dtype=np.float32)
+    amax_vals = np.array([1e-4, 5e-4, 1e-3, 5e-3], dtype=np.float32) * u.cm
+    nu_vals = np.array([1e10, 1e11, 1e12, 1e13], dtype=np.float32)
+
+    kappa_abs = np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+    kappa_scat = 0.5 * np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+
+    d = Dust(lam=wavelengths,
+             amax=amax_vals if include_amax else None,
+             p=p_vals if include_p else None,
+             abundances=(),
+             kabs=kappa_abs,
+             ksca=kappa_scat)
+
+    assert d.ndims + 1 == expected_n_features
+
+    p_torch = torch.tensor(p_vals, dtype=torch.float32) if include_p else None
+    amax_torch = torch.tensor(amax_vals.value, dtype=torch.float32) if include_amax else None
+    nu_torch = torch.tensor(nu_vals, dtype=torch.float32)
+
+    samples_builtin = d._get_ml_opacity_samples(p=p_torch, amax=amax_torch, nu=nu_torch, abundances=None)
+    assert samples_builtin.shape == (p_vals.size, expected_n_features)
+
+    photon_list = PhotonList()
+    photon_list.p = wp.array(p_vals, dtype=float)
+    photon_list.amax = wp.array(amax_vals.value, dtype=float)
+    photon_list.frequency = wp.array(nu_vals, dtype=float)
+    photon_list.dust_abundances = wp.zeros((p_vals.size, 0), dtype=float)
+
+    features_np = np.zeros((p_vals.size, expected_n_features), dtype=np.float32)
+    feature_idx = 0
+    if include_p:
+        features_np[:, feature_idx] = p_vals
+        feature_idx += 1
+    if include_amax:
+        features_np[:, feature_idx] = np.log10(amax_vals.value)
+        feature_idx += 1
+    features_np[:, feature_idx] = np.log10(nu_vals)
+
+    photon_list.ml_opacity_features = wp.from_torch(torch.tensor(features_np, dtype=torch.float32))
+
+    samples_cached = d._get_ml_opacity_samples(photon_list=photon_list)
+    assert samples_cached.shape == (p_vals.size, expected_n_features)
+    assert torch.allclose(samples_builtin, samples_cached, rtol=1e-5)
+
+
+def test_ml_opacity_equivalence():
+    """
+    Test that ml_kabs returns same values using cached vs non-cached paths.
+    """
+    import torch
+    from pinballrt.photons import PhotonList
+    import warp as wp
+    
+    wavelengths = np.logspace(-1, 4, 10) * u.micron
+    p_vals = np.array([3.0, 3.5, 4.0])
+    amax_vals = np.array([1e-4, 1e-3, 1e-2]) * u.cm
+    
+    kappa_abs = np.ones((3, 10)) * u.cm**2 / u.g
+    kappa_scat = 0.5 * np.ones((3, 10)) * u.cm**2 / u.g
+    
+    d = Dust(lam=wavelengths, 
+             amax=amax_vals, 
+             p=p_vals, 
+             abundances=(),
+             kabs=kappa_abs, 
+             ksca=kappa_scat)
+    
+    # Train a simple model so ml_kabs is available
+    d.learn(model="kabs", overwrite=True, nsamples=100, hidden_units=(16, 16))
+    d.fit(epochs=2, batch_size=50)
+    
+    # Create a photon list without cache
+    photon_list_no_cache = PhotonList()
+    nphotons = 5
+    photon_list_no_cache.p = wp.array(np.array([3.0, 3.2, 3.4, 3.6, 3.8]), dtype=float)
+    photon_list_no_cache.amax = wp.array(np.array([1e-4, 5e-4, 1e-3, 5e-3, 1e-2]), dtype=float)
+    photon_list_no_cache.frequency = wp.array(np.array([1e10, 1e11, 1e12, 1e13, 1e14]), dtype=float)
+    photon_list_no_cache.dust_abundances = wp.zeros((nphotons, 0), dtype=float)
+    
+    # Call ml_kabs without cache
+    kabs_no_cache = d.ml_kabs(photon_list=photon_list_no_cache)
+    
+    # Create photon list with cache
+    photon_list_with_cache = PhotonList()
+    photon_list_with_cache.p = wp.array(np.array([3.0, 3.2, 3.4, 3.6, 3.8]), dtype=float)
+    photon_list_with_cache.amax = wp.array(np.array([1e-4, 5e-4, 1e-3, 5e-3, 1e-2]), dtype=float)
+    photon_list_with_cache.frequency = wp.array(np.array([1e10, 1e11, 1e12, 1e13, 1e14]), dtype=float)
+    photon_list_with_cache.dust_abundances = wp.zeros((nphotons, 0), dtype=float)
+    
+    # Fill cache
+    n_features = d.ndims + 1
+    photon_list_with_cache.ml_opacity_features = wp.zeros((nphotons, n_features), dtype=float)
+    features_np = np.zeros((nphotons, n_features))
+    features_np[:, 0] = np.array([3.0, 3.2, 3.4, 3.6, 3.8])
+    features_np[:, 1] = np.log10(np.array([1e-4, 5e-4, 1e-3, 5e-3, 1e-2]))
+    features_np[:, 2] = np.log10(np.array([1e10, 1e11, 1e12, 1e13, 1e14]))
+    photon_list_with_cache.ml_opacity_features = wp.from_torch(torch.tensor(features_np, dtype=torch.float32))
+    
+    # Call ml_kabs with cache
+    kabs_with_cache = d.ml_kabs(photon_list=photon_list_with_cache)
+    
+    # Results should match
+    assert torch.allclose(kabs_no_cache, kabs_with_cache, rtol=1e-5), \
+        f"ml_kabs outputs differ: no_cache={kabs_no_cache}, with_cache={kabs_with_cache}"
+

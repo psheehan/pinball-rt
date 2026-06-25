@@ -370,6 +370,7 @@ class Grid:
         if updated_dust_properties:
             photon_list.opacities_out_of_date[ip] = True
 
+
     @wp.kernel
     def update_frequency(photon_list: PhotonList,
                          frequency: wp.array(dtype=float),
@@ -380,6 +381,7 @@ class Grid:
 
         photon_list.frequency[ip] = frequency[i]
         photon_list.opacities_out_of_date[ip] = True
+
 
     @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
@@ -590,6 +592,22 @@ class Grid:
 
         photon_list.opacities_out_of_date[ip] = False
 
+    @wp.kernel
+    def reset_counter(counter: wp.array(dtype=int)): # pragma: no cover
+        counter[0] = 0
+
+    @wp.kernel
+    def collect_opacity_update_indices(photon_list: PhotonList,
+                                       iphotons: wp.array(dtype=int),
+                                       opacity_update_indices: wp.array(dtype=int),
+                                       n_opacity_updates: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = iphotons[i]
+
+        if photon_list.in_grid[ip] and photon_list.opacities_out_of_date[ip]:
+            idx = wp.atomic_add(n_opacity_updates, 0, 1)
+            opacity_update_indices[idx] = ip
+
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
                           progress=True):
         with wp.ScopedDevice(self.device):
@@ -624,7 +642,12 @@ class Grid:
             photon_list.ksca = wp.zeros(nphotons, dtype=float)
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
-            photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
+            photon_list.opacities_out_of_date = wp.ones(nphotons, dtype=bool)
+
+            n_features = self.dust.ndims + 1
+            photon_list.ml_opacity_features = wp.zeros((nphotons, n_features), dtype=float)
+            opacity_update_indices = wp.zeros(nphotons, dtype=int)
+            n_opacity_updates = wp.zeros(1, dtype=int)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
@@ -640,12 +663,25 @@ class Grid:
             nphotons = iphotons.size(0)
 
             t1 = time.time()
-            wp.launch(kernel=self.set_photon_opacities,
+            wp.launch(kernel=self.reset_counter,
+                      dim=(1,),
+                      inputs=[n_opacity_updates])
+            wp.launch(kernel=self.collect_opacity_update_indices,
                       dim=(nphotons,),
-                      inputs=[photon_list, 
-                              wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
-                              wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
-                              iphotons])
+                      inputs=[photon_list, iphotons, opacity_update_indices, n_opacity_updates])
+            n_opacity_updates_torch = wp.to_torch(n_opacity_updates)
+            n_opacity_updates_value = int(n_opacity_updates_torch[0].item())
+            if n_opacity_updates_value > 0:
+                wp.launch(kernel=self.set_photon_opacities,
+                          dim=(n_opacity_updates_value,),
+                          inputs=[photon_list,
+                                  wp.from_torch(self.dust.ml_kabs(photon_list=photon_list,
+                                                                  opacity_update_indices=opacity_update_indices,
+                                                                  n_cached_samples=n_opacity_updates_value)),
+                                  wp.from_torch(self.dust.ml_ksca(photon_list=photon_list,
+                                                                  opacity_update_indices=opacity_update_indices,
+                                                                  n_cached_samples=n_opacity_updates_value)),
+                                  opacity_update_indices])
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
@@ -787,16 +823,27 @@ class Grid:
                         wp.launch(kernel=self.photon_cell_properties,
                                   dim=(nphotons,),
                                   inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
-                    
+
                     t1 = time.time()
-                    iphotons_opacities = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), 
-                                                                             wp.to_torch(photon_list.opacities_out_of_date))]
-                    wp.launch(kernel=self.set_photon_opacities,
-                            dim=(iphotons_opacities.size(0),),
-                            inputs=[photon_list, 
-                                    wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons_opacities)),
-                                    wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons_opacities)),
-                                    iphotons_opacities])
+                    wp.launch(kernel=self.reset_counter,
+                              dim=(1,),
+                              inputs=[n_opacity_updates])
+                    wp.launch(kernel=self.collect_opacity_update_indices,
+                              dim=(nphotons,),
+                              inputs=[photon_list, iphotons, opacity_update_indices, n_opacity_updates])
+                    n_opacity_updates_torch = wp.to_torch(n_opacity_updates)
+                    n_opacity_updates_value = int(n_opacity_updates_torch[0].item())
+                    if n_opacity_updates_value > 0:
+                        wp.launch(kernel=self.set_photon_opacities,
+                                  dim=(n_opacity_updates_value,),
+                                  inputs=[photon_list,
+                                          wp.from_torch(self.dust.ml_kabs(photon_list=photon_list,
+                                                                          opacity_update_indices=opacity_update_indices,
+                                                                          n_cached_samples=n_opacity_updates_value)),
+                                          wp.from_torch(self.dust.ml_ksca(photon_list=photon_list,
+                                                                          opacity_update_indices=opacity_update_indices,
+                                                                          n_cached_samples=n_opacity_updates_value)),
+                                          opacity_update_indices])
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 
@@ -879,6 +926,8 @@ class Grid:
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
             photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
+            opacity_update_indices = wp.zeros(nphotons, dtype=int)
+            n_opacity_updates = wp.zeros(1, dtype=int)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
@@ -984,14 +1033,21 @@ class Grid:
                 if nphotons > 0:
                     wp.launch(kernel=self.photon_cell_properties,
                               dim=(nphotons,),
-                              inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
+                                  inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
                     
                     t1 = time.time()
-                    iphotons_opacities = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), 
-                                                                             wp.to_torch(photon_list.opacities_out_of_date))]
-                    wp.launch(kernel=self.update_photon_opacities, 
-                            dim=(iphotons_opacities.size(0),),
-                            inputs=[photon_list, self.grid, inu, iphotons_opacities])
+                    wp.launch(kernel=self.reset_counter,
+                              dim=(1,),
+                              inputs=[n_opacity_updates])
+                    wp.launch(kernel=self.collect_opacity_update_indices,
+                              dim=(nphotons,),
+                              inputs=[photon_list, iphotons, opacity_update_indices, n_opacity_updates])
+                    n_opacity_updates_torch = wp.to_torch(n_opacity_updates)
+                    n_opacity_updates_value = int(n_opacity_updates_torch[0].item())
+                    if n_opacity_updates_value > 0:
+                        wp.launch(kernel=self.update_photon_opacities,
+                                  dim=(n_opacity_updates_value,),
+                                  inputs=[photon_list, self.grid, inu, opacity_update_indices])
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 
