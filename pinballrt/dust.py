@@ -540,7 +540,7 @@ class Dust(pl.LightningDataModule):
                                   callbacks=callbacks,
                                   plugins=plugins)
 
-    def fit(self, epochs=10, batch_size=100, num_workers=1, ckpt_path=None):
+    def fit(self, epochs=10, batch_size=100, accumulate_grad_batches=1, num_workers=1, ckpt_path=None):
         '''
         Run the model fit.
 
@@ -550,6 +550,7 @@ class Dust(pl.LightningDataModule):
             The number of epochs to train the model.
         '''
         self.batch_size = batch_size
+        self.trainer.accumulate_grad_batches = accumulate_grad_batches
         self.num_workers = num_workers
 
         self.trainer.fit_loop.max_epochs += epochs
@@ -1117,7 +1118,7 @@ class Dust(pl.LightningDataModule):
                                                                                    generator=torch.Generator().manual_seed(2))
             self.test_indices = test_indices.indices
 
-            splits = np.repeat(0, self.dataset.tensors[0].size(0))
+            splits = np.repeat(0, len(self.dataset))
             for ind in valid_indices.indices:
                 splits[self.original_indices == ind] = 1
             for ind in test_indices.indices:
