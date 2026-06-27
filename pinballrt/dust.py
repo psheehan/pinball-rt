@@ -1807,9 +1807,9 @@ def load(filename, device="cpu"):
     else:
         d = IsotropicDust(**state_dict["dust_properties"], device=device)
 
-    for attr in ["kabs", "ksca", "pmo", "random_nu", "g", "scattering_phase_function"]:
+    for attr in ["kabs", "ksca", "pmo", "random_nu", "g", "scattering_phase_function", "random_direction"]:
         if f"{attr}_state_dict" in state_dict:
-            if attr in ["random_nu", "scattering_phase_function"]:
+            if attr in ["random_nu", "scattering_phase_function", "random_direction"]:
                 input_size = d.ndims + 2
             else:
                 input_size = d.ndims + 1
@@ -1822,18 +1822,6 @@ def load(filename, device="cpu"):
             getattr(d, f'{attr}_x_scaler').load_state_dict(state_dict[f"{attr}_x_scaler"])
             setattr(d, f'{attr}_y_scaler', StandardScaler())
             getattr(d, f'{attr}_y_scaler').load_state_dict(state_dict[f"{attr}_y_scaler"])
-
-    if "random_direction_state_dict" in state_dict:
-        hidden_units = (tuple([state_dict['random_direction_state_dict'][key].size(1) for key in state_dict['random_direction_state_dict'] if '0.hyper' in key and 'weight' in key and '0.weight' not in key]),) * len([state_dict['random_direction_state_dict'][key].size(0) for key in state_dict['random_direction_state_dict'] if '0.weight' in key])
-
-        d.initialize_model(model="random_direction", model_type="flow", input_size=1, output_size=3, hidden_units=hidden_units)
-
-        d.random_direction_model.load_state_dict(state_dict['random_direction_state_dict'])
-
-        d.random_direction_x_scaler = StandardScaler()
-        d.random_direction_x_scaler.load_state_dict(state_dict["random_direction_x_scaler"])
-        d.random_direction_y_scaler = StandardScaler()
-        d.random_direction_y_scaler.load_state_dict(state_dict["random_direction_y_scaler"])
 
     if "ml_step_state_dict" in state_dict:
         hidden_units = (tuple([state_dict['ml_step_state_dict'][key].size(1) for key in state_dict['ml_step_state_dict'] if '0.hyper' in key and 'weight' in key and '0.weight' not in key]),) * len([state_dict['ml_step_state_dict'][key].size(0) for key in state_dict['ml_step_state_dict'] if '0.weight' in key])
