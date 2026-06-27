@@ -274,3 +274,63 @@ def test_ml_opacity_equivalence():
     assert torch.allclose(kabs_no_cache, kabs_with_cache, rtol=1e-5), \
         f"ml_kabs outputs differ: no_cache={kabs_no_cache}, with_cache={kabs_with_cache}"
 
+
+def test_ml_random_nu_cached_subset_features():
+    """Test cached random_nu feature gathering for subset updates and in-kernel ksi bounds."""
+    import torch
+    import warp as wp
+    from pinballrt.photons import PhotonList
+
+    wavelengths = np.logspace(-1, 4, 10) * u.micron
+    p_vals = np.array([3.0, 3.2, 3.4, 3.6], dtype=np.float32)
+    amax_vals = np.array([1e-4, 5e-4, 1e-3, 5e-3], dtype=np.float32) * u.cm
+    temp_vals = np.array([20.0, 30.0, 40.0, 50.0], dtype=np.float32)
+
+    kappa_abs = np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+    kappa_scat = 0.5 * np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+
+    d = Dust(lam=wavelengths,
+             amax=amax_vals,
+             p=p_vals,
+             abundances=(),
+             kabs=kappa_abs,
+             ksca=kappa_scat)
+
+    photon_list = PhotonList()
+    nphotons = p_vals.size
+    photon_list.p = wp.array(p_vals, dtype=float)
+    photon_list.amax = wp.array(amax_vals.value, dtype=float)
+    photon_list.temperature = wp.array(temp_vals, dtype=float)
+    photon_list.frequency = wp.zeros(nphotons, dtype=float)
+    photon_list.dust_abundances = wp.zeros((nphotons, 0), dtype=float)
+
+    # Cache is allocated at ndims + 2 so random_nu mode can write [log10(T), ksi].
+    photon_list.ml_opacity_features = wp.zeros((nphotons, d.ndims + 2), dtype=float)
+
+    subset = np.array([1, 3], dtype=np.int32)
+    opacity_update_indices = wp.array(subset, dtype=int)
+
+    samples = d._get_ml_opacity_samples(
+        photon_list=photon_list,
+        opacity_update_indices=opacity_update_indices,
+        n_cached_samples=subset.size,
+        sample_mode="random_nu",
+    )
+
+    assert samples.shape == (subset.size, d.ndims + 2)
+
+    expected_prefix = torch.tensor(
+        np.column_stack([
+            p_vals[subset],
+            np.log10(amax_vals.value[subset]),
+            np.log10(temp_vals[subset]),
+        ]),
+        dtype=torch.float32,
+    )
+    assert torch.allclose(samples[:, :d.ndims + 1], expected_prefix, rtol=1e-5)
+
+    ksi = samples[:, -1]
+    assert torch.all(torch.isfinite(ksi))
+    assert torch.all(ksi >= -8.6643)
+    assert torch.all(ksi <= 8.6643)
+

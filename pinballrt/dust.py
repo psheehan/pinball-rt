@@ -141,10 +141,18 @@ class Dust(pl.LightningDataModule):
                                    n_dust_abundances: int,
                                    use_p: int,
                                    use_amax: int,
-                                   use_abundances: int): # pragma: no cover
-        """Build compact ML opacity feature rows into prefix [0:n_updates)."""
+                                   use_abundances: int,
+                                   sample_mode: int,
+                                   seed: int): # pragma: no cover
+        """Build compact feature rows into prefix [0:n_updates).
+
+        sample_mode:
+            0 -> opacity    [dims..., log10(nu)]
+            1 -> random_nu  [dims..., log10(T), ksi]
+        """
         i = wp.tid()
         ip = opacity_update_indices[i]
+        rng = wp.rand_init(seed, i)
 
         feature_idx = 0
         if use_p == 1:
@@ -159,24 +167,38 @@ class Dust(pl.LightningDataModule):
                 photon_list.ml_opacity_features[i][feature_idx] = photon_list.dust_abundances[ip][j]
                 feature_idx += 1
 
-        photon_list.ml_opacity_features[i][feature_idx] = wp.log10(photon_list.frequency[ip])
+        if sample_mode == 0:
+            photon_list.ml_opacity_features[i][feature_idx] = wp.log10(photon_list.frequency[ip])
+        else:
+            photon_list.ml_opacity_features[i][feature_idx] = wp.log10(photon_list.temperature[ip])
+            ksi_raw = wp.clamp(2.0 * wp.randf(rng) - 1.0, -0.999999, 0.999999)
+            ksi = 0.5 * wp.log((1.0 + ksi_raw) / (1.0 - ksi_raw))
+            photon_list.ml_opacity_features[i][feature_idx + 1] = wp.clamp(ksi, -8.6643, 8.6643)
 
     def _get_ml_opacity_samples(self, photon_list=None, p=None, amax=None, nu=None, abundances=None,
-                                n_cached_samples=None, opacity_update_indices=None):
+                                n_cached_samples=None, opacity_update_indices=None, sample_mode="opacity",
+                                temperature=None, ksi=None):
         """
         Get ML opacity input samples from cached feature array if available, or build from individual arrays.
 
-        Returns torch.Tensor of shape (n_samples, ndims+1) where columns match
-        self.dims followed by log10(nu).
+        Returns torch.Tensor with columns matching self.dims and mode-specific tails:
+        - opacity:    [self.dims..., log10(nu)]
+        - random_nu:  [self.dims..., log10(temperature), ksi]
         """
+        if sample_mode not in ["opacity", "random_nu"]:
+            raise ValueError(f"Invalid sample_mode '{sample_mode}'. Must be 'opacity' or 'random_nu'.")
+
         if photon_list is not None and hasattr(photon_list, 'ml_opacity_features') and wp.types.is_array(photon_list.ml_opacity_features):
             if opacity_update_indices is not None and n_cached_samples is not None:
                 use_p = 1 if "p" in self.dims else 0
                 use_amax = 1 if "log10_amax" in self.dims else 0
                 use_abundances = 1 if "abundances" in self.dims else 0
+                sample_mode_int = 0 if sample_mode == "opacity" else 1
+                seed = np.random.randint(0, 100000)
                 wp.launch(kernel=self.gather_ml_opacity_features,
                           dim=(n_cached_samples,),
-                          inputs=[photon_list, opacity_update_indices, len(self.abundances), use_p, use_amax, use_abundances])
+                          inputs=[photon_list, opacity_update_indices, len(self.abundances), use_p, use_amax, use_abundances,
+                                  sample_mode_int, seed])
             elif (opacity_update_indices is None) != (n_cached_samples is None):
                 raise ValueError("opacity_update_indices and n_cached_samples must be provided together for photon_list subset sampling.")
 
@@ -184,21 +206,33 @@ class Dust(pl.LightningDataModule):
             if n_cached_samples is not None:
                 samples = samples[:n_cached_samples]
 
-            expected_width = self.ndims + 1
-            if samples.size(1) != expected_width:
-                raise ValueError(f"ML opacity feature cache width {samples.size(1)} does not match expected width {expected_width}.")
+            expected_width = self.ndims + (1 if sample_mode == "opacity" else 2)
+            if samples.size(1) < expected_width:
+                raise ValueError(f"ML feature cache width {samples.size(1)} is smaller than expected width {expected_width} for mode '{sample_mode}'.")
 
-            return samples
+            return samples[:, :expected_width]
         
         # Fall back to building samples from individual arrays
         if photon_list is not None:
             p = wp.to_torch(photon_list.p)
             amax = wp.to_torch(photon_list.amax)
+            if sample_mode == "random_nu" and temperature is None:
+                temperature = wp.to_torch(photon_list.temperature)
             if photon_list.dust_abundances is not None and len(self.abundances) > 0:
                 abundances = wp.to_torch(photon_list.dust_abundances)
 
-            if nu is None:
+            if opacity_update_indices is not None and n_cached_samples is not None:
+                p = p[opacity_update_indices]
+                amax = amax[opacity_update_indices]
+                if sample_mode == "random_nu" and temperature is not None:
+                    temperature = temperature[opacity_update_indices]
+                if abundances is not None:
+                    abundances = abundances[opacity_update_indices]
+
+            if sample_mode == "opacity" and nu is None:
                 nu = wp.to_torch(photon_list.frequency)
+                if opacity_update_indices is not None and n_cached_samples is not None:
+                    nu = nu[opacity_update_indices]
             if abundances is not None:
                 abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
 
@@ -211,7 +245,16 @@ class Dust(pl.LightningDataModule):
                 samples += abundances
             else:
                 samples += (eval(dim),)
-        samples += (torch.log10(nu),)
+        if sample_mode == "opacity":
+            samples += (torch.log10(nu),)
+        else:
+            if temperature is None:
+                raise ValueError("temperature must be provided for random_nu sample_mode.")
+            if ksi is None:
+                n_samples = temperature.size(0) if hasattr(temperature, "size") else len(temperature)
+                ksi = torch.rand(int(n_samples), dtype=torch.float32)
+                ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
+            samples += (torch.log10(temperature), ksi)
         samples = torch.transpose(torch.vstack(samples), 0, 1)
         
         return samples
@@ -227,6 +270,7 @@ class Dust(pl.LightningDataModule):
             abundances=abundances,
             n_cached_samples=n_cached_samples,
             opacity_update_indices=opacity_update_indices,
+            sample_mode="opacity",
         )
 
         with torch.no_grad():
@@ -244,6 +288,7 @@ class Dust(pl.LightningDataModule):
             abundances=abundances,
             n_cached_samples=n_cached_samples,
             opacity_update_indices=opacity_update_indices,
+            sample_mode="opacity",
         )
 
         with torch.no_grad():
@@ -261,6 +306,7 @@ class Dust(pl.LightningDataModule):
             abundances=abundances,
             n_cached_samples=n_cached_samples,
             opacity_update_indices=opacity_update_indices,
+            sample_mode="opacity",
         )
 
         with torch.no_grad():
@@ -281,21 +327,20 @@ class Dust(pl.LightningDataModule):
         return direction, frequency
     
     def random_nu_ml(self, p, amax, temperature, abundances=None):
-        nphotons = temperature.size
-        ksi = torch.rand(int(nphotons), dtype=torch.float32)
-        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
+        p_t = torch.tensor(p, dtype=torch.float32)
+        amax_t = torch.tensor(amax, dtype=torch.float32)
+        temperature_t = torch.tensor(temperature, dtype=torch.float32)
+        abundances_t = None
+        if abundances is not None:
+            abundances_t = tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])
 
-        log10_amax = np.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])
-            else:
-                samples += (torch.tensor(eval(dim), dtype=torch.float32),)
-        samples += (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)
-
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
+        samples = self._get_ml_opacity_samples(
+            p=p_t,
+            amax=amax_t,
+            abundances=abundances_t,
+            temperature=temperature_t,
+            sample_mode="random_nu",
+        )
         test_x = self.random_nu_x_scaler.transform(samples)
 
         with torch.no_grad():
@@ -303,37 +348,25 @@ class Dust(pl.LightningDataModule):
 
         return 10.**log10_nu.numpy()
 
-    def random_nu(self, photon_list, subset=None):
-        p = wp.to_torch(photon_list.p)
-        amax = wp.to_torch(photon_list.amax)
-        temperature = wp.to_torch(photon_list.temperature)
-        if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-        if subset is not None:
-            p = p[subset]
-            amax = amax[subset]
-            temperature = temperature[subset]
-            if photon_list.dust_abundances is not None:
-                abundances = abundances[subset]
+    def random_nu(self, photon_list, subset=None, opacity_update_indices=None, n_cached_samples=None):
+        ntotal = wp.to_torch(photon_list.temperature).size(0)
+        if opacity_update_indices is not None or n_cached_samples is not None:
+            if opacity_update_indices is None or n_cached_samples is None:
+                raise ValueError("opacity_update_indices and n_cached_samples must be provided together.")
+            nphotons = int(n_cached_samples)
+        elif subset is not None:
+            opacity_update_indices = torch.where(subset)[0].to(dtype=torch.int32)
+            nphotons = opacity_update_indices.size(0)
+        else:
+            opacity_update_indices = torch.arange(ntotal, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
+            nphotons = ntotal
 
-        abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-            
-        nphotons = temperature.size(0)
-        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(temperature), ksi)
-
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
+        samples = self._get_ml_opacity_samples(
+            photon_list=photon_list,
+            n_cached_samples=nphotons,
+            opacity_update_indices=opacity_update_indices,
+            sample_mode="random_nu",
+        )
 
         test_x = self.random_nu_x_scaler.transform(samples)
 

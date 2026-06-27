@@ -644,7 +644,7 @@ class Grid:
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
             photon_list.opacities_out_of_date = wp.ones(nphotons, dtype=bool)
 
-            n_features = self.dust.ndims + 1
+            n_features = self.dust.ndims + 2
             photon_list.ml_opacity_features = wp.zeros((nphotons, n_features), dtype=float)
             opacity_update_indices = wp.zeros(nphotons, dtype=int)
             n_opacity_updates = wp.zeros(1, dtype=int)
