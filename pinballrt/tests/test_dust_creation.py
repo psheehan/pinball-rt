@@ -150,3 +150,121 @@ def test_dust_pickle():
              p=p)
 
     result = dill.loads(dill.dumps(d))
+
+
+@pytest.mark.parametrize(
+    ("include_p", "include_amax", "expected_n_features"),
+    [
+        pytest.param(False, False, 1, id="frequency-only"),
+        pytest.param(True, False, 2, id="p-only"),
+        pytest.param(False, True, 2, id="amax-only"),
+        pytest.param(True, True, 3, id="p-and-amax"),
+    ],
+)
+def test_ml_opacity_feature_cache(include_p, include_amax, expected_n_features):
+    """Cached opacity features should match direct sample building for active dims."""
+    import torch
+    import warp as wp
+    from pinballrt.photons import PhotonList
+
+    wavelengths = np.logspace(-1, 4, 10) * u.micron
+    p_vals = np.array([3.0, 3.2, 3.4, 3.6], dtype=np.float32)
+    amax_vals = np.array([1e-4, 5e-4, 1e-3, 5e-3], dtype=np.float32) * u.cm
+    nu_vals = np.array([1e10, 1e11, 1e12, 1e13], dtype=np.float32)
+
+    kappa_abs = np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+    kappa_scat = 0.5 * np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+
+    d = Dust(lam=wavelengths,
+             amax=amax_vals if include_amax else None,
+             p=p_vals if include_p else None,
+             abundances=(),
+             kabs=kappa_abs,
+             ksca=kappa_scat)
+
+    assert d.ndims + 1 == expected_n_features
+
+    p_torch = torch.tensor(p_vals, dtype=torch.float32) if include_p else None
+    amax_torch = torch.tensor(amax_vals.value, dtype=torch.float32) if include_amax else None
+    nu_torch = torch.tensor(nu_vals, dtype=torch.float32)
+    samples_builtin = d._get_ml_opacity_samples(p=p_torch, amax=amax_torch, nu=nu_torch, abundances=None)
+    assert samples_builtin.shape == (p_vals.size, expected_n_features)
+
+    photon_list = PhotonList()
+    photon_list.p = wp.array(p_vals, dtype=float)
+    photon_list.amax = wp.array(amax_vals.value, dtype=float)
+    photon_list.frequency = wp.array(nu_vals, dtype=float)
+    photon_list.dust_abundances = wp.zeros((p_vals.size, 0), dtype=float)
+
+    features_np = np.zeros((p_vals.size, expected_n_features), dtype=np.float32)
+    feature_idx = 0
+    if include_p:
+        features_np[:, feature_idx] = p_vals
+        feature_idx += 1
+    if include_amax:
+        features_np[:, feature_idx] = np.log10(amax_vals.value)
+        feature_idx += 1
+    features_np[:, feature_idx] = np.log10(nu_vals)
+
+    photon_list.ml_opacity_features = wp.from_torch(torch.tensor(features_np, dtype=torch.float32))
+    samples_cached = d._get_ml_opacity_samples(photon_list=photon_list)
+
+    assert samples_cached.shape == (p_vals.size, expected_n_features)
+    assert torch.allclose(samples_builtin, samples_cached, rtol=1e-5)
+
+
+def test_ml_random_nu_cached_subset_features():
+    """random_nu subset sampling should gather cached dims plus [log10(T), ksi]."""
+    import torch
+    import warp as wp
+    from pinballrt.photons import PhotonList
+
+    wavelengths = np.logspace(-1, 4, 10) * u.micron
+    p_vals = np.array([3.0, 3.2, 3.4, 3.6], dtype=np.float32)
+    amax_vals = np.array([1e-4, 5e-4, 1e-3, 5e-3], dtype=np.float32) * u.cm
+    temp_vals = np.array([20.0, 30.0, 40.0, 50.0], dtype=np.float32)
+
+    kappa_abs = np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+    kappa_scat = 0.5 * np.ones((p_vals.size, wavelengths.size)) * u.cm**2 / u.g
+
+    d = Dust(lam=wavelengths,
+             amax=amax_vals,
+             p=p_vals,
+             abundances=(),
+             kabs=kappa_abs,
+             ksca=kappa_scat)
+
+    photon_list = PhotonList()
+    nphotons = p_vals.size
+    photon_list.p = wp.array(p_vals, dtype=float)
+    photon_list.amax = wp.array(amax_vals.value, dtype=float)
+    photon_list.temperature = wp.array(temp_vals, dtype=float)
+    photon_list.frequency = wp.zeros(nphotons, dtype=float)
+    photon_list.dust_abundances = wp.zeros((nphotons, 0), dtype=float)
+    photon_list.ml_opacity_features = wp.zeros((nphotons, d.ndims + 2), dtype=float)
+
+    subset = np.array([1, 3], dtype=np.int32)
+    opacity_update_indices = wp.array(subset, dtype=int)
+
+    samples = d._get_ml_opacity_samples(
+        photon_list=photon_list,
+        opacity_update_indices=opacity_update_indices,
+        n_cached_samples=subset.size,
+        sample_mode="random_nu",
+    )
+
+    assert samples.shape == (subset.size, d.ndims + 2)
+    expected_prefix = torch.tensor(
+        np.column_stack([
+            p_vals[subset],
+            np.log10(amax_vals.value[subset]),
+            np.log10(temp_vals[subset]),
+        ]),
+        dtype=torch.float32,
+    )
+    assert torch.allclose(samples[:, :d.ndims + 1], expected_prefix, rtol=1e-5)
+
+    ksi = samples[:, -1]
+    assert torch.all(torch.isfinite(ksi))
+    assert torch.all(ksi >= -8.6643)
+    assert torch.all(ksi <= 8.6643)

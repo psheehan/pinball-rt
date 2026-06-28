@@ -625,6 +625,7 @@ class Grid:
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
             photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
+            photon_list.ml_opacity_features = wp.zeros((nphotons, self.dust.ndims + 2), dtype=float)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
