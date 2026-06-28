@@ -576,20 +576,6 @@ class Grid:
         
         return wp.from_torch(direction_yaw), wp.from_torch(direction_pitch), wp.from_torch(direction_roll)
 
-    @wp.kernel
-    def set_photon_opacities(photon_list: PhotonList,
-                          kabs: wp.array(dtype=float),
-                          ksca: wp.array(dtype=float),
-                          iphotons: wp.array(dtype=int)): # pragma: no cover
-        i = wp.tid()
-        ip = iphotons[i]
-
-        photon_list.kabs[ip] = kabs[i]
-        photon_list.ksca[ip] = ksca[i]
-        photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
-
-        photon_list.opacities_out_of_date[ip] = False
-
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
                           progress=True):
         with wp.ScopedDevice(self.device):
@@ -641,12 +627,7 @@ class Grid:
             nphotons = iphotons.size(0)
 
             t1 = time.time()
-            wp.launch(kernel=self.set_photon_opacities,
-                      dim=(nphotons,),
-                      inputs=[photon_list, 
-                              wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
-                              wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
-                              iphotons])
+            self.dust.update_photon_opacities(photon_list, iphotons)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
@@ -792,12 +773,7 @@ class Grid:
                     t1 = time.time()
                     iphotons_opacities = torch.logical_and(wp.to_torch(photon_list.in_grid), 
                                                            wp.to_torch(photon_list.opacities_out_of_date)).nonzero().to(torch.int32)
-                    wp.launch(kernel=self.set_photon_opacities,
-                            dim=(iphotons_opacities.size(0),),
-                            inputs=[photon_list, 
-                                    wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons_opacities)),
-                                    wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons_opacities)),
-                                    iphotons_opacities])
+                    self.dust.update_photon_opacities(photon_list, iphotons_opacities)
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 

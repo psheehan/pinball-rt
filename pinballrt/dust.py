@@ -251,58 +251,93 @@ class Dust(pl.LightningDataModule):
         samples = torch.transpose(torch.vstack(samples), 0, 1)
         return samples
 
-    def ml_kabs(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        n_cached_samples = iphotons.size(0) if iphotons is not None else None
-        samples = self._get_ml_opacity_samples(
-            photon_list=photon_list,
-            p=p,
-            amax=amax,
-            nu=nu,
-            abundances=abundances,
-            n_cached_samples=n_cached_samples,
-            opacity_update_indices=iphotons,
-            sample_mode="opacity",
-        )
+    def ml_kabs(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="opacity",
+            )
 
         with torch.no_grad():
             kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
 
         return kabs
 
-    def ml_ksca(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        n_cached_samples = iphotons.size(0) if iphotons is not None else None
-        samples = self._get_ml_opacity_samples(
-            photon_list=photon_list,
-            p=p,
-            amax=amax,
-            nu=nu,
-            abundances=abundances,
-            n_cached_samples=n_cached_samples,
-            opacity_update_indices=iphotons,
-            sample_mode="opacity",
-        )
+    def ml_ksca(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="opacity",
+            )
 
         with torch.no_grad():
             ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
         return ksca
 
-    def ml_kext(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        n_cached_samples = iphotons.size(0) if iphotons is not None else None
-        samples = self._get_ml_opacity_samples(
-            photon_list=photon_list,
-            p=p,
-            amax=amax,
-            nu=nu,
-            abundances=abundances,
-            n_cached_samples=n_cached_samples,
-            opacity_update_indices=iphotons,
-            sample_mode="opacity",
-        )
+    def ml_kext(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="opacity",
+            )
 
         with torch.no_grad():
             return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
                     10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
+
+    @wp.kernel
+    def set_photon_opacities(photon_list: PhotonList,
+                             kabs: wp.array(dtype=float),
+                             ksca: wp.array(dtype=float),
+                             iphotons: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = iphotons[i]
+
+        photon_list.kabs[ip] = kabs[i]
+        photon_list.ksca[ip] = ksca[i]
+        photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
+        photon_list.opacities_out_of_date[ip] = False
+
+    def update_photon_opacities(self, photon_list, iphotons):
+        nphotons = iphotons.size(0)
+        if nphotons == 0:
+            return
+
+        opacity_samples = self._get_ml_opacity_samples(
+            photon_list=photon_list,
+            opacity_update_indices=iphotons,
+            n_cached_samples=nphotons,
+            sample_mode="opacity",
+        )
+
+        wp.launch(kernel=self.set_photon_opacities,
+                  dim=(nphotons,),
+                  inputs=[photon_list,
+                          wp.from_torch(self.ml_kabs(samples=opacity_samples)),
+                          wp.from_torch(self.ml_ksca(samples=opacity_samples)),
+                          iphotons])
 
     def absorb(self, temperature):
         nphotons = frequency.numpy().size
