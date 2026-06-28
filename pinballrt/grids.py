@@ -420,17 +420,14 @@ class Grid:
 
         photon_list.absorb[ip] = wp.randf(rng) > photon_list.albedo[ip]
 
-    def interact(self, photon_list: PhotonList, absorb, iabsorb, interact, iphotons, scattering=False, learning=False):
-        nphotons = iphotons.size(0)
-
+    def interact(self, photon_list: PhotonList, nabsorb, iabsorb, nphotons, iphotons, scattering=False, learning=False):
         wp.launch(kernel=self.random_direction,
                   dim=(nphotons,),
                   inputs=[photon_list.direction, iphotons, np.random.randint(0, 100000)])
 
         t1 = time.time()
-        nabsorb = iabsorb.size(0)
         if not scattering and nabsorb > 0:
-            new_frequency = self.dust.random_nu(photon_list, subset=absorb)
+            new_frequency = self.dust.random_nu(photon_list, opacity_update_indices=iabsorb, n_cached_samples=nabsorb)
             
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
@@ -446,7 +443,7 @@ class Grid:
 
         t1 = time.time()
         wp.launch(kernel=self.photon_loc,
-                  dim=(interact.sum(),),
+                  dim=(nphotons,),
                   inputs=[photon_list, self.grid, iphotons])
         t2 = time.time()
         photon_loc_time = t2 - t1
@@ -576,20 +573,6 @@ class Grid:
         
         return wp.from_torch(direction_yaw), wp.from_torch(direction_pitch), wp.from_torch(direction_roll)
 
-    @wp.kernel
-    def set_photon_opacities(photon_list: PhotonList,
-                          kabs: wp.array(dtype=float),
-                          ksca: wp.array(dtype=float),
-                          iphotons: wp.array(dtype=int)): # pragma: no cover
-        i = wp.tid()
-        ip = iphotons[i]
-
-        photon_list.kabs[ip] = kabs[i]
-        photon_list.ksca[ip] = ksca[i]
-        photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
-
-        photon_list.opacities_out_of_date[ip] = False
-
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
                           progress=True):
         with wp.ScopedDevice(self.device):
@@ -625,27 +608,23 @@ class Grid:
             photon_list.albedo = wp.zeros(nphotons, dtype=float)
             photon_list.absorb = wp.zeros(nphotons, dtype=bool)
             photon_list.opacities_out_of_date = wp.zeros(nphotons, dtype=bool)
+            photon_list.ml_opacity_features = wp.zeros((nphotons, self.dust.ndims + 2), dtype=float)
 
             if progress:
                 progress_bar = tqdm(total=nphotons, position=position, leave=True)
 
-            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+            iphotons = wp.to_torch(photon_list.in_grid).nonzero().to(torch.int32)
             nphotons = iphotons.size(0)
 
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
                       inputs=[photon_list, self.grid, iphotons])
-            iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+            iphotons = wp.to_torch(photon_list.in_grid).nonzero().to(torch.int32)
             nphotons_done = iphotons_original.size(0) - iphotons.size(0)
             nphotons = iphotons.size(0)
 
             t1 = time.time()
-            wp.launch(kernel=self.set_photon_opacities,
-                      dim=(nphotons,),
-                      inputs=[photon_list, 
-                              wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons)),
-                              wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons)),
-                              iphotons])
+            self.dust.update_photon_opacities(photon_list, iphotons)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
@@ -753,20 +732,17 @@ class Grid:
                 in_grid_time += t2 - t1
 
                 t1 = time.time()
-                iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
-                if progress:
-                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
-                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-                nphotons = iphotons.size(0)
-                t2 = time.time()
-                removing_photons_time += t2 - t1
-
-                t1 = time.time()
-                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, wp.to_torch(photon_list.in_grid))
-                interaction_indices = iphotons_original[interaction]
-                absorb = torch.logical_and(interaction, wp.to_torch(photon_list.absorb))
-                absorb_indices = iphotons_original[absorb]
-                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, learning=learning)
+                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, 
+                                                wp.to_torch(photon_list.in_grid))
+                interaction_indices = interaction.nonzero().to(torch.int32)
+                absorb_indices = torch.logical_and(interaction, 
+                                                   wp.to_torch(photon_list.absorb)).nonzero().to(torch.int32)
+                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, 
+                                                                               absorb_indices.size(0), 
+                                                                               absorb_indices, 
+                                                                               interaction_indices.size(0), 
+                                                                               interaction_indices, 
+                                                                               learning=learning)
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 absorb_random_nu_time += tmp_absorb_random_nu_time
@@ -774,7 +750,7 @@ class Grid:
                 photon_loc_time += tmp_photon_loc_time
 
                 t1 = time.time()
-                iphotons = iphotons_original[wp.to_torch(photon_list.in_grid)]
+                iphotons = wp.to_torch(photon_list.in_grid).nonzero().to(torch.int32)
                 if progress:
                     progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
                 nphotons_done = iphotons_original.size(0) - iphotons.size(0)
@@ -789,14 +765,9 @@ class Grid:
                                   inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
                     
                     t1 = time.time()
-                    iphotons_opacities = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), 
-                                                                             wp.to_torch(photon_list.opacities_out_of_date))]
-                    wp.launch(kernel=self.set_photon_opacities,
-                            dim=(iphotons_opacities.size(0),),
-                            inputs=[photon_list, 
-                                    wp.from_torch(self.dust.ml_kabs(photon_list=photon_list, iphotons=iphotons_opacities)),
-                                    wp.from_torch(self.dust.ml_ksca(photon_list=photon_list, iphotons=iphotons_opacities)),
-                                    iphotons_opacities])
+                    iphotons_opacities = torch.logical_and(wp.to_torch(photon_list.in_grid), 
+                                                           wp.to_torch(photon_list.opacities_out_of_date)).nonzero().to(torch.int32)
+                    self.dust.update_photon_opacities(photon_list, iphotons_opacities)
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
 
@@ -889,7 +860,7 @@ class Grid:
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
                       inputs=[photon_list, self.grid, iphotons])
-            iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
+            iphotons = torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.).nonzero().to(torch.int32)
             nphotons_done = iphotons_original.size(0) - iphotons.size(0)
             nphotons = iphotons.size(0)
 
@@ -954,26 +925,21 @@ class Grid:
                 in_grid_time += t2 - t1
 
                 t1 = time.time()
-                iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
-                if progress:
-                    progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
-                nphotons_done = iphotons_original.size(0) - iphotons.size(0)
-                nphotons = iphotons.size(0)
-                t2 = time.time()
-                removing_photons_time += t2 - t1
-
-                t1 = time.time()
-                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, wp.to_torch(photon_list.in_grid))
-                interaction_indices = iphotons_original[interaction]
-                absorb = torch.logical_and(interaction, wp.to_torch(photon_list.absorb))
-                absorb_indices = iphotons_original[absorb]
-                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, absorb, absorb_indices, interaction, interaction_indices, scattering=True)
+                interaction = torch.logical_and(wp.to_torch(photon_list.tau) <= 1e-5, 
+                                                wp.to_torch(photon_list.in_grid))
+                interaction_indices = interaction.nonzero().to(torch.int32)
+                tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, 
+                                                                               0, 
+                                                                               None, 
+                                                                               interaction_indices.size(0), 
+                                                                               interaction_indices, 
+                                                                               scattering=True)
                 t2 = time.time()
                 absorb_time += t2 - t1 - tmp_photon_loc_time
                 #absorb_time += tmp_time
 
                 t1 = time.time()
-                iphotons = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.)]
+                iphotons = torch.logical_and(wp.to_torch(photon_list.in_grid), wp.to_torch(photon_list.total_tau_abs) < 30.).nonzero().to(torch.int32)
                 if progress:
                     progress_bar.update(iphotons_original.size(0) - iphotons.size(0) - nphotons_done)
                 nphotons_done = iphotons_original.size(0) - iphotons.size(0)
@@ -987,8 +953,8 @@ class Grid:
                               inputs=[photon_list, self.grid, iphotons, self.n_dust_abundances])
                     
                     t1 = time.time()
-                    iphotons_opacities = iphotons_original[torch.logical_and(wp.to_torch(photon_list.in_grid), 
-                                                                             wp.to_torch(photon_list.opacities_out_of_date))]
+                    iphotons_opacities = torch.logical_and(wp.to_torch(photon_list.in_grid), 
+                                                           wp.to_torch(photon_list.opacities_out_of_date)).nonzero().to(torch.int32)
                     wp.launch(kernel=self.update_photon_opacities, 
                             dim=(iphotons_opacities.size(0),),
                             inputs=[photon_list, self.grid, inu, iphotons_opacities])
