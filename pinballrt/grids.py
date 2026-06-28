@@ -430,7 +430,7 @@ class Grid:
         t1 = time.time()
         nabsorb = iabsorb.size(0)
         if not scattering and nabsorb > 0:
-            new_frequency = self.dust.random_nu(photon_list, subset=absorb)
+            new_frequency = self.dust.random_nu(photon_list, opacity_update_indices=iabsorb, n_cached_samples=nabsorb)
             
             wp.launch(kernel=self.update_frequency,
                       dim=(nabsorb,),
@@ -446,7 +446,7 @@ class Grid:
 
         t1 = time.time()
         wp.launch(kernel=self.photon_loc,
-                  dim=(interact.sum(),),
+                  dim=(nphotons,),
                   inputs=[photon_list, self.grid, iphotons])
         t2 = time.time()
         photon_loc_time = t2 - t1
