@@ -2,9 +2,9 @@ import urllib
 import requests
 from .sources import BlackbodyStar
 from .grids import UniformSphericalGrid
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, TensorDataset, random_split, IterableDataset, get_worker_info
 from scipy.spatial.transform import Rotation
-import pandas as pd
+import dask.dataframe as pd
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -44,6 +44,56 @@ class CustomCheckpointIO(TorchCheckpointIO):
 wp.config.quiet = True
 
 default_fiducial_values = {"amax": 1.0*u.mm, "p": 3.5}
+
+class DaskArrayTransformDataset(IterableDataset):
+    def __init__(self, X, y, feature_transform=None, target_transform=None, chunk_size=1024):
+        X.compute_chunk_sizes()
+        y.compute_chunk_sizes()
+
+        self.X = X
+        self.y = y
+
+        self.feature_transform = feature_transform
+        self.target_transform = target_transform
+
+        self.length = int(X.shape[0])
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+        self.chunk_size = chunk_size
+
+        if len(self.X) != len(self.y):
+            raise ValueError("Features and targets must have matching chunk layouts.")
+
+    def __len__(self):
+        return int(np.ceil(self.length / self.chunk_size))
+
+    def __iter__(self):
+        total_chunks = len(self)
+        worker_info = get_worker_info()
+
+        if worker_info is None:
+            start_chunk = 0
+            end_chunk = total_chunks
+        else:
+            chunks_per_worker = int(np.ceil(total_chunks / worker_info.num_workers))
+            start_chunk = worker_info.id * chunks_per_worker
+            end_chunk = min(start_chunk + chunks_per_worker, total_chunks)
+
+        for chunk_index in range(start_chunk, end_chunk):
+            start = chunk_index * self.chunk_size
+            end = min(start + self.chunk_size, self.length)
+
+            features = torch.as_tensor(self.X[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
+            target = torch.as_tensor(self.y[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
+
+            # Apply the transforms if they are provided.
+            if self.feature_transform is not None:
+                features = self.feature_transform.transform(features)
+
+            if self.target_transform is not None:
+                target = self.target_transform.transform(target)
+
+            yield features, target
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=300, 
@@ -546,7 +596,7 @@ class Dust(pl.LightningDataModule):
                                   callbacks=callbacks,
                                   plugins=plugins)
 
-    def fit(self, epochs=10, batch_size=100, num_workers=1, ckpt_path=None):
+    def fit(self, epochs=10, batch_size=100, accumulate_grad_batches=1, num_workers=1, ckpt_path=None):
         '''
         Run the model fit.
 
@@ -556,6 +606,7 @@ class Dust(pl.LightningDataModule):
             The number of epochs to train the model.
         '''
         self.batch_size = batch_size
+        self.trainer.accumulate_grad_batches = accumulate_grad_batches
         self.num_workers = num_workers
 
         self.trainer.fit_loop.max_epochs += epochs
@@ -603,21 +654,26 @@ class Dust(pl.LightningDataModule):
 
         self.nsamples = samples.shape[0]
 
-        X = torch.tensor(samples, dtype=torch.float32)
-        y = torch.tensor(targets, dtype=torch.float32)
+        #X = torch.tensor(samples.compute(), dtype=torch.float32)
+        #y = torch.tensor(targets.compute(), dtype=torch.float32)
+        X = samples
+        y = targets
         
         X_scaler = StandardScaler()
         X_scaler.fit(X)
-        X = X_scaler.transform(X)
+        #X = X_scaler.transform(X)
         setattr(self, f"{self.current_model}_x_scaler", X_scaler)
 
         if self.current_model != "ml_step_filter":
             y_scaler = StandardScaler()
             y_scaler.fit(y)
-            y = y_scaler.transform(y)
+            #y = y_scaler.transform(y)
             setattr(self, f"{self.current_model}_y_scaler", y_scaler)
+        else:
+            y_scaler = None
 
-        self.dataset = TensorDataset(X, y)
+        #self.dataset = TensorDataset(X, y)
+        self.dataset = DaskArrayTransformDataset(X, y, feature_transform=X_scaler, target_transform=y_scaler, chunk_size=self.batch_size)
 
     def prepare_data_random_nu(self):
         count = 0
@@ -704,7 +760,7 @@ class Dust(pl.LightningDataModule):
 
     def prepare_data_ml_step(self, device='cpu'):
         if os.path.exists("sim_results.csv"):
-            df = pd.read_csv("sim_results.csv", index_col=0)
+            df = pd.read_csv("sim_results.csv")
 
             self.log10_nu0_min = df['log10_nu0'].min()
             self.log10_nu0_max = df['log10_nu0'].max()
@@ -717,15 +773,20 @@ class Dust(pl.LightningDataModule):
             self.log10_tau_cell_nu0_min = df['log10_tau_cell_nu0'].min()
             self.log10_tau_cell_nu0_max = df['log10_tau_cell_nu0'].max()
         elif hasattr(self, "ml_step_filter_model") and os.path.exists("sim_results_pre-filter.csv"):
-            df = pd.read_csv("sim_results_pre-filter.csv", index_col=0)
+            df = pd.read_csv("sim_results_pre-filter.csv")
 
-            df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+            #df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
 
             features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
-            finish_probability = 1 - self.ml_step_filter_model(self.ml_step_filter_x_scaler.transform(torch.tensor(df.loc[:,features].values, dtype=torch.float32))).detach().numpy().flatten()
+            #finish_probability = 1 - self.ml_step_filter_model(self.ml_step_filter_x_scaler.transform(torch.tensor(df.loc[:,features].values, dtype=torch.float32))).detach().numpy().flatten()
+            def finish_probability_func(df_partition):
+                features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
+                df_partition['finish_probability'] = 1 - self.ml_step_filter_model(self.ml_step_filter_x_scaler.transform(torch.tensor(df_partition.loc[:,features].values, dtype=torch.float32))).detach().numpy().flatten()
+                return df_partition
+            df = df.map_partitions(finish_probability_func)
 
-            df = df[finish_probability > 0.999]
-            df.to_csv("sim_results.csv")
+            df = df[df['finish_probability'] > 0.999]
+            df.to_csv("sim_results.csv", single_file=True)
         else:
             df = self.run_dust_simulation(nphotons=self.nsamples, 
                                           tau_range=(10.**self.log10_tau_cell_nu0_min, 10.**self.log10_tau_cell_nu0_max),
@@ -735,40 +796,52 @@ class Dust(pl.LightningDataModule):
                                           nu_range=(10.**self.log10_nu0_min*u.GHz, 10.**self.log10_nu0_max*u.GHz))
             df.to_csv("sim_results.csv")
 
-        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
-        targets = ["log10_nu0", "log10_T"] + \
+        self.features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
+        self.targets = ["log10_nu0", "log10_T"] + \
                   (["log10_amax"] if "log10_amax" in self.dims else []) + \
                   (["p"] if "p" in self.dims else []) + \
                   ([f"abundance{i}" for i in range(len(self.abundances))]) + \
                   ["log10_tau_cell_nu0"]
 
-        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+        def log10_tau_func(df_partition):
+            df_partition["log10_tau"] = np.where(np.logical_or(df_partition["log10_tau"] < -6.5, np.isnan(df_partition["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df_partition)))), df_partition["log10_tau"])
+            return df_partition
+        #df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+        df = df.map_partitions(log10_tau_func)
 
-        data = df.loc[:, targets+features].values
+        samples = df.loc[:, self.features].values
+        targets = df.loc[:, self.targets].values
 
-        samples = df.loc[:, features].values
-        targets = df.loc[:, targets].values
+        samples.compute_chunk_sizes()
+        targets.compute_chunk_sizes()
         
-        self.ml_step_features = features
+        self.ml_step_features = self.features
         self.ml_step_limits = {}
-        for key in features:
+        for key in self.features:
             self.ml_step_limits[key] = (df[key].min(), df[key].max())
 
         self.df = df
-        self.nsamples = len(df)
+        self.nsamples = samples.shape[0]
+
+        self.training_data, self.valid_data, self.test_data = df.random_split([1 - (self.valid_split + self.test_split), self.valid_split, self.test_split], shuffle=False)
 
         return samples, targets
 
     def prepare_data_ml_step_filter(self):
-        df = pd.read_csv("sim_results_pre-filter.csv", index_col=0)
+        df = pd.read_csv("sim_results_pre-filter.csv")
 
-        features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
-        targets = ["in_grid"]
+        self.features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
+        self.targets = ["in_grid"]
 
-        samples = df.loc[:, features].values
-        targets = df.loc[:, targets].values
+        samples = df.loc[:, self.features].values
+        targets = df.loc[:, self.targets].values
 
-        self.nsamples = len(df)
+        samples.compute_chunk_sizes()
+        targets.compute_chunk_sizes()
+
+        self.nsamples = samples.shape[0]
+
+        self.training_data, self.valid_data, self.test_data = df.random_split([1 - (self.valid_split + self.test_split), self.valid_split, self.test_split], shuffle=False)
         
         return samples, targets
 
@@ -1136,11 +1209,15 @@ class Dust(pl.LightningDataModule):
             return
         
         if "ml_step" in self.learning or self.ndims == 0:
-            test_size = int(self.test_split * self.nsamples)
-            valid_size = int((self.nsamples - test_size)*self.valid_split)
-            train_size = self.nsamples - test_size - valid_size
-            train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
-            self.train, self.valid = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
+            #test_size = int(self.test_split * self.nsamples)
+            #valid_size = int((self.nsamples - test_size)*self.valid_split)
+            #train_size = self.nsamples - test_size - valid_size
+            #train_val_tmp, self.test = random_split(self.dataset, [train_size + valid_size, test_size], generator=torch.Generator().manual_seed(1))
+            #self.train, self.valid = random_split(train_val_tmp, [train_size, valid_size], generator=torch.Generator().manual_seed(2))
+
+            self.train = DaskArrayTransformDataset(self.training_data.loc[:, self.features].values, self.training_data.loc[:, self.targets].values, feature_transform=self.dataset.feature_transform, target_transform=self.dataset.target_transform, chunk_size=self.batch_size)
+            self.valid = DaskArrayTransformDataset(self.valid_data.loc[:, self.features].values, self.valid_data.loc[:, self.targets].values, feature_transform=self.dataset.feature_transform, target_transform=self.dataset.target_transform, chunk_size=self.batch_size)
+            self.test = DaskArrayTransformDataset(self.test_data.loc[:, self.features].values, self.test_data.loc[:, self.targets].values, feature_transform=self.dataset.feature_transform, target_transform=self.dataset.target_transform, chunk_size=self.batch_size)
         else:
             train_indices, valid_indices, test_indices = torch.utils.data.random_split(range(self.samples.shape[0]), 
                                                                                    (1.-(self.test_split + self.valid_split), 
@@ -1166,16 +1243,16 @@ class Dust(pl.LightningDataModule):
             self.overwrite = False
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.train, batch_size=1, num_workers=self.num_workers, persistent_workers=False)
 
     def val_dataloader(self):
-        return DataLoader(self.valid, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.valid, batch_size=1, num_workers=self.num_workers, persistent_workers=False)
 
     def test_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.test, batch_size=1, num_workers=self.num_workers, persistent_workers=False)
 
     def predict_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.test, batch_size=1, num_workers=self.num_workers, persistent_workers=False)
 
     def state_dict(self):
         state_dict = {
@@ -1930,9 +2007,12 @@ class StandardScaler:
         self.std = None
 
     def fit(self, data):
-        # Calculate mean and std from the training data
-        self.mean = data.mean(dim=0, keepdim=True)
-        self.std = data.std(dim=0, keepdim=True) # Use unbiased=False for consistency
+        if torch.is_tensor(data):
+            self.mean = data.mean(dim=0, keepdim=True)
+            self.std = data.std(dim=0, keepdim=True) # Use unbiased=False for consistency
+        else:
+            self.mean = torch.tensor(data.mean(axis=0).compute(), dtype=torch.float32)
+            self.std = torch.tensor(data.std(axis=0).compute(), dtype=torch.float32)
 
     def transform(self, data):
         # Apply the standardization
@@ -1977,6 +2057,7 @@ class DustLightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
+        x, y = x[0], y[0]
         if y.dim() == 1:
             y = y.reshape(-1,1)
         loss = self.loss(x, y)
@@ -1985,6 +2066,7 @@ class DustLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
+        x, y = x[0], y[0]
         if y.dim() == 1:
             y = y.reshape(-1,1)
         loss = self.loss(x, y)
@@ -1993,6 +2075,7 @@ class DustLightningModule(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         x, y = batch
+        x, y = x[0], y[0]
         if y.dim() == 1:
             y = y.reshape(-1,1)
         loss = self.loss(x, y)
@@ -2005,6 +2088,7 @@ class DustLightningModule(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         x, y = batch
+        x, y = x[0], y[0]
         if hasattr(self.model, "condition"):
             return self.condition(y).sample()
         else:
