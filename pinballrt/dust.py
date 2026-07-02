@@ -5,6 +5,7 @@ from .grids import UniformSphericalGrid
 from torch.utils.data import DataLoader, TensorDataset, random_split, IterableDataset, get_worker_info
 from scipy.spatial.transform import Rotation
 import dask.dataframe as pd
+import pandas
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -759,8 +760,8 @@ class Dust(pl.LightningDataModule):
         return samples, targets
 
     def prepare_data_ml_step(self, device='cpu'):
-        if os.path.exists("sim_results.csv"):
-            df = pd.read_csv("sim_results.csv")
+        if os.path.exists("sim_results_sub.csv"):
+            df = pd.read_csv("sim_results_sub.csv")
 
             self.log10_nu0_min = df['log10_nu0'].min()
             self.log10_nu0_max = df['log10_nu0'].max()
@@ -926,7 +927,7 @@ class Dust(pl.LightningDataModule):
 
         # Store the results in a pandas DataFrame
 
-        df = pd.DataFrame({"log10_nu0":np.log10(original_frequency),
+        df = pandas.DataFrame({"log10_nu0":np.log10(original_frequency),
                        "log10_T":np.log10(photon_list.temperature.numpy()),
                        "log10_amax":np.log10(photon_list.amax.numpy()),
                        "p":photon_list.p.numpy(),
@@ -948,7 +949,8 @@ class Dust(pl.LightningDataModule):
     # DataModule functions
 
     def plot_ml_step(self, tau=30., temperature=100.0*u.K, amax=1.*u.micron, p=3.5, nu=1e3*u.GHz, nsamples=1000, 
-                     plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])):
+                     plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]),
+                     figsize=(11,11)):
         """
         Plot the samples drawn from a sphere with the provided optical depth, temperature, and frequency.
 
@@ -977,26 +979,39 @@ class Dust(pl.LightningDataModule):
                                       p_range=(p, p), 
                                       nu_range=(nu, nu), 
                                       use_ml_step=False)
+        
+        df = pd.from_pandas(df)
 
-        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+        #df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+        def log10_tau_func(df_partition):
+            df_partition["log10_tau"] = np.where(np.logical_or(df_partition["log10_tau"] < -6.5, np.isnan(df_partition["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df_partition)))), df_partition["log10_tau"])
+            return df_partition
+        #df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+        df = df.map_partitions(log10_tau_func)
 
         features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
         targets = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
 
-        X = self.ml_step_x_scaler.transform(torch.tensor(df.loc[:, features].values, dtype=torch.float32))
-        y = self.ml_step_y_scaler.transform(torch.tensor(df.loc[:, targets].values, dtype=torch.float32))
+        samples = df.loc[:, self.features].values
+        targets = df.loc[:, self.targets].values
 
-        self.dataset = TensorDataset(X, y)
+        #X = self.ml_step_x_scaler.transform(torch.tensor(df.loc[:, features].values, dtype=torch.float32))
+        #y = self.ml_step_y_scaler.transform(torch.tensor(df.loc[:, targets].values, dtype=torch.float32))
+
+        #self.dataset = TensorDataset(X, y)
+        self.dataset = DaskArrayTransformDataset(samples, targets, feature_transform=self.ml_step_x_scaler, target_transform=self.ml_step_y_scaler, chunk_size=self.batch_size)
         self.nsamples = nsamples
         self.test_split = 0.98
         self.valid_split = 0.01
         self.batch_size = 10000
         self.overwrite = False
 
+        self.training_data, self.valid_data, self.test_data = df.random_split([1 - (self.valid_split + self.test_split), self.valid_split, self.test_split], shuffle=False)
+    
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
             del self.train, self.valid, self.test
 
-        self.plot_triangle_plots(plot_columns=plot_columns, nsamples=nsamples)
+        return self.plot_triangle_plots(plot_columns=plot_columns, nsamples=nsamples, figsize=figsize)
 
     def plot_opacity_model(self, model='kabs', show_scipy_interpolation=False):
         """
@@ -1107,7 +1122,7 @@ class Dust(pl.LightningDataModule):
 
         plt.show()
 
-    def plot_triangle_plots(self, model="ml_step", nsamples=200000, batch_size=100, num_workers=1, plot_columns='all'):
+    def plot_triangle_plots(self, model="ml_step", nsamples=200000, batch_size=100, num_workers=1, plot_columns='all', figsize=(11,11)):
         import matplotlib.pyplot as plt
 
         if self.trainer is None and hasattr(self, f"{model}_model"):
@@ -1129,14 +1144,15 @@ class Dust(pl.LightningDataModule):
             if model in ["ml_step"]:
                 X_pred = self.trainer.predict(self.dustLM, datamodule=self)
                 X_pred = torch.cat(X_pred)
-                y_pred = torch.cat([batch[1] for batch in self.predict_dataloader()])
+                data = [batch[1][0] for batch in self.predict_dataloader()]
+                y_pred = torch.cat(data)#torch.cat([batch[1] for batch in self.predict_dataloader()])
             elif model in ["random_nu", "random_direction"]:
                 y_pred = self.trainer.predict(self.dustLM, datamodule=self)
                 y_pred = torch.cat(y_pred)
                 X_pred = torch.cat([batch[0] for batch in self.predict_dataloader()])
 
-            X_true = torch.cat([batch[0] for batch in self.predict_dataloader()])
-            y_true = torch.cat([batch[1] for batch in self.predict_dataloader()])
+            X_true = torch.cat([batch[0][0] for batch in self.predict_dataloader()])
+            y_true = torch.cat([batch[1][0] for batch in self.predict_dataloader()])
 
             predict = True
 
@@ -1175,10 +1191,10 @@ class Dust(pl.LightningDataModule):
         else:
             columns = np.array(plot_columns)
 
-        df_true = pd.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_true), getattr(self, f"{model}_x_scaler").inverse_transform(X_true)], dim=1).numpy(), columns=np.concatenate((targets, features)))
-        df_pred = pd.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_pred), getattr(self, f"{model}_x_scaler").inverse_transform(X_pred)], dim=1).numpy(), columns=np.concatenate((targets, features)))
+        df_true = pandas.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_true), getattr(self, f"{model}_x_scaler").inverse_transform(X_true)], dim=1).numpy(), columns=np.concatenate((targets, features)))
+        df_pred = pandas.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_pred), getattr(self, f"{model}_x_scaler").inverse_transform(X_pred)], dim=1).numpy(), columns=np.concatenate((targets, features)))
 
-        fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
+        fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=figsize)
 
         if len(columns) == 1:
             ax = np.array([[ax]])
@@ -1202,7 +1218,11 @@ class Dust(pl.LightningDataModule):
 
             ax[i,0].set_ylabel(key1)
 
-        plt.show()
+        #if filename is not None:
+        #    plt.savefig(filename)
+        #else:
+        #    plt.show()
+        return fig, ax
 
     def setup(self, stage=None):
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test") and not self.overwrite:
