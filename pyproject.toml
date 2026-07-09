@@ -26,6 +26,8 @@ dependencies = [
   "zuko", 
   "schwimmbad",
   "requests",
+  "dask",
+  "pyarrow",
 ]
 
 [project.optional-dependencies]
