@@ -190,24 +190,25 @@ def test_ml_opacity_feature_cache(include_p, include_amax, expected_n_features):
     samples_builtin = d._get_ml_opacity_samples(p=p_torch, amax=amax_torch, nu=nu_torch, abundances=None)
     assert samples_builtin.shape == (p_vals.size, expected_n_features)
 
-    photon_list = PhotonList()
-    photon_list.p = wp.array(p_vals, dtype=float)
-    photon_list.amax = wp.array(amax_vals.value, dtype=float)
-    photon_list.frequency = wp.array(nu_vals, dtype=float)
-    photon_list.dust_abundances = wp.zeros((p_vals.size, 0), dtype=float)
+    with wp.ScopedDevice("cpu"):
+        photon_list = PhotonList()
+        photon_list.p = wp.array(p_vals, dtype=float)
+        photon_list.amax = wp.array(amax_vals.value, dtype=float)
+        photon_list.frequency = wp.array(nu_vals, dtype=float)
+        photon_list.dust_abundances = wp.zeros((p_vals.size, 0), dtype=float)
 
-    features_np = np.zeros((p_vals.size, expected_n_features), dtype=np.float32)
-    feature_idx = 0
-    if include_p:
-        features_np[:, feature_idx] = p_vals
-        feature_idx += 1
-    if include_amax:
-        features_np[:, feature_idx] = np.log10(amax_vals.value)
-        feature_idx += 1
-    features_np[:, feature_idx] = np.log10(nu_vals)
+        features_np = np.zeros((p_vals.size, expected_n_features), dtype=np.float32)
+        feature_idx = 0
+        if include_p:
+            features_np[:, feature_idx] = p_vals
+            feature_idx += 1
+        if include_amax:
+            features_np[:, feature_idx] = np.log10(amax_vals.value)
+            feature_idx += 1
+        features_np[:, feature_idx] = np.log10(nu_vals)
 
-    photon_list.ml_opacity_features = wp.from_torch(torch.tensor(features_np, dtype=torch.float32))
-    samples_cached = d._get_ml_opacity_samples(photon_list=photon_list)
+        photon_list.ml_opacity_features = wp.from_torch(torch.tensor(features_np, dtype=torch.float32))
+        samples_cached = d._get_ml_opacity_samples(photon_list=photon_list)
 
     assert samples_cached.shape == (p_vals.size, expected_n_features)
     assert torch.allclose(samples_builtin, samples_cached, rtol=1e-5)
@@ -234,24 +235,25 @@ def test_ml_random_nu_cached_subset_features():
              kabs=kappa_abs,
              ksca=kappa_scat)
 
-    photon_list = PhotonList()
-    nphotons = p_vals.size
-    photon_list.p = wp.array(p_vals, dtype=float)
-    photon_list.amax = wp.array(amax_vals.value, dtype=float)
-    photon_list.temperature = wp.array(temp_vals, dtype=float)
-    photon_list.frequency = wp.zeros(nphotons, dtype=float)
-    photon_list.dust_abundances = wp.zeros((nphotons, 0), dtype=float)
-    photon_list.ml_opacity_features = wp.zeros((nphotons, d.ndims + 2), dtype=float)
+    with wp.ScopedDevice("cpu"):
+        photon_list = PhotonList()
+        nphotons = p_vals.size
+        photon_list.p = wp.array(p_vals, dtype=float)
+        photon_list.amax = wp.array(amax_vals.value, dtype=float)
+        photon_list.temperature = wp.array(temp_vals, dtype=float)
+        photon_list.frequency = wp.zeros(nphotons, dtype=float)
+        photon_list.dust_abundances = wp.zeros((nphotons, 0), dtype=float)
+        photon_list.ml_opacity_features = wp.zeros((nphotons, d.ndims + 2), dtype=float)
 
-    subset = np.array([1, 3], dtype=np.int32)
-    opacity_update_indices = wp.array(subset, dtype=int)
+        subset = np.array([1, 3], dtype=np.int32)
+        opacity_update_indices = wp.array(subset, dtype=int)
 
-    samples = d._get_ml_opacity_samples(
-        photon_list=photon_list,
-        opacity_update_indices=opacity_update_indices,
-        n_cached_samples=subset.size,
-        sample_mode="random_nu",
-    )
+        samples = d._get_ml_opacity_samples(
+            photon_list=photon_list,
+            opacity_update_indices=opacity_update_indices,
+            n_cached_samples=subset.size,
+            sample_mode="random_nu",
+        )
 
     assert samples.shape == (subset.size, d.ndims + 2)
     expected_prefix = torch.tensor(
