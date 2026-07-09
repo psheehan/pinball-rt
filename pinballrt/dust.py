@@ -30,106 +30,9 @@ from pytorch_lightning.plugins.io import TorchCheckpointIO
 from lightning_fabric.utilities.cloud_io import get_filesystem
 from typing import Any, Callable, Optional
 
-class CustomCheckpointIO(TorchCheckpointIO):
-    def save_checkpoint(self, checkpoint: dict, path: str, storage_options: Optional[Any] = None) -> None:
-        if storage_options is not None:
-            raise TypeError(
-                "`Trainer.save_checkpoint(..., storage_options=...)` with `storage_options` arg"
-                f" is not supported for `{self.__class__.__name__}`. Please implement your custom `CheckpointIO`"
-                " to define how you'd like to use `storage_options`."
-            )
-        # Override save_checkpoint to use a specific protocol
-        fs = get_filesystem(path)
-        fs.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(checkpoint, path, pickle_protocol=4)
-
 wp.config.quiet = True
 
 default_fiducial_values = {"amax": 1.0*u.mm, "p": 3.5}
-
-class DaskArrayTransformDataset(IterableDataset):
-    def __init__(self, X, y, feature_transform=None, target_transform=None, feature_names=None, target_names=None, chunk_size=1024):
-        X.compute_chunk_sizes()
-        y.compute_chunk_sizes()
-
-        self.X = X
-        self.y = y
-
-        self.feature_transform = feature_transform
-        self.target_transform = target_transform
-
-        self.feature_names = feature_names
-        self.target_names= target_names
-
-        self.length = int(X.shape[0])
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be positive.")
-        self.chunk_size = chunk_size
-
-        if len(self.X) != len(self.y):
-            raise ValueError("Features and targets must have matching chunk layouts.")
-
-    def __len__(self):
-        return int(np.ceil(self.length / self.chunk_size))
-
-    def __iter__(self):
-        total_chunks = len(self)
-        worker_info = get_worker_info()
-
-        if worker_info is None:
-            start_chunk = 0
-            end_chunk = total_chunks
-        else:
-            chunks_per_worker = int(np.ceil(total_chunks / worker_info.num_workers))
-            start_chunk = worker_info.id * chunks_per_worker
-            end_chunk = min(start_chunk + chunks_per_worker, total_chunks)
-
-        for chunk_index in range(start_chunk, end_chunk):
-            start = chunk_index * self.chunk_size
-            end = min(start + self.chunk_size, self.length)
-
-            features = torch.as_tensor(self.X[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
-            target = torch.as_tensor(self.y[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
-
-            # Apply the transforms if they are provided.
-            if self.feature_transform is not None:
-                features = self.feature_transform.transform(features)
-
-            if self.target_transform is not None:
-                target = self.target_transform.transform(target)
-
-            yield features, target
-
-    def random_split(self, splits):
-        df = ddf.from_array(da.concatenate((self.X, self.y), axis=1), columns=self.feature_names+self.target_names)
-
-        train_df, valid_df, test_df = df.random_split(splits, shuffle=False)
-
-        train_dataset = DaskArrayTransformDataset(train_df[self.feature_names].to_dask_array(lengths=True),
-                                                  train_df[self.target_names].to_dask_array(lengths=True),
-                                                  feature_transform=self.feature_transform,
-                                                  target_transform=self.target_transform,
-                                                  feature_names=self.feature_names,
-                                                  target_names=self.target_names,
-                                                  chunk_size=self.chunk_size)
-
-        valid_dataset = DaskArrayTransformDataset(valid_df[self.feature_names].to_dask_array(lengths=True),
-                                                  valid_df[self.target_names].to_dask_array(lengths=True),
-                                                  feature_transform=self.feature_transform,
-                                                  target_transform=self.target_transform,
-                                                  feature_names=self.feature_names,
-                                                  target_names=self.target_names,
-                                                  chunk_size=self.chunk_size)
-
-        test_dataset = DaskArrayTransformDataset(test_df[self.feature_names].to_dask_array(lengths=True),
-                                                 test_df[self.target_names].to_dask_array(lengths=True),
-                                                 feature_transform=self.feature_transform,
-                                                 target_transform=self.target_transform,
-                                                 feature_names=self.feature_names,
-                                                 target_names=self.target_names,
-                                                 chunk_size=self.chunk_size)
-
-        return train_dataset, valid_dataset, test_dataset
 
 class Dust(pl.LightningDataModule):
     def __init__(self, lam=None, kabs=None, ksca=None, amax=None, p=None, abundances=(), device="cpu", ntemperatures=300, 
@@ -2159,3 +2062,100 @@ class DustLightningModule(pl.LightningModule):
             return self.condition(y).sample()
         else:
             return self(x)
+
+class CustomCheckpointIO(TorchCheckpointIO):
+    def save_checkpoint(self, checkpoint: dict, path: str, storage_options: Optional[Any] = None) -> None:
+        if storage_options is not None:
+            raise TypeError(
+                "`Trainer.save_checkpoint(..., storage_options=...)` with `storage_options` arg"
+                f" is not supported for `{self.__class__.__name__}`. Please implement your custom `CheckpointIO`"
+                " to define how you'd like to use `storage_options`."
+            )
+        # Override save_checkpoint to use a specific protocol
+        fs = get_filesystem(path)
+        fs.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(checkpoint, path, pickle_protocol=4)
+
+class DaskArrayTransformDataset(IterableDataset):
+    def __init__(self, X, y, feature_transform=None, target_transform=None, feature_names=None, target_names=None, chunk_size=1024):
+        X.compute_chunk_sizes()
+        y.compute_chunk_sizes()
+
+        self.X = X
+        self.y = y
+
+        self.feature_transform = feature_transform
+        self.target_transform = target_transform
+
+        self.feature_names = feature_names
+        self.target_names= target_names
+
+        self.length = int(X.shape[0])
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+        self.chunk_size = chunk_size
+
+        if len(self.X) != len(self.y):
+            raise ValueError("Features and targets must have matching chunk layouts.")
+
+    def __len__(self):
+        return int(np.ceil(self.length / self.chunk_size))
+
+    def __iter__(self):
+        total_chunks = len(self)
+        worker_info = get_worker_info()
+
+        if worker_info is None:
+            start_chunk = 0
+            end_chunk = total_chunks
+        else:
+            chunks_per_worker = int(np.ceil(total_chunks / worker_info.num_workers))
+            start_chunk = worker_info.id * chunks_per_worker
+            end_chunk = min(start_chunk + chunks_per_worker, total_chunks)
+
+        for chunk_index in range(start_chunk, end_chunk):
+            start = chunk_index * self.chunk_size
+            end = min(start + self.chunk_size, self.length)
+
+            features = torch.as_tensor(self.X[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
+            target = torch.as_tensor(self.y[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
+
+            # Apply the transforms if they are provided.
+            if self.feature_transform is not None:
+                features = self.feature_transform.transform(features)
+
+            if self.target_transform is not None:
+                target = self.target_transform.transform(target)
+
+            yield features, target
+
+    def random_split(self, splits):
+        df = ddf.from_array(da.concatenate((self.X, self.y), axis=1), columns=self.feature_names+self.target_names)
+
+        train_df, valid_df, test_df = df.random_split(splits, shuffle=False)
+
+        train_dataset = DaskArrayTransformDataset(train_df[self.feature_names].to_dask_array(lengths=True),
+                                                  train_df[self.target_names].to_dask_array(lengths=True),
+                                                  feature_transform=self.feature_transform,
+                                                  target_transform=self.target_transform,
+                                                  feature_names=self.feature_names,
+                                                  target_names=self.target_names,
+                                                  chunk_size=self.chunk_size)
+
+        valid_dataset = DaskArrayTransformDataset(valid_df[self.feature_names].to_dask_array(lengths=True),
+                                                  valid_df[self.target_names].to_dask_array(lengths=True),
+                                                  feature_transform=self.feature_transform,
+                                                  target_transform=self.target_transform,
+                                                  feature_names=self.feature_names,
+                                                  target_names=self.target_names,
+                                                  chunk_size=self.chunk_size)
+
+        test_dataset = DaskArrayTransformDataset(test_df[self.feature_names].to_dask_array(lengths=True),
+                                                 test_df[self.target_names].to_dask_array(lengths=True),
+                                                 feature_transform=self.feature_transform,
+                                                 target_transform=self.target_transform,
+                                                 feature_names=self.feature_names,
+                                                 target_names=self.target_names,
+                                                 chunk_size=self.chunk_size)
+
+        return train_dataset, valid_dataset, test_dataset
