@@ -1469,40 +1469,7 @@ class GeneralDust(Dust):
     def scatter(self, photon_list, iphotons):
         nphotons = iphotons.size(0)
 
-        p = wp.to_torch(photon_list.p)
-        amax = wp.to_torch(photon_list.amax)
-        frequency = wp.to_torch(photon_list.frequency)
-        if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-        if iphotons is not None:
-            p = p[iphotons]
-            amax = amax[iphotons]
-            frequency = frequency[iphotons]
-            if photon_list.dust_abundances is not None:
-                abundances = abundances[iphotons]
-
-        abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-            
-        nphotons = iphotons.size(0)
-        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(frequency), ksi)
-
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
-
-        test_x = self.random_direction_x_scaler.transform(samples)
-
-        theta = self.random_direction_y_scaler.inverse_transform(self.random_direction_model(test_x).detach()).flatten()
+        theta = self.ml_random_direction(photon_list=photon_list, iphotons=iphotons)
 
         wp.launch(kernel=self.random_direction,
                   dim=(nphotons,),
@@ -1510,6 +1477,54 @@ class GeneralDust(Dust):
                           wp.from_torch(theta),
                           iphotons, 
                           np.random.randint(0, 100000)])
+        
+    def ml_random_direction(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
+        if photon_list is not None:
+            p = wp.to_torch(photon_list.p)
+            amax = wp.to_torch(photon_list.amax)
+            if photon_list.dust_abundances is not None:
+                abundances = wp.to_torch(photon_list.dust_abundances)
+
+            if nu is None:
+                nu = wp.to_torch(photon_list.frequency)
+
+                if iphotons is not None:
+                    nu = nu[iphotons]
+                    p = p[iphotons]
+                    amax = amax[iphotons]
+                    if abundances is not None:
+                        abundances = abundances[iphotons]
+            else:
+                if nu.size(0) != p.size(0):
+                    p = p[iphotons]
+                    amax = amax[iphotons]
+                    if abundances is not None:
+                        abundances = abundances[iphotons]
+
+            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
+
+        if amax is not None:
+            log10_amax = torch.log10(amax)
+
+        ksi = torch.rand(int(p.size(0)), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
+        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
+
+        samples = ()
+        for dim in self.dims:
+            if dim == "abundances" and abundances is not None:
+                samples += abundances
+            else:
+                samples += (eval(dim),)
+        samples += (torch.log10(nu), ksi)
+
+        samples = torch.transpose(torch.vstack(samples), 0, 1)
+
+        test_x = self.random_direction_x_scaler.transform(samples)
+
+        theta = self.random_direction_y_scaler.inverse_transform(self.random_direction_model(test_x).detach()).flatten()
+        theta = torch.clamp(theta, min=0., max=np.pi)
+
+        return theta
     
     @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
@@ -1553,7 +1568,7 @@ class GeneralDust(Dust):
 
         photon_list.scattering_phase_function[ip] = 2. * scattering_phase_function[i]
 
-    def ml_scattering_phase_function(self, p=None, amax=None, nu=None, theta=None, photon_list=None, iphotons=None):
+    def ml_scattering_phase_function(self, p=None, amax=None, nu=None, theta=None, abundances=None, photon_list=None, iphotons=None):
         if photon_list is not None:
             p = wp.to_torch(photon_list.p)
             amax = wp.to_torch(photon_list.amax)
@@ -1694,6 +1709,42 @@ class GeneralDust(Dust):
 
         plt.plot(plot_x, interpolated)
         plt.plot(plot_x, nned)
+        plt.show()
+
+    def plot_random_direction_model(self, nsamples=100000):
+        """
+        Plot samples drawn from the learned random_direction model against samples drawn from the scattering phase function.
+
+        Parameters
+        ----------
+        nsamples : int
+            The number of samples to draw from each model for the plot.
+        """
+        import matplotlib.pyplot as plt
+
+        amax = np.repeat(10.**np.random.uniform(-4., 1., 1), nsamples)
+        p = np.repeat(np.random.uniform(2.5, 4.5, 1), nsamples)
+        abundances = tuple([np.repeat(np.random.uniform(0, 1, 1), nsamples) for i in range(len(self.abundances))])
+        nu = np.repeat(10.**np.random.uniform(np.log10(self.nu.min().to(u.GHz).value), np.log10(self.nu.max().to(u.GHz).value), 1), nsamples)
+        print(f"p: {p[0]}, amax: {amax[0]}, nu: {nu[0]}, abundances: {[abundances[i][0] for i in range(len(self.abundances))]}")
+
+        direction = self.ml_random_direction(p=torch.tensor(p, dtype=torch.float32), 
+                                             amax=torch.tensor(amax, dtype=torch.float32), 
+                                             nu=torch.tensor(nu, dtype=torch.float32), 
+                                             abundances=tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])).numpy()
+
+        counts, bins, _ = plt.hist(direction, 100)
+
+        pdf = self.ml_scattering_phase_function(p=torch.tensor(p[0], dtype=torch.float32).repeat((bins[1:-1].size,)), 
+                                                amax=torch.tensor(amax[0], dtype=torch.float32).repeat((bins[1:-1].size,)), 
+                                                nu=torch.tensor(nu[0], dtype=torch.float32).repeat((bins[1:-1].size,)),
+                                                theta=torch.tensor(bins[1:-1], dtype=torch.float32), 
+                                                abundances=tuple([torch.tensor(a[0], dtype=torch.float32).repeat((bins[1:-1].size,)) for a in abundances])).numpy() / \
+                (1. / np.sqrt(1. - np.cos(bins[1:-1])**2.))
+        pdf *= counts.max() / pdf.max()
+
+        plt.plot(bins[1:-1], pdf, '-')
+
         plt.show()
 
     def state_dict(self):
