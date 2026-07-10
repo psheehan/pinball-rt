@@ -1725,14 +1725,12 @@ class UniformSphericalGrid(Grid):
         for i in range(iw1, iw1+2):
             if photon_list.radius[ip] == grid.w1[i]:
                 sr1 = -b + wp.abs(b)
-                #if (sr1 < s) and (sr1 > 0) and not equal_zero(sr1/
-                #        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
-                if (sr1 < s) and (sr1 > 0):
+                if (sr1 < s) and (sr1 > 0) and not equal_zero(sr1/
+                        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
                     s = sr1
                 sr2 = -b - wp.abs(b)
-                #if (sr2 < s) and (sr2 > 0) and not equal_zero(sr2/
-                #        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
-                if (sr2 < s) and (sr2 > 0):
+                if (sr2 < s) and (sr2 > 0) and not equal_zero(sr2/
+                        (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])),EPSILON):
                     s = sr2
             else:
                 c = photon_list.radius[ip]*photon_list.radius[ip] - grid.w1[i]*grid.w1[i]
@@ -1752,8 +1750,8 @@ class UniformSphericalGrid(Grid):
             for i in range(iw2, iw2+2):
                 if equal_zero(grid.cos_w2[i], EPSILON):
                     st1 = -photon_list.position[ip][2] / photon_list.direction[ip][2]
-                    #if equal_zero(st1 / (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])), EPSILON):
-                    #    st1 = 0.
+                    if equal_zero(st1 / (photon_list.radius[ip]*(grid.w2[iw2+1]-grid.w2[iw2])), EPSILON):
+                        st1 = 0.
                     if (st1 < s) and (st1 > 0):
                         s = st1
                 else:
