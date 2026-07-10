@@ -1923,7 +1923,7 @@ class UniformSphericalGrid(Grid):
 
         # Handle r == 0 case
         if photon_list.radius[ip] == 0:
-            photon_list.cos_theta[ip] *= -1.0
+            photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
             photon_list.theta[ip] = np.pi - photon_list.theta[ip]
             if grid.n3 != 2:
                 photon_list.phi[ip] = wp.mod(photon_list.phi[ip] + np.pi, 2.*np.pi)
@@ -1947,7 +1947,7 @@ class UniformSphericalGrid(Grid):
             if photon_list.cos_theta[ip] < 0:
                 photon_list.theta[ip] = np.pi - photon_list.theta[ip]
                 photon_list.direction[ip][2] *= -1.
-                photon_list.cos_theta[ip] *= -1.
+                photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
 
             if equal_zero(photon_list.cos_theta[ip], EPSILON) and photon_list.direction[ip][2] < 0:
                 photon_list.direction[ip][2] *= -1.
@@ -2208,7 +2208,7 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
 
         # Handle r == 0 case
         if photon_list.radius[ip] == 0:
-            photon_list.cos_theta[ip] *= -1.0
+            photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
             photon_list.theta[ip] = np.pi - photon_list.theta[ip]
             if grid.n3 != 2:
                 photon_list.phi[ip] = wp.mod(photon_list.phi[ip] + np.pi, 2.*np.pi)
@@ -2232,7 +2232,7 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
             if photon_list.cos_theta[ip] < 0:
                 photon_list.theta[ip] = np.pi - photon_list.theta[ip]
                 photon_list.direction[ip][2] *= -1.
-                photon_list.cos_theta[ip] *= -1.
+                photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
 
             if equal_zero(photon_list.cos_theta[ip], EPSILON) and photon_list.direction[ip][2] < 0:
                 photon_list.direction[ip][2] *= -1.
