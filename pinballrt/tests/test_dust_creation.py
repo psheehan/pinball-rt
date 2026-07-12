@@ -1,4 +1,4 @@
-from pinballrt.dust import IsotropicDust, HenyeyGreensteinDust, GeneralDust, load, suggest_opacity_sampling
+from pinballrt.dust import Dust, IsotropicDust, HenyeyGreensteinDust, GeneralDust, load, suggest_opacity_sampling
 import numpy as np
 import astropy.units as u
 import pytest
