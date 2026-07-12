@@ -257,7 +257,7 @@ class Model:
                                        [njobs]*njobs,
                                        [wavelength]*njobs,
                                        [i]*njobs,
-                                       [self.camera_list[device].i_wp]*njobs
+                                       [self.camera_list[device].i_wp]*njobs,
                                        [progress]*njobs))
             results = [r for r in result]
             total_scattering = [r[0] for r in results]
