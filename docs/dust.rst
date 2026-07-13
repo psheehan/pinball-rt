@@ -13,7 +13,7 @@ dust
 .. autoclass:: HenyeyGreensteinDust
    :show-inheritance:
 
-.. autoclass:: GeneralDust
+.. autoclass:: GeneralScatteringDust
    :show-inheritance:
 
 .. autoclass:: Dust

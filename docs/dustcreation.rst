@@ -5,7 +5,7 @@ Before running a radiative transfer simulation, you need to create a dust model 
 the dust grains in your simulation. Pinball-rt provides a :class:`~pinballrt.dust.Dust` class that allows you to create 
 and manipulate dust models. In practice, there are three more specific dust models available: 
 :class:`~pinballrt.dust.IsotropicDust`, :class:`~pinballrt.dust.HenyeyGreensteinDust`, and 
-:class:`~pinballrt.dust.GeneralDust` that inherit from :class:`~pinballrt.dust.Dust` and enable more specific control 
+:class:`~pinballrt.dust.GeneralScatteringDust` that inherit from :class:`~pinballrt.dust.Dust` and enable more specific control 
 over dust scattering properties. To set up a dust model, the absorption and scattering opacities as a function of wavelength 
 and grain size distribution parameters (maximum dust grain size, size distribution power-law index, and sub-species 
 relative abundances) are needed. At present, these must be obtained from external sources and provided to pinball-rt. 
@@ -141,24 +141,24 @@ Creating a Henyey-Greenstein dust model follows the same process as above, but w
    d.fit(epochs=300, batch_size=1000)
    d.test_model(plot=True)
 
-Similarly, the most general dust model, :class:`~pinballrt.dust.GeneralDust`, follows the same process but with the addition of needing to train a model to produce the scattering phase function as a function of wavelength, scattering angle and dust properties, and additionally to randomly sample scattering angles during the simulation:
+Similarly, the most general dust model, :class:`~pinballrt.dust.GeneralScatteringDust`, follows the same process but with the addition of needing to train a model to produce the scattering phase function as a function of wavelength, scattering angle and dust properties, and additionally to randomly sample scattering angles during the simulation:
 
 .. code-block:: python
 
-   from pinballrt.dust import GeneralDust
+   from pinballrt.dust import GeneralScatteringDust
 
    g = np.repeat(np.expand_dims(np.tanh(p - np.log10(wavelengths.to(u.micron).value)), axis=-1), 5, axis=-1)
    theta = np.tile(np.expand_dims(np.linspace(0, 180., 5), axis=(0,1)), (10 if len(dims) > 0 else 1, 10, 1)) * u.deg
    scattering_phase_function = (1 - g**2) / (4 * np.pi * (1 + g**2 - 2*g*np.cos(theta.to(u.rad).value))**(3/2))
 
    # Create the General dust model.
-   dust = GeneralDust(lam=wavelengths[0,:], 
-                      amax=amax[:,0], 
-                      p=p[:,0], 
-                      kabs=kappa_abs, 
-                      ksca=kappa_scat,
-                      scattering_phase_function=scattering_phase_function
-                      theta=theta[0,0,:])
+   dust = GeneralScatteringDust(lam=wavelengths[0,:], 
+                                amax=amax[:,0], 
+                                p=p[:,0], 
+                                kabs=kappa_abs, 
+                                ksca=kappa_scat,
+                                scattering_phase_function=scattering_phase_function,
+                                theta=theta[0,0,:])
 
    for model in ["scattering_phase_function", "random_direction"]:
        d.learn(model=model, hidden_units=(16,)*6, overwrite=True)
