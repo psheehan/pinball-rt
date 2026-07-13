@@ -164,6 +164,7 @@ class Dust(pl.LightningDataModule):
                                    use_amax: int,
                                    use_abundances: int,
                                    sample_mode: int,
+                                   direction: wp.vec3,
                                    seed: int): # pragma: no cover
         """Build compact feature rows into prefix [0:n_updates)."""
         i = wp.tid()
@@ -188,21 +189,18 @@ class Dust(pl.LightningDataModule):
         else:
             photon_list.ml_opacity_features[i][feature_idx] = wp.log10(photon_list.frequency[ip])
 
-        if sample_mode != 0:
+        if sample_mode == 1 or sample_mode == 2:
             ksi_raw = wp.clamp(2.0 * wp.randf(rng) - 1.0, -0.999999, 0.999999)
             ksi = 0.5 * wp.log((1.0 + ksi_raw) / (1.0 - ksi_raw))
             photon_list.ml_opacity_features[i][feature_idx + 1] = wp.clamp(ksi, -8.6643, 8.6643)
-
-    @wp.kernel
-    def gather_ml_opacity_theta_features(photon_list: PhotonList,
-                                         theta: wp.array(dtype=float),
-                                         theta_feature_index: int): # pragma: no cover
-        i = wp.tid()
-        photon_list.ml_opacity_features[i][theta_feature_index] = theta[i]
+        elif sample_mode == 3:
+            mu = wp.dot(photon_list.direction[ip], direction)
+            mu = wp.clamp(mu, -1.0, 1.0)
+            photon_list.ml_opacity_features[i][feature_idx + 1] = wp.acos(mu)
 
     def _get_ml_opacity_samples(self, photon_list=None, p=None, amax=None, nu=None, abundances=None,
                                 n_cached_samples=None, opacity_update_indices=None, sample_mode="opacity",
-                                temperature=None, ksi=None, theta=None):
+                                temperature=None, ksi=None, theta=None, direction=None):
         """Build or gather ML input samples for opacity-like, random_nu, and direction models."""
         if sample_mode not in ["opacity", "random_nu", "random_direction", "scattering_phase_function"]:
             raise ValueError(
@@ -214,12 +212,15 @@ class Dust(pl.LightningDataModule):
                 use_p = 1 if "p" in self.dims else 0
                 use_amax = 1 if "log10_amax" in self.dims else 0
                 use_abundances = 1 if "abundances" in self.dims else 0
-                sample_mode_int = 0 if sample_mode in ["opacity", "scattering_phase_function"] else (1 if sample_mode == "random_nu" else 2)
+                sample_mode_int = 0 if sample_mode == "opacity" else (1 if sample_mode == "random_nu" else (2 if sample_mode == "random_direction" else 3))
+                direction_input = direction if direction is not None else wp.vec3(0.0, 0.0, 1.0)
+                if sample_mode == "scattering_phase_function" and direction is None:
+                    raise ValueError("direction must be provided for cached scattering_phase_function sample_mode.")
                 seed = np.random.randint(0, 100000)
                 wp.launch(kernel=self.gather_ml_opacity_features,
                           dim=(n_cached_samples,),
                           inputs=[photon_list, opacity_update_indices, len(self.abundances), use_p, use_amax, use_abundances,
-                                  sample_mode_int, seed])
+                                  sample_mode_int, direction_input, seed])
             elif (opacity_update_indices is None) != (n_cached_samples is None):
                 raise ValueError("opacity_update_indices and n_cached_samples must be provided together for subset sampling.")
 
@@ -233,25 +234,6 @@ class Dust(pl.LightningDataModule):
                     f"ML feature cache width {samples.size(1)} is smaller than expected width {expected_width} for mode '{sample_mode}'."
                 )
 
-            if sample_mode == "scattering_phase_function":
-                if theta is None:
-                    raise ValueError("theta must be provided for scattering_phase_function sample_mode.")
-                theta_torch = theta if torch.is_tensor(theta) else torch.tensor(theta, dtype=torch.float32)
-                theta_torch = torch.flatten(theta_torch)
-                theta_torch = theta_torch.to(device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-                n_theta = n_cached_samples if n_cached_samples is not None else samples.size(0)
-                if theta_torch.size(0) != n_theta:
-                    raise ValueError(
-                        f"theta size {theta_torch.size(0)} does not match expected number of samples {n_theta} for cached scattering_phase_function mode."
-                    )
-                theta_feature_index = self.ndims + 1
-                wp.launch(kernel=self.gather_ml_opacity_theta_features,
-                          dim=(n_theta,),
-                          inputs=[photon_list, wp.from_torch(theta_torch), theta_feature_index])
-                samples = wp.to_torch(photon_list.ml_opacity_features)
-                if n_cached_samples is not None:
-                    samples = samples[:n_cached_samples]
-
             return samples[:, :expected_width]
 
         if photon_list is not None:
@@ -261,12 +243,17 @@ class Dust(pl.LightningDataModule):
                 temperature = wp.to_torch(photon_list.temperature)
             if photon_list.dust_abundances is not None and len(self.abundances) > 0:
                 abundances = wp.to_torch(photon_list.dust_abundances)
+            if sample_mode == "scattering_phase_function" and theta is None and direction is not None:
+                direction_torch = wp.to_torch(wp.array(direction))
+                theta = torch.acos((wp.to_torch(photon_list.direction) * direction_torch).sum(axis=1).clamp(-1.0, 1.0))
 
             if opacity_update_indices is not None and n_cached_samples is not None:
                 p = p[opacity_update_indices]
                 amax = amax[opacity_update_indices]
                 if sample_mode == "random_nu" and temperature is not None:
                     temperature = temperature[opacity_update_indices]
+                if sample_mode == "scattering_phase_function" and theta is not None:
+                    theta = theta[opacity_update_indices]
                 if abundances is not None:
                     abundances = abundances[opacity_update_indices]
 
@@ -1613,9 +1600,7 @@ class GeneralDust(Dust):
     def update_photon_scattering_phase_function(self, photon_list, direction, iphotons):
         nphotons = iphotons.size(0)
 
-        theta = torch.acos((wp.to_torch(photon_list.direction)[iphotons] * torch.tensor(wp.array(direction))).sum(axis=1))
-
-        scattering_phase_function = self.ml_scattering_phase_function(photon_list=photon_list, iphotons=iphotons, theta=theta)
+        scattering_phase_function = self.ml_scattering_phase_function(photon_list=photon_list, iphotons=iphotons, direction=direction)
 
         wp.launch(kernel=self.scattering_phase_function_general_dust_wp,
                   dim=(nphotons,),
@@ -1633,7 +1618,7 @@ class GeneralDust(Dust):
 
         photon_list.scattering_phase_function[ip] = 2. * scattering_phase_function[i]
 
-    def ml_scattering_phase_function(self, p=None, amax=None, nu=None, theta=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+    def ml_scattering_phase_function(self, p=None, amax=None, nu=None, theta=None, direction=None, abundances=None, photon_list=None, iphotons=None, samples=None):
         if samples is None:
             n_cached_samples = iphotons.size(0) if iphotons is not None else None
             samples = self._get_ml_opacity_samples(
@@ -1646,6 +1631,7 @@ class GeneralDust(Dust):
                 opacity_update_indices=iphotons,
                 sample_mode="scattering_phase_function",
                 theta=theta,
+                direction=direction,
             )
 
         scattering_phase_function = 10.**self.scattering_phase_function_y_scaler.inverse_transform(
