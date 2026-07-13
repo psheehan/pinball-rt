@@ -16,10 +16,10 @@ import pytest
 test_data = [
     (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0, "cpu"),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0, "cpu"),
-    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "iso", 73.0, "cpu"),
+    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "gen", 73.0, "cpu"),
     (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0, "cuda"),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0, "cuda"),
-    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "iso", 73.0, "cuda"),
+    (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "gen", 73.0, "cuda"),
 ]
 
 @pytest.mark.parametrize("grid_class,grid_kwargs,dust,percentile,device", test_data)
@@ -119,7 +119,7 @@ def update_test(test, grid_class):
     if not found:
         raise ValueError(f"Grid class {grid_class} not found in test data. Please add it to the test_data list in test_E2E.py.")
     
-    temperature, scattering, image, mom0 = test(grid_class, data[1], data[2], data[3], return_vals=True)
+    temperature, scattering, image, mom0 = test(grid_class, data[1], data[2], data[3], data[4], return_vals=True)
 
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_temperature.npz"), temperature=temperature)
     np.savez(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_scattering.npz"), scattering=scattering)
