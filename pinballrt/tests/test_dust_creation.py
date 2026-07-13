@@ -145,6 +145,9 @@ def test_learning(dust_type, dims):
 
         if model == "random_nu":
             d.plot_random_nu_model(100)
+        
+        if model == "random_direction":
+            d.plot_random_direction_model(100)
 
     # Test the learn_ml_step method.
 
