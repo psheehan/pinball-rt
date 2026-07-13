@@ -1,4 +1,4 @@
-from pinballrt.dust import Dust, IsotropicDust, HenyeyGreensteinDust, GeneralDust, load, suggest_opacity_sampling
+from pinballrt.dust import Dust, IsotropicDust, HenyeyGreensteinDust, GeneralScatteringDust, load, suggest_opacity_sampling
 import numpy as np
 import astropy.units as u
 import pytest
@@ -33,9 +33,9 @@ def test_Dust():
         pytest.param(HenyeyGreensteinDust, (), id="HenyeyGreensteinDust/None"),
         pytest.param(HenyeyGreensteinDust, ("p","abundances"), id="HenyeyGreensteinDust/p,abundances"),
         pytest.param(HenyeyGreensteinDust, ("p","amax","abundances"), id="HenyeyGreensteinDust/p,amax,abundances"),
-        pytest.param(GeneralDust, (), id="GeneralDust/None"),
-        pytest.param(GeneralDust, ("p","abundances"), id="GeneralDust/p,abundances"),
-        pytest.param(GeneralDust, ("p","amax","abundances"), id="GeneralDust/p,amax,abundances"),
+        pytest.param(GeneralScatteringDust, (), id="GeneralScatteringDust/None"),
+        pytest.param(GeneralScatteringDust, ("p","abundances"), id="GeneralScatteringDust/p,abundances"),
+        pytest.param(GeneralScatteringDust, ("p","amax","abundances"), id="GeneralScatteringDust/p,amax,abundances"),
     ]
 )
 def test_learning(dust_type, dims):
@@ -109,7 +109,7 @@ def test_learning(dust_type, dims):
     if dust_type == HenyeyGreensteinDust:
         g = np.tanh(p - np.log10(wavelengths.to(u.micron).value))
         dust_kwargs["g"] = g
-    elif dust_type == GeneralDust:
+    elif dust_type == GeneralScatteringDust:
         g = np.repeat(np.expand_dims(np.tanh(p - np.log10(wavelengths.to(u.micron).value)), axis=-1), 5, axis=-1)
         theta = np.tile(np.expand_dims(np.linspace(0, 180., 5), axis=(0,1)), (10 if len(dims) > 0 else 1, 10, 1)) * u.deg
         scattering_phase_function = (1 - g**2) / (4 * np.pi * (1 + g**2 - 2*g*np.cos(theta.to(u.rad).value))**(3/2))
@@ -124,7 +124,7 @@ def test_learning(dust_type, dims):
     models = ["kabs","ksca","pmo","random_nu"]
     if dust_type == HenyeyGreensteinDust:
         models.append("g")
-    if dust_type == GeneralDust:
+    if dust_type == GeneralScatteringDust:
         models.append("scattering_phase_function")
         models.append("random_direction")
 

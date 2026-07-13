@@ -1504,7 +1504,7 @@ class HenyeyGreensteinDust(Dust):
 
         return state_dict
 
-class GeneralDust(Dust):
+class GeneralScatteringDust(Dust):
     def __init__(self, lam=None, kabs=None, ksca=None, scattering_phase_function=None, theta=None, amax=None, 
                  p=None, abundances=(), device="cpu", ntemperatures=1000, fiducial_values={}):
         """
@@ -1883,7 +1883,7 @@ def load(filename, device="cpu"):
     if "g" in state_dict["dust_properties"]:
         d = HenyeyGreensteinDust(**state_dict["dust_properties"], device=device)
     elif "scattering_phase_function" in state_dict["dust_properties"]:
-        d = GeneralDust(**state_dict["dust_properties"], device=device)
+        d = GeneralScatteringDust(**state_dict["dust_properties"], device=device)
     else:
         d = IsotropicDust(**state_dict["dust_properties"], device=device)
 
