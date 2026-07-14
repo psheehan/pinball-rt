@@ -228,7 +228,7 @@ class Model:
 
         if not hasattr(self.camera_list[device], "i_wp"):
             print("Camera orientation not set. Setting default orientation with inclination 0, position angle 0.")
-            self.camera_list[device].set_orientation(0., 0., 1.)
+            self.camera_list[device].set_orientation(0.*u.degree, 0.*u.degree, 1.)
 
         for dev in self.grid_list:
             with wp.ScopedDevice(self.grid_list[dev].device):
