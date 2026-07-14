@@ -102,6 +102,7 @@ def test_E2E(grid_class, grid_kwargs, dust, percentile, device, return_vals=Fals
         base_image = xr.open_dataset(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_image.nc"))
         Q = calculate_Qvalue(image.intensity.data.value, base_image.intensity, percentile=99.0, clip=0.1)
         assert Q < 1.025, f"Image difference exceeds tolerance: {Q}"
+        assert np.abs(image.intensity.data.value.max() - base_image.intensity.max()) < 0.01 * base_image.intensity.max(), f"Image max difference exceeds tolerance: {(image.intensity.max() - base_image.intensity.max()) / base_image.intensity.max()}"
 
         base_mom0 = xr.open_dataset(os.path.join(os.path.dirname(__file__), f"data/{grid_class.__name__}_E2E_mom0.nc"))
         Q = calculate_Qvalue(mom0.intensity.data.value, base_mom0.intensity, percentile=99.0, clip=0.1)

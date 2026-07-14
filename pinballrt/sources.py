@@ -155,7 +155,7 @@ class SphericalSource(Source):
         
         direction = torch.unsqueeze(torch.tensor(ez, dtype=torch.float32, device=device), 0).repeat(nrays, 1)
 
-        intensity = (self.intensity(nu.data)*np.pi).to(u.Jy / u.steradian).value * \
+        intensity = (self.intensity(nu.data)*np.pi / nrays).to(u.Jy / u.steradian).value * \
             ((self.radius / physical_pixel_size).decompose()**2).value
         intensity = torch.unsqueeze(torch.tensor(intensity, dtype=torch.float32, device=device), 0).repeat(nrays, 1)
         tau_intensity = torch.zeros((nrays, nu.size), dtype=torch.float32, device=device)
