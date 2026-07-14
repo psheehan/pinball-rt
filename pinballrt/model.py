@@ -4,7 +4,7 @@ import astropy_xarray
 
 from .sources import DiffuseSource, EnergySource
 from .grids import Grid
-from .dust import load, Dust
+from .dust import load
 from .gas import Gas
 from .camera import Camera
 from schwimmbad import SerialPool, MultiPool
@@ -226,6 +226,10 @@ class Model:
 
         self.grid_list[device].check_physical_properties(include_dust=True, include_gas=False)
 
+        if not hasattr(self.camera_list[device], "i_wp"):
+            print("Camera orientation not set. Setting default orientation with inclination 0, position angle 0.")
+            self.camera_list[device].set_orientation(0.*u.degree, 0.*u.degree, 1.)
+
         for dev in self.grid_list:
             with wp.ScopedDevice(self.grid_list[dev].device):
                 self.grid_list[dev].scattering = torch.zeros((len(wavelengths),)+self.grid_list[dev].shape, 
@@ -257,6 +261,7 @@ class Model:
                                        [njobs]*njobs,
                                        [wavelength]*njobs,
                                        [i]*njobs,
+                                       [self.camera_list[device].i_wp]*njobs,
                                        [progress]*njobs))
             results = [r for r in result]
             total_scattering = [r[0] for r in results]
@@ -361,6 +366,9 @@ class Model:
 
         # First, run a scattering simulation to get the scattering phase function
 
+        for dev in self.camera_list:
+            self.camera_list[dev].set_orientation(incl, pa, distance)
+
         self.grid_list[device].set_grid_opacities(nu)
         
         if include_dust:
@@ -368,9 +376,6 @@ class Model:
                                                       progress=progress)
 
         # Now set up the image proper.
-
-        for dev in self.camera_list:
-            self.camera_list[dev].set_orientation(incl, pa, distance)
 
         physical_pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
 
@@ -474,11 +479,11 @@ def thermal_mc_task(args):
     return grid.grid.energy.numpy(), iter_timing
 
 def scattering_mc_task(args):
-    grid, position, s, nphotons, njobs, wavelength, i, progress = args
+    grid, position, s, nphotons, njobs, wavelength, i, camera_direction, progress = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
     photon_list = grid.emit(int(nphotons / njobs), wavelength, scattering=True, timing=iter_timing)
-    grid.propagate_photons_scattering(photon_list, i, timing=iter_timing, position=position, progress=progress)
+    grid.propagate_photons_scattering(photon_list, i, camera_direction, timing=iter_timing, position=position, progress=progress)
 
     return grid.scattering, iter_timing
 

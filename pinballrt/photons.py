@@ -17,6 +17,8 @@ class PhotonList:
     alpha: wp.array(dtype=float)
     kabs: wp.array(dtype=float)
     ksca: wp.array(dtype=float)
+    g: wp.array(dtype=float)
+    scattering_phase_function: wp.array(dtype=float)
     albedo: wp.array(dtype=float)
     kext: wp.array2d(dtype=float)
     ray_albedo: wp.array2d(dtype=float)
