@@ -2,9 +2,11 @@ import urllib
 import requests
 from .sources import BlackbodyStar
 from .grids import UniformSphericalGrid
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, TensorDataset, random_split, IterableDataset, get_worker_info
 from scipy.spatial.transform import Rotation
 import pandas as pd
+import dask.dataframe as ddf
+import dask.array as da
 from astropy.modeling import models
 import astropy.units as u
 import astropy.constants as const
@@ -22,24 +24,12 @@ from .utils import GridStruct, random_direction
 from .photons import PhotonList
 
 from torch.distributions.multivariate_normal import MultivariateNormal
+from .photons import PhotonList
 
 import torch
 from pytorch_lightning.plugins.io import TorchCheckpointIO
 from lightning_fabric.utilities.cloud_io import get_filesystem
 from typing import Any, Callable, Optional
-
-class CustomCheckpointIO(TorchCheckpointIO):
-    def save_checkpoint(self, checkpoint: dict, path: str, storage_options: Optional[Any] = None) -> None:
-        if storage_options is not None:
-            raise TypeError(
-                "`Trainer.save_checkpoint(..., storage_options=...)` with `storage_options` arg"
-                f" is not supported for `{self.__class__.__name__}`. Please implement your custom `CheckpointIO`"
-                " to define how you'd like to use `storage_options`."
-            )
-        # Override save_checkpoint to use a specific protocol
-        fs = get_filesystem(path)
-        fs.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(checkpoint, path, pickle_protocol=4)
 
 wp.config.quiet = True
 
@@ -155,30 +145,114 @@ class Dust(pl.LightningDataModule):
             if hasattr(self, f"{model}_y_scaler"):
                 getattr(self, f"{model}_y_scaler").to(device)
 
-    def ml_kabs(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
+    @wp.kernel
+    def gather_ml_opacity_features(photon_list: PhotonList,
+                                   opacity_update_indices: wp.array(dtype=int),
+                                   n_dust_abundances: int,
+                                   use_p: int,
+                                   use_amax: int,
+                                   use_abundances: int,
+                                   sample_mode: int,
+                                   direction: wp.vec3,
+                                   seed: int): # pragma: no cover
+        """Build compact feature rows into prefix [0:n_updates)."""
+        i = wp.tid()
+        ip = opacity_update_indices[i]
+        rng = wp.rand_init(seed, i)
+
+        feature_idx = 0
+        if use_p == 1:
+            photon_list.ml_opacity_features[i][feature_idx] = photon_list.p[ip]
+            feature_idx += 1
+        if use_amax == 1:
+            photon_list.ml_opacity_features[i][feature_idx] = wp.log10(photon_list.amax[ip])
+            feature_idx += 1
+
+        if use_abundances == 1:
+            for j in range(n_dust_abundances):
+                photon_list.ml_opacity_features[i][feature_idx] = photon_list.dust_abundances[ip][j]
+                feature_idx += 1
+
+        if sample_mode == 1:
+            photon_list.ml_opacity_features[i][feature_idx] = wp.log10(photon_list.temperature[ip])
+        else:
+            photon_list.ml_opacity_features[i][feature_idx] = wp.log10(photon_list.frequency[ip])
+
+        if sample_mode == 1 or sample_mode == 2:
+            ksi_raw = wp.clamp(2.0 * wp.randf(rng) - 1.0, -0.999999, 0.999999)
+            ksi = 0.5 * wp.log((1.0 + ksi_raw) / (1.0 - ksi_raw))
+            photon_list.ml_opacity_features[i][feature_idx + 1] = wp.clamp(ksi, -8.6643, 8.6643)
+        elif sample_mode == 3:
+            mu = wp.dot(photon_list.direction[ip], direction)
+            mu = wp.clamp(mu, -1.0, 1.0)
+            photon_list.ml_opacity_features[i][feature_idx + 1] = wp.acos(mu)
+
+    def _get_ml_opacity_samples(self, photon_list=None, p=None, amax=None, nu=None, abundances=None,
+                                n_cached_samples=None, opacity_update_indices=None, sample_mode="opacity",
+                                temperature=None, ksi=None, theta=None, direction=None):
+        """Build or gather ML input samples for opacity-like, random_nu, and direction models."""
+        if sample_mode not in ["opacity", "random_nu", "random_direction", "scattering_phase_function"]:
+            raise ValueError(
+                f"Invalid sample_mode '{sample_mode}'. Must be 'opacity', 'random_nu', 'random_direction', or 'scattering_phase_function'."
+            )
+
+        if photon_list is not None and hasattr(photon_list, "ml_opacity_features") and wp.types.is_array(photon_list.ml_opacity_features):
+            if opacity_update_indices is not None and n_cached_samples is not None:
+                use_p = 1 if "p" in self.dims else 0
+                use_amax = 1 if "log10_amax" in self.dims else 0
+                use_abundances = 1 if "abundances" in self.dims else 0
+                sample_mode_int = 0 if sample_mode == "opacity" else (1 if sample_mode == "random_nu" else (2 if sample_mode == "random_direction" else 3))
+                direction_input = direction if direction is not None else wp.vec3(0.0, 0.0, 1.0)
+                if sample_mode == "scattering_phase_function" and direction is None:
+                    raise ValueError("direction must be provided for cached scattering_phase_function sample_mode.")
+                seed = np.random.randint(0, 100000)
+                wp.launch(kernel=self.gather_ml_opacity_features,
+                          dim=(n_cached_samples,),
+                          inputs=[photon_list, opacity_update_indices, len(self.abundances), use_p, use_amax, use_abundances,
+                                  sample_mode_int, direction_input, seed])
+            elif (opacity_update_indices is None) != (n_cached_samples is None):
+                raise ValueError("opacity_update_indices and n_cached_samples must be provided together for subset sampling.")
+
+            samples = wp.to_torch(photon_list.ml_opacity_features)
+            if n_cached_samples is not None:
+                samples = samples[:n_cached_samples]
+
+            expected_width = self.ndims + (1 if sample_mode == "opacity" else 2)
+            if samples.size(1) < expected_width:
+                raise ValueError(
+                    f"ML feature cache width {samples.size(1)} is smaller than expected width {expected_width} for mode '{sample_mode}'."
+                )
+
+            return samples[:, :expected_width]
+
         if photon_list is not None:
             p = wp.to_torch(photon_list.p)
             amax = wp.to_torch(photon_list.amax)
-            if photon_list.dust_abundances is not None:
+            if sample_mode == "random_nu" and temperature is None:
+                temperature = wp.to_torch(photon_list.temperature)
+            if photon_list.dust_abundances is not None and len(self.abundances) > 0:
                 abundances = wp.to_torch(photon_list.dust_abundances)
+            if sample_mode == "scattering_phase_function" and theta is None and direction is not None:
+                direction_torch = wp.to_torch(wp.array(direction))
+                theta = torch.acos((wp.to_torch(photon_list.direction) * direction_torch).sum(axis=1).clamp(-1.0, 1.0))
 
-            if nu is None:
+            if opacity_update_indices is not None and n_cached_samples is not None:
+                p = p[opacity_update_indices]
+                amax = amax[opacity_update_indices]
+                if sample_mode == "random_nu" and temperature is not None:
+                    temperature = temperature[opacity_update_indices]
+                if sample_mode == "scattering_phase_function" and theta is not None:
+                    theta = theta[opacity_update_indices]
+                if abundances is not None:
+                    abundances = abundances[opacity_update_indices]
+
+            if sample_mode in ["opacity", "random_direction", "scattering_phase_function"] and nu is None:
                 nu = wp.to_torch(photon_list.frequency)
+                if opacity_update_indices is not None and n_cached_samples is not None:
+                    nu = nu[opacity_update_indices]
 
-                if iphotons is not None:
-                    nu = nu[iphotons]
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-            else:
-                if nu.size(0) != p.size(0):
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-
-            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
+            if abundances is not None:
+                abundances = tuple([abundances[:, i] for i in range(len(self.abundances))])
 
         if amax is not None:
             log10_amax = torch.log10(amax)
@@ -189,127 +263,122 @@ class Dust(pl.LightningDataModule):
                 samples += abundances
             else:
                 samples += (eval(dim),)
-        samples += (torch.log10(nu),)
+
+        if sample_mode in ["opacity", "scattering_phase_function"]:
+            if nu is None:
+                raise ValueError(f"nu must be provided for {sample_mode} sample_mode.")
+            samples += (torch.log10(nu),)
+            if sample_mode == "scattering_phase_function":
+                if theta is None:
+                    raise ValueError("theta must be provided for scattering_phase_function sample_mode.")
+                samples += (theta,)
+        elif sample_mode in ["random_nu", "random_direction"]:
+            x = temperature if sample_mode == "random_nu" else nu
+            if x is None:
+                raise ValueError(f"{'temperature' if sample_mode == 'random_nu' else 'nu'} must be provided for {sample_mode} sample_mode.")
+            if ksi is None:
+                n_samples = x.size(0) if hasattr(x, "size") else len(x)
+                device = x.device if hasattr(x, "device") else wp.device_to_torch(wp.get_device())
+                ksi = torch.rand(int(n_samples), device=device, dtype=torch.float32)
+                ksi = torch.clamp(torch.arctanh(2 * ksi - 1.0), min=-8.6643, max=8.6643)
+            samples += (torch.log10(x), ksi)
 
         samples = torch.transpose(torch.vstack(samples), 0, 1)
 
-        kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
+        return samples
+
+    def ml_kabs(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="opacity",
+            )
+
+        with torch.no_grad():
+            kabs = 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten()
 
         return kabs
 
-    def ml_ksca(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        if photon_list is not None:
-            p = wp.to_torch(photon_list.p)
-            amax = wp.to_torch(photon_list.amax)
-            if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-                
-            if nu is None:
-                nu = wp.to_torch(photon_list.frequency)
+    def ml_ksca(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="opacity",
+            )
 
-                if iphotons is not None:
-                    nu = nu[iphotons]
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-            else:
-                if nu.size(0) != p.size(0):
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-
-            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(nu),)
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
-
-        ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
+        with torch.no_grad():
+            ksca = 10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
         return ksca
 
-    def ml_kext(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        if photon_list is not None:
-            p = wp.to_torch(photon_list.p)
-            amax = wp.to_torch(photon_list.amax)
-            if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
+    def ml_kext(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="opacity",
+            )
 
-            if nu is None:
-                nu = wp.to_torch(photon_list.frequency)
-            else:
-                if nu.size(0) != p.size(0):
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-
-            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(nu),)
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
-
-        return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
-                10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
-
-    def absorb(self, temperature):
-        nphotons = frequency.numpy().size
-
-        cost = -1. + 2*np.random.rand(nphotons)
-        sint = np.sqrt(1. - cost**2)
-        phi = 2*np.pi*np.random.rand(nphotons)
-
-        direction = np.array([sint*np.cos(phi), sint*np.sin(phi), cost]).T
-
-        frequency = self.random_nu(temperature)
-
-        return direction, frequency
-    
-    def update_photon_opacities(self, photon_list, iphotons, grid=None, inu=None):
-        nphotons = iphotons.size(0)
-
-        if grid is not None and inu is not None:
-            wp.launch(kernel=self.set_photon_opacities_grid,
-                      dim=(nphotons,),
-                      inputs=[photon_list, grid, inu, iphotons])
-        else:
-            wp.launch(kernel=self.set_photon_opacities,
-                      dim=(nphotons,),
-                      inputs=[photon_list, 
-                              self.ml_kabs(photon_list=photon_list, iphotons=iphotons), 
-                              self.ml_ksca(photon_list=photon_list, iphotons=iphotons), 
-                              iphotons])
+        with torch.no_grad():
+            return 10.**self.kabs_y_scaler.inverse_transform(self.kabs_model(self.kabs_x_scaler.transform(samples))).detach().flatten() + \
+                    10.**self.ksca_y_scaler.inverse_transform(self.ksca_model(self.ksca_x_scaler.transform(samples))).detach().flatten()
 
     @wp.kernel
     def set_photon_opacities(photon_list: PhotonList,
-                          kabs: wp.array(dtype=float),
-                          ksca: wp.array(dtype=float),
-                          iphotons: wp.array(dtype=int)): # pragma: no cover
+                             kabs: wp.array(dtype=float),
+                             ksca: wp.array(dtype=float),
+                             iphotons: wp.array(dtype=int)): # pragma: no cover
         i = wp.tid()
         ip = iphotons[i]
 
         photon_list.kabs[ip] = kabs[i]
         photon_list.ksca[ip] = ksca[i]
         photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
+        photon_list.opacities_out_of_date[ip] = False
+        
+    def update_photon_opacities(self, photon_list, iphotons, grid=None, inu=None):
+        nphotons = iphotons.size(0)
+        if nphotons == 0:
+            return
+
+        if grid is not None and inu is not None:
+            wp.launch(kernel=self.set_photon_opacities_grid,
+                      dim=(nphotons,),
+                      inputs=[photon_list, grid, inu, iphotons])
+        else:
+            opacity_samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                opacity_update_indices=iphotons,
+                n_cached_samples=nphotons,
+                sample_mode="opacity",
+            )
+
+            wp.launch(kernel=self.set_photon_opacities,
+                    dim=(nphotons,),
+                    inputs=[photon_list,
+                            wp.from_torch(self.ml_kabs(samples=opacity_samples)),
+                            wp.from_torch(self.ml_ksca(samples=opacity_samples)),
+                            iphotons])
 
     @wp.kernel
     def set_photon_opacities_grid(photon_list: PhotonList,
@@ -323,6 +392,8 @@ class Dust(pl.LightningDataModule):
         photon_list.kabs[ip] = grid.kabs[inu, ix, iy, iz]
         photon_list.ksca[ip] = grid.ksca[inu, ix, iy, iz]
         photon_list.albedo[ip] = photon_list.ksca[ip] / (photon_list.kabs[ip] + photon_list.ksca[ip])
+
+        photon_list.opacities_out_of_date[ip] = False
 
     def set_grid_opacities(self, grid, frequency):
         p = wp.to_torch(grid.p)
@@ -349,59 +420,60 @@ class Dust(pl.LightningDataModule):
         
         grid.ksca = wp.from_torch(torch.concatenate(ksca).reshape((len(frequency),) + shape))
 
+    def absorb(self, temperature):
+        nphotons = frequency.numpy().size
+
+        cost = -1. + 2*np.random.rand(nphotons)
+        sint = np.sqrt(1. - cost**2)
+        phi = 2*np.pi*np.random.rand(nphotons)
+
+        direction = np.array([sint*np.cos(phi), sint*np.sin(phi), cost]).T
+
+        frequency = self.random_nu(temperature)
+
+        return direction, frequency
+
     def random_nu_ml(self, p, amax, temperature, abundances=None):
-        nphotons = temperature.size
-        ksi = torch.rand(int(nphotons), dtype=torch.float32)
-        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
+        p_t = torch.tensor(p, dtype=torch.float32)
+        amax_t = torch.tensor(amax, dtype=torch.float32)
+        temperature_t = torch.tensor(temperature, dtype=torch.float32)
+        abundances_t = None
+        if abundances is not None:
+            abundances_t = tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])
 
-        log10_amax = np.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])
-            else:
-                samples += (torch.tensor(eval(dim), dtype=torch.float32),)
-        samples += (torch.log10(torch.tensor(temperature, dtype=torch.float32)), ksi)
-
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
+        samples = self._get_ml_opacity_samples(
+            p=p_t,
+            amax=amax_t,
+            abundances=abundances_t,
+            temperature=temperature_t,
+            sample_mode="random_nu",
+        )
         test_x = self.random_nu_x_scaler.transform(samples)
 
-        log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
+        with torch.no_grad():
+            log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
 
         return 10.**log10_nu.numpy()
 
-    def random_nu(self, photon_list, subset=None):
-        p = wp.to_torch(photon_list.p)
-        amax = wp.to_torch(photon_list.amax)
-        temperature = wp.to_torch(photon_list.temperature)
-        if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-        if subset is not None:
-            p = p[subset]
-            amax = amax[subset]
-            temperature = temperature[subset]
-            if photon_list.dust_abundances is not None:
-                abundances = abundances[subset]
+    def random_nu(self, photon_list, subset=None, opacity_update_indices=None, n_cached_samples=None):
+        ntotal = wp.to_torch(photon_list.temperature).size(0)
+        if opacity_update_indices is not None or n_cached_samples is not None:
+            if opacity_update_indices is None or n_cached_samples is None:
+                raise ValueError("opacity_update_indices and n_cached_samples must be provided together.")
+            nphotons = int(n_cached_samples)
+        elif subset is not None:
+            opacity_update_indices = torch.where(subset)[0].to(dtype=torch.int32)
+            nphotons = opacity_update_indices.size(0)
+        else:
+            opacity_update_indices = torch.arange(ntotal, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
+            nphotons = ntotal
 
-        abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-            
-        nphotons = temperature.size(0)
-        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(temperature), ksi)
-
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
+        samples = self._get_ml_opacity_samples(
+            photon_list=photon_list,
+            n_cached_samples=nphotons,
+            opacity_update_indices=opacity_update_indices,
+            sample_mode="random_nu",
+        )
 
         test_x = self.random_nu_x_scaler.transform(samples)
 
@@ -409,9 +481,11 @@ class Dust(pl.LightningDataModule):
             test_x = TensorDataset(test_x)
             loader = DataLoader(test_x, batch_size=250000)
 
-            log10_nu = torch.cat([torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(X).detach()), self.log10_nu_min, self.log10_nu_max) for X, in loader], 0)
+            with torch.no_grad():
+                log10_nu = torch.cat([torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(X).detach()), self.log10_nu_min, self.log10_nu_max) for X, in loader], 0)
         else:
-            log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
+            with torch.no_grad():
+                log10_nu = torch.clamp(self.random_nu_y_scaler.inverse_transform(self.random_nu_model(test_x).detach()), self.log10_nu_min, self.log10_nu_max)
         
         nu = wp.from_torch(10.**torch.flatten(log10_nu))
 
@@ -430,7 +504,8 @@ class Dust(pl.LightningDataModule):
 
         samples = torch.transpose(torch.vstack(samples), 0, 1)
 
-        return 10.**self.pmo_y_scaler.inverse_transform(self.pmo_model(self.pmo_x_scaler.transform(samples))).detach().flatten()
+        with torch.no_grad():
+            return 10.**self.pmo_y_scaler.inverse_transform(self.pmo_model(self.pmo_x_scaler.transform(samples))).detach().flatten()
 
     def ml_step(self, photon_list, s, iphotons):
         nphotons = iphotons.size(0)
@@ -457,7 +532,7 @@ class Dust(pl.LightningDataModule):
 
     def learn(self, model="random_nu", nsamples=200000, test_split=0.1, valid_split=0.2, hidden_units=(48, 48, 48),
             tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), 
-            nu_range=None, overwrite=False, checkpoint=True, pickle_protocol=2):
+            nu_range=None, overwrite=False, checkpoint=True, pickle_protocol=2, stream_data=False):
         """
         Learn a model for either the random_nu function or the ml_step function.
         
@@ -490,6 +565,7 @@ class Dust(pl.LightningDataModule):
         self.valid_split = valid_split
         self.learning = model
         self.overwrite = overwrite
+        self.stream_data = stream_data
 
         # Reset the batch_size
         if hasattr(self, "batch_size"):
@@ -604,21 +680,38 @@ class Dust(pl.LightningDataModule):
 
         self.nsamples = samples.shape[0]
 
-        X = torch.tensor(samples, dtype=torch.float32)
-        y = torch.tensor(targets, dtype=torch.float32)
+        if isinstance(samples, da.Array):
+            X = samples
+            y = targets
+        else:
+            X = torch.tensor(samples, dtype=torch.float32)
+            y = torch.tensor(targets, dtype=torch.float32)
         
         X_scaler = StandardScaler()
         X_scaler.fit(X)
-        X = X_scaler.transform(X)
         setattr(self, f"{self.current_model}_x_scaler", X_scaler)
+        if not isinstance(X, da.Array):
+            X = X_scaler.transform(X)
 
         if self.current_model != "ml_step_filter":
             y_scaler = StandardScaler()
             y_scaler.fit(y)
-            y = y_scaler.transform(y)
             setattr(self, f"{self.current_model}_y_scaler", y_scaler)
+            if not isinstance(y, da.Array):
+                y = y_scaler.transform(y)
+        else:
+            y_scaler = None
 
-        self.dataset = TensorDataset(X, y)
+        if isinstance(X, da.Array):
+            self.dataset = DaskArrayTransformDataset(X, y, 
+                                                     feature_transform=X_scaler, 
+                                                     target_transform=y_scaler, 
+                                                     feature_names=self.features, 
+                                                     target_names=self.targets, 
+                                                     chunk_size=self.batch_size)
+            self.batch_size = None
+        else:
+            self.dataset = TensorDataset(X, y)
 
     def prepare_data_random_nu(self):
         count = 0
@@ -705,7 +798,10 @@ class Dust(pl.LightningDataModule):
 
     def prepare_data_ml_step(self, device='cpu'):
         if os.path.exists("sim_results.csv"):
-            df = pd.read_csv("sim_results.csv", index_col=0)
+            if self.stream_data:
+                df = ddf.read_csv("sim_results.csv")
+            else:
+                df = pd.read_csv("sim_results.csv")
 
             self.log10_nu0_min = df['log10_nu0'].min()
             self.log10_nu0_max = df['log10_nu0'].max()
@@ -718,15 +814,28 @@ class Dust(pl.LightningDataModule):
             self.log10_tau_cell_nu0_min = df['log10_tau_cell_nu0'].min()
             self.log10_tau_cell_nu0_max = df['log10_tau_cell_nu0'].max()
         elif hasattr(self, "ml_step_filter_model") and os.path.exists("sim_results_pre-filter.csv"):
-            df = pd.read_csv("sim_results_pre-filter.csv", index_col=0)
+            def finish_probability_func(df_partition):
+                features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
+                df_partition['finish_probability'] = 1 - self.ml_step_filter_model(self.ml_step_filter_x_scaler.transform(torch.tensor(df_partition.loc[:,features].values, dtype=torch.float32))).detach().numpy().flatten()
+                return df_partition
+            
+            if self.stream_data:
+                read_csv = ddf.read_csv
+                map_function = lambda df: df.map_partitions(finish_probability_func)
+                write_opts = {"single_file": True}
+            else:
+                read_csv = pd.read_csv
+                map_function = finish_probability_func
+                write_opts = {"index": False}
 
-            df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+            df = read_csv("sim_results_pre-filter.csv")
+            
+            df = map_function(df)
 
-            features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
-            finish_probability = 1 - self.ml_step_filter_model(self.ml_step_filter_x_scaler.transform(torch.tensor(df.loc[:,features].values, dtype=torch.float32))).detach().numpy().flatten()
+            df = df[df['finish_probability'] > 0.999]
 
-            df = df[finish_probability > 0.999]
-            df.to_csv("sim_results.csv")
+            df.to_csv("sim_results.csv", **write_opts)
+            df = read_csv("sim_results.csv")
         else:
             df = self.run_dust_simulation(nphotons=self.nsamples, 
                                           tau_range=(10.**self.log10_tau_cell_nu0_min, 10.**self.log10_tau_cell_nu0_max),
@@ -736,40 +845,57 @@ class Dust(pl.LightningDataModule):
                                           nu_range=(10.**self.log10_nu0_min*u.GHz, 10.**self.log10_nu0_max*u.GHz))
             df.to_csv("sim_results.csv")
 
-        features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
-        targets = ["log10_nu0", "log10_T"] + \
+            if self.stream_data:
+                df = ddf.read_csv("sim_results.csv")
+
+        self.features = ["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]
+        self.targets = ["log10_nu0", "log10_T"] + \
                   (["log10_amax"] if "log10_amax" in self.dims else []) + \
                   (["p"] if "p" in self.dims else []) + \
                   ([f"abundance{i}" for i in range(len(self.abundances))]) + \
                   ["log10_tau_cell_nu0"]
 
-        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
-
-        data = df.loc[:, targets+features].values
-
-        samples = df.loc[:, features].values
-        targets = df.loc[:, targets].values
+        if self.stream_data:
+            map_function = lambda df: df.map_partitions(log10_tau_func)
+        else:
+            map_function = log10_tau_func
         
-        self.ml_step_features = features
+        df = map_function(df)
+
+        samples = df.loc[:, self.features].values
+        targets = df.loc[:, self.targets].values
+
+        if self.stream_data:
+            samples.compute_chunk_sizes()
+            targets.compute_chunk_sizes()
+        
+        self.ml_step_features = self.features
         self.ml_step_limits = {}
-        for key in features:
+        for key in self.features:
             self.ml_step_limits[key] = (df[key].min(), df[key].max())
 
         self.df = df
-        self.nsamples = len(df)
+        self.nsamples = samples.shape[0]
 
         return samples, targets
 
     def prepare_data_ml_step_filter(self):
-        df = pd.read_csv("sim_results_pre-filter.csv", index_col=0)
+        if self.stream_data:
+            df = ddf.read_csv("sim_results_pre-filter.csv")
+        else:
+            df = pd.read_csv("sim_results_pre-filter.csv")
 
-        features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
-        targets = ["in_grid"]
+        self.features = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
+        self.targets = ["in_grid"]
 
-        samples = df.loc[:, features].values
-        targets = df.loc[:, targets].values
+        samples = df.loc[:, self.features].values
+        targets = df.loc[:, self.targets].values
 
-        self.nsamples = len(df)
+        if self.stream_data:
+            samples.compute_chunk_sizes()
+            targets.compute_chunk_sizes()
+
+        self.nsamples = samples.shape[0]
         
         return samples, targets
 
@@ -808,6 +934,7 @@ class Dust(pl.LightningDataModule):
         density = np.ones(grid.shape) * 1e-16 * u.g / u.cm**3
 
         grid.set_physical_properties(density=density, amax=1.0*u.micron, p=3.5, dust=self)
+        grid.check_physical_properties(include_dust=True, include_gas=False)
         grid.add_sources(star)
 
         # Emit the photons
@@ -876,7 +1003,8 @@ class Dust(pl.LightningDataModule):
     # DataModule functions
 
     def plot_ml_step(self, tau=30., temperature=100.0*u.K, amax=1.*u.micron, p=3.5, nu=1e3*u.GHz, nsamples=1000, 
-                     plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])):
+                     plot_columns=np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"]),
+                     figsize=(11,11)):
         """
         Plot the samples drawn from a sphere with the provided optical depth, temperature, and frequency.
 
@@ -905,8 +1033,8 @@ class Dust(pl.LightningDataModule):
                                       p_range=(p, p), 
                                       nu_range=(nu, nu), 
                                       use_ml_step=False)
-
-        df.loc[:, "log10_tau"] = np.where(np.logical_or(df["log10_tau"] < -6.5, np.isnan(df["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df)))), df["log10_tau"])
+        
+        df = log10_tau_func(df)
 
         features = np.array(["log10_nu", "log10_Eabs", "log10_tau", "yaw", "pitch", "direction_yaw", "direction_pitch"])
         targets = ["log10_nu0", "log10_T", "log10_amax", "p", "log10_tau_cell_nu0"]
@@ -920,11 +1048,12 @@ class Dust(pl.LightningDataModule):
         self.valid_split = 0.01
         self.batch_size = 10000
         self.overwrite = False
-
+        self.stream_data = False
+    
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test"):
             del self.train, self.valid, self.test
 
-        self.plot_triangle_plots(plot_columns=plot_columns, nsamples=nsamples)
+        return self.plot_triangle_plots(plot_columns=plot_columns, nsamples=nsamples, figsize=figsize)
 
     def plot_opacity_model(self, model='kabs', show_scipy_interpolation=False):
         """
@@ -1035,7 +1164,7 @@ class Dust(pl.LightningDataModule):
 
         plt.show()
 
-    def plot_triangle_plots(self, model="ml_step", nsamples=200000, batch_size=100, num_workers=1, plot_columns='all'):
+    def plot_triangle_plots(self, model="ml_step", nsamples=200000, batch_size=100, num_workers=1, plot_columns='all', figsize=(11,11)):
         import matplotlib.pyplot as plt
 
         if self.trainer is None and hasattr(self, f"{model}_model"):
@@ -1057,7 +1186,8 @@ class Dust(pl.LightningDataModule):
             if model in ["ml_step"]:
                 X_pred = self.trainer.predict(self.dustLM, datamodule=self)
                 X_pred = torch.cat(X_pred)
-                y_pred = torch.cat([batch[1] for batch in self.predict_dataloader()])
+                data = [batch[1] for batch in self.predict_dataloader()]
+                y_pred = torch.cat(data)#torch.cat([batch[1] for batch in self.predict_dataloader()])
             elif model in ["random_nu", "random_direction"]:
                 y_pred = self.trainer.predict(self.dustLM, datamodule=self)
                 y_pred = torch.cat(y_pred)
@@ -1106,7 +1236,7 @@ class Dust(pl.LightningDataModule):
         df_true = pd.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_true), getattr(self, f"{model}_x_scaler").inverse_transform(X_true)], dim=1).numpy(), columns=np.concatenate((targets, features)))
         df_pred = pd.DataFrame(torch.cat([getattr(self, f"{model}_y_scaler").inverse_transform(y_pred), getattr(self, f"{model}_x_scaler").inverse_transform(X_pred)], dim=1).numpy(), columns=np.concatenate((targets, features)))
 
-        fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=(11,11))
+        fig, ax = plt.subplots(nrows=len(columns), ncols=len(columns), figsize=figsize)
 
         if len(columns) == 1:
             ax = np.array([[ax]])
@@ -1130,13 +1260,15 @@ class Dust(pl.LightningDataModule):
 
             ax[i,0].set_ylabel(key1)
 
-        plt.show()
+        return fig, ax
 
     def setup(self, stage=None):
         if hasattr(self, "train") and hasattr(self, "valid") and hasattr(self, "test") and not self.overwrite:
             return
         
-        if "ml_step" in self.learning or self.ndims == 0:
+        if isinstance(self.dataset, DaskArrayTransformDataset):
+            self.train, self.valid, self.test = self.dataset.random_split([1 - (self.valid_split + self.test_split), self.valid_split, self.test_split])
+        elif "ml_step" in self.current_model or self.ndims == 0:
             test_size = int(self.test_split * self.nsamples)
             valid_size = int((self.nsamples - test_size)*self.valid_split)
             train_size = self.nsamples - test_size - valid_size
@@ -1167,16 +1299,16 @@ class Dust(pl.LightningDataModule):
             self.overwrite = False
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=False)
 
     def val_dataloader(self):
-        return DataLoader(self.valid, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.valid, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=False)
 
     def test_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=False)
 
     def predict_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=False)
 
     def state_dict(self):
         state_dict = {
@@ -1339,42 +1471,19 @@ class HenyeyGreensteinDust(Dust):
 
         photon_list.scattering_phase_function[ip] = (1. - photon_list.g[ip]**2.) / (1. + photon_list.g[ip]**2. - 2. * photon_list.g[ip] * mu)
 
-    def ml_g(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None):
-        if photon_list is not None:
-            p = wp.to_torch(photon_list.p)
-            amax = wp.to_torch(photon_list.amax)
-            if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-
-            if nu is None:
-                nu = wp.to_torch(photon_list.frequency)
-
-                if iphotons is not None:
-                    nu = nu[iphotons]
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-            else:
-                if nu.size(0) != p.size(0):
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-
-            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(nu),)
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
+    def ml_g(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="opacity",
+            )
 
         g = self.g_y_scaler.inverse_transform(self.g_model(self.g_x_scaler.transform(samples))).detach().flatten()
 
@@ -1385,19 +1494,28 @@ class HenyeyGreensteinDust(Dust):
 
     def update_photon_opacities(self, photon_list, iphotons, grid=None, inu=None):
         nphotons = iphotons.size(0)
+        if nphotons == 0:
+            return
 
         if grid is not None and inu is not None:
             wp.launch(kernel=self.set_photon_opacities_grid,
                       dim=(nphotons,),
                       inputs=[photon_list, grid, inu, iphotons])
         else:
+            opacity_samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                opacity_update_indices=iphotons,
+                n_cached_samples=nphotons,
+                sample_mode="opacity",
+            )
+
             wp.launch(kernel=self.set_photon_opacities,
-                      dim=(nphotons,),
-                      inputs=[photon_list, 
-                              self.ml_kabs(photon_list=photon_list, iphotons=iphotons), 
-                              self.ml_ksca(photon_list=photon_list, iphotons=iphotons), 
-                              self.ml_g(photon_list=photon_list, iphotons=iphotons),
-                              iphotons])
+                    dim=(nphotons,),
+                    inputs=[photon_list,
+                            wp.from_torch(self.ml_kabs(samples=opacity_samples)),
+                            wp.from_torch(self.ml_ksca(samples=opacity_samples)),
+                            wp.from_torch(self.ml_g(samples=opacity_samples)),
+                            iphotons])
 
     @wp.kernel
     def set_photon_opacities(photon_list: PhotonList,
@@ -1413,6 +1531,8 @@ class HenyeyGreensteinDust(Dust):
         photon_list.g[ip] = g[i]
         photon_list.albedo[ip] = ksca[i] / (kabs[i] + ksca[i])
 
+        photon_list.opacities_out_of_date[ip] = False
+
     @wp.kernel
     def set_photon_opacities_grid(photon_list: PhotonList,
                                   grid: GridStruct,
@@ -1426,6 +1546,8 @@ class HenyeyGreensteinDust(Dust):
         photon_list.ksca[ip] = grid.ksca[inu, ix, iy, iz]
         photon_list.g[ip] = grid.g[inu, ix, iy, iz]
         photon_list.albedo[ip] = photon_list.ksca[ip] / (photon_list.kabs[ip] + photon_list.ksca[ip])
+
+        photon_list.opacities_out_of_date[ip] = False
 
     def set_grid_opacities(self, grid, frequency):
         super().set_grid_opacities(grid, frequency)
@@ -1457,7 +1579,7 @@ class HenyeyGreensteinDust(Dust):
 
         return state_dict
 
-class GeneralDust(Dust):
+class GeneralScatteringDust(Dust):
     def __init__(self, lam=None, kabs=None, ksca=None, scattering_phase_function=None, theta=None, amax=None, 
                  p=None, abundances=(), device="cpu", ntemperatures=1000, fiducial_values={}):
         """
@@ -1500,40 +1622,7 @@ class GeneralDust(Dust):
     def scatter(self, photon_list, iphotons):
         nphotons = iphotons.size(0)
 
-        p = wp.to_torch(photon_list.p)
-        amax = wp.to_torch(photon_list.amax)
-        frequency = wp.to_torch(photon_list.frequency)
-        if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-        if iphotons is not None:
-            p = p[iphotons]
-            amax = amax[iphotons]
-            frequency = frequency[iphotons]
-            if photon_list.dust_abundances is not None:
-                abundances = abundances[iphotons]
-
-        abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-            
-        nphotons = iphotons.size(0)
-        ksi = torch.rand(int(nphotons), device=wp.device_to_torch(wp.get_device()), dtype=torch.float32)
-        ksi = torch.clamp(torch.arctanh(2*ksi - 1.), min=-8.6643, max=8.6643)
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(frequency), ksi)
-
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
-
-        test_x = self.random_direction_x_scaler.transform(samples)
-
-        theta = self.random_direction_y_scaler.inverse_transform(self.random_direction_model(test_x).detach()).flatten()
+        theta = self.ml_random_direction(photon_list=photon_list, iphotons=iphotons)
 
         wp.launch(kernel=self.random_direction,
                   dim=(nphotons,),
@@ -1541,6 +1630,28 @@ class GeneralDust(Dust):
                           wp.from_torch(theta),
                           iphotons, 
                           np.random.randint(0, 100000)])
+        
+    def ml_random_direction(self, p=None, amax=None, nu=None, abundances=None, photon_list=None, iphotons=None, ksi=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="random_direction",
+                ksi=ksi,
+            )
+
+        test_x = self.random_direction_x_scaler.transform(samples)
+
+        theta = self.random_direction_y_scaler.inverse_transform(self.random_direction_model(test_x).detach()).flatten()
+        theta = torch.clamp(theta, min=0., max=np.pi)
+
+        return theta
     
     @wp.kernel
     def random_direction(direction: wp.array(dtype=wp.vec3),
@@ -1564,9 +1675,7 @@ class GeneralDust(Dust):
     def update_photon_scattering_phase_function(self, photon_list, direction, iphotons):
         nphotons = iphotons.size(0)
 
-        theta = torch.acos((wp.to_torch(photon_list.direction)[iphotons] * torch.tensor(wp.array(direction))).sum(axis=1))
-
-        scattering_phase_function = self.ml_scattering_phase_function(photon_list=photon_list, iphotons=iphotons, theta=theta)
+        scattering_phase_function = self.ml_scattering_phase_function(photon_list=photon_list, iphotons=iphotons, direction=direction)
 
         wp.launch(kernel=self.scattering_phase_function_general_dust_wp,
                   dim=(nphotons,),
@@ -1584,42 +1693,21 @@ class GeneralDust(Dust):
 
         photon_list.scattering_phase_function[ip] = 2. * scattering_phase_function[i]
 
-    def ml_scattering_phase_function(self, p=None, amax=None, nu=None, theta=None, photon_list=None, iphotons=None):
-        if photon_list is not None:
-            p = wp.to_torch(photon_list.p)
-            amax = wp.to_torch(photon_list.amax)
-            if photon_list.dust_abundances is not None:
-                abundances = wp.to_torch(photon_list.dust_abundances)
-
-            if nu is None:
-                nu = wp.to_torch(photon_list.frequency)
-
-                if iphotons is not None:
-                    nu = nu[iphotons]
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-            else:
-                if nu.size(0) != p.size(0):
-                    p = p[iphotons]
-                    amax = amax[iphotons]
-                    if abundances is not None:
-                        abundances = abundances[iphotons]
-
-            abundances = tuple([abundances[:,i] for i in range(len(self.abundances))])
-
-        if amax is not None:
-            log10_amax = torch.log10(amax)
-
-        samples = ()
-        for dim in self.dims:
-            if dim == "abundances" and abundances is not None:
-                samples += abundances
-            else:
-                samples += (eval(dim),)
-        samples += (torch.log10(nu), theta)
-        samples = torch.transpose(torch.vstack(samples), 0, 1)
+    def ml_scattering_phase_function(self, p=None, amax=None, nu=None, theta=None, direction=None, abundances=None, photon_list=None, iphotons=None, samples=None):
+        if samples is None:
+            n_cached_samples = iphotons.size(0) if iphotons is not None else None
+            samples = self._get_ml_opacity_samples(
+                photon_list=photon_list,
+                p=p,
+                amax=amax,
+                nu=nu,
+                abundances=abundances,
+                n_cached_samples=n_cached_samples,
+                opacity_update_indices=iphotons,
+                sample_mode="scattering_phase_function",
+                theta=theta,
+                direction=direction,
+            )
 
         scattering_phase_function = 10.**self.scattering_phase_function_y_scaler.inverse_transform(
             self.scattering_phase_function_model(self.scattering_phase_function_x_scaler.transform(samples))).\
@@ -1725,6 +1813,42 @@ class GeneralDust(Dust):
 
         plt.plot(plot_x, interpolated)
         plt.plot(plot_x, nned)
+        plt.show()
+
+    def plot_random_direction_model(self, nsamples=100000):
+        """
+        Plot samples drawn from the learned random_direction model against samples drawn from the scattering phase function.
+
+        Parameters
+        ----------
+        nsamples : int
+            The number of samples to draw from each model for the plot.
+        """
+        import matplotlib.pyplot as plt
+
+        amax = np.repeat(10.**np.random.uniform(-4., 1., 1), nsamples)
+        p = np.repeat(np.random.uniform(2.5, 4.5, 1), nsamples)
+        abundances = tuple([np.repeat(np.random.uniform(0, 1, 1), nsamples) for i in range(len(self.abundances))])
+        nu = np.repeat(10.**np.random.uniform(np.log10(self.nu.min().to(u.GHz).value), np.log10(self.nu.max().to(u.GHz).value), 1), nsamples)
+        print(f"p: {p[0]}, amax: {amax[0]}, nu: {nu[0]}, abundances: {[abundances[i][0] for i in range(len(self.abundances))]}")
+
+        direction = self.ml_random_direction(p=torch.tensor(p, dtype=torch.float32), 
+                                             amax=torch.tensor(amax, dtype=torch.float32), 
+                                             nu=torch.tensor(nu, dtype=torch.float32), 
+                                             abundances=tuple([torch.tensor(a, dtype=torch.float32) for a in abundances])).numpy()
+
+        counts, bins, _ = plt.hist(direction, 100)
+
+        pdf = self.ml_scattering_phase_function(p=torch.tensor(p[0], dtype=torch.float32).repeat((bins[1:-1].size,)), 
+                                                amax=torch.tensor(amax[0], dtype=torch.float32).repeat((bins[1:-1].size,)), 
+                                                nu=torch.tensor(nu[0], dtype=torch.float32).repeat((bins[1:-1].size,)),
+                                                theta=torch.tensor(bins[1:-1], dtype=torch.float32), 
+                                                abundances=tuple([torch.tensor(a[0], dtype=torch.float32).repeat((bins[1:-1].size,)) for a in abundances])).numpy() / \
+                (1. / np.sqrt(1. - np.cos(bins[1:-1])**2.))
+        pdf *= counts.max() / pdf.max()
+
+        plt.plot(bins[1:-1], pdf, '-')
+
         plt.show()
 
     def state_dict(self):
@@ -1834,13 +1958,13 @@ def load(filename, device="cpu"):
     if "g" in state_dict["dust_properties"]:
         d = HenyeyGreensteinDust(**state_dict["dust_properties"], device=device)
     elif "scattering_phase_function" in state_dict["dust_properties"]:
-        d = GeneralDust(**state_dict["dust_properties"], device=device)
+        d = GeneralScatteringDust(**state_dict["dust_properties"], device=device)
     else:
         d = IsotropicDust(**state_dict["dust_properties"], device=device)
 
-    for attr in ["kabs", "ksca", "pmo", "random_nu", "g", "scattering_phase_function"]:
+    for attr in ["kabs", "ksca", "pmo", "random_nu", "g", "scattering_phase_function", "random_direction"]:
         if f"{attr}_state_dict" in state_dict:
-            if attr in ["random_nu", "scattering_phase_function"]:
+            if attr in ["random_nu", "scattering_phase_function", "random_direction"]:
                 input_size = d.ndims + 2
             else:
                 input_size = d.ndims + 1
@@ -1853,18 +1977,6 @@ def load(filename, device="cpu"):
             getattr(d, f'{attr}_x_scaler').load_state_dict(state_dict[f"{attr}_x_scaler"])
             setattr(d, f'{attr}_y_scaler', StandardScaler())
             getattr(d, f'{attr}_y_scaler').load_state_dict(state_dict[f"{attr}_y_scaler"])
-
-    if "random_direction_state_dict" in state_dict:
-        hidden_units = (tuple([state_dict['random_direction_state_dict'][key].size(1) for key in state_dict['random_direction_state_dict'] if '0.hyper' in key and 'weight' in key and '0.weight' not in key]),) * len([state_dict['random_direction_state_dict'][key].size(0) for key in state_dict['random_direction_state_dict'] if '0.weight' in key])
-
-        d.initialize_model(model="random_direction", model_type="flow", input_size=1, output_size=3, hidden_units=hidden_units)
-
-        d.random_direction_model.load_state_dict(state_dict['random_direction_state_dict'])
-
-        d.random_direction_x_scaler = StandardScaler()
-        d.random_direction_x_scaler.load_state_dict(state_dict["random_direction_x_scaler"])
-        d.random_direction_y_scaler = StandardScaler()
-        d.random_direction_y_scaler.load_state_dict(state_dict["random_direction_y_scaler"])
 
     if "ml_step_state_dict" in state_dict:
         hidden_units = (tuple([state_dict['ml_step_state_dict'][key].size(1) for key in state_dict['ml_step_state_dict'] if '0.hyper' in key and 'weight' in key and '0.weight' not in key]),) * len([state_dict['ml_step_state_dict'][key].size(0) for key in state_dict['ml_step_state_dict'] if '0.weight' in key])
@@ -1889,6 +2001,10 @@ def load(filename, device="cpu"):
         d.ml_step_limits = state_dict["ml_step_limits"]
 
     return d
+
+def log10_tau_func(df_partition):
+    df_partition["log10_tau"] = np.where(np.logical_or(df_partition["log10_tau"] < -6.5, np.isnan(df_partition["log10_tau"].values)), np.log10(-np.log(1. - np.random.rand(len(df_partition)))), df_partition["log10_tau"])
+    return df_partition
 
 class MultiLayerPerceptron(nn.Module):
     def __init__(self, input_size, output_size, hidden_units=(48, 48, 48), final_activation=None):
@@ -1931,9 +2047,12 @@ class StandardScaler:
         self.std = None
 
     def fit(self, data):
-        # Calculate mean and std from the training data
-        self.mean = data.mean(dim=0, keepdim=True)
-        self.std = data.std(dim=0, keepdim=True) # Use unbiased=False for consistency
+        if torch.is_tensor(data):
+            self.mean = data.mean(dim=0, keepdim=True)
+            self.std = data.std(dim=0, keepdim=True) # Use unbiased=False for consistency
+        else:
+            self.mean = torch.tensor(data.mean(axis=0).compute(), dtype=torch.float32)
+            self.std = torch.tensor(data.std(axis=0).compute(), dtype=torch.float32)
 
     def transform(self, data):
         # Apply the standardization
@@ -2010,3 +2129,100 @@ class DustLightningModule(pl.LightningModule):
             return self.condition(y).sample()
         else:
             return self(x)
+
+class CustomCheckpointIO(TorchCheckpointIO):
+    def save_checkpoint(self, checkpoint: dict, path: str, storage_options: Optional[Any] = None) -> None:
+        if storage_options is not None:
+            raise TypeError(
+                "`Trainer.save_checkpoint(..., storage_options=...)` with `storage_options` arg"
+                f" is not supported for `{self.__class__.__name__}`. Please implement your custom `CheckpointIO`"
+                " to define how you'd like to use `storage_options`."
+            )
+        # Override save_checkpoint to use a specific protocol
+        fs = get_filesystem(path)
+        fs.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(checkpoint, path, pickle_protocol=4)
+
+class DaskArrayTransformDataset(IterableDataset):
+    def __init__(self, X, y, feature_transform=None, target_transform=None, feature_names=None, target_names=None, chunk_size=1024):
+        X.compute_chunk_sizes()
+        y.compute_chunk_sizes()
+
+        self.X = X
+        self.y = y
+
+        self.feature_transform = feature_transform
+        self.target_transform = target_transform
+
+        self.feature_names = feature_names
+        self.target_names= target_names
+
+        self.length = int(X.shape[0])
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+        self.chunk_size = chunk_size
+
+        if len(self.X) != len(self.y):
+            raise ValueError("Features and targets must have matching chunk layouts.")
+
+    def __len__(self):
+        return int(np.ceil(self.length / self.chunk_size))
+
+    def __iter__(self):
+        total_chunks = len(self)
+        worker_info = get_worker_info()
+
+        if worker_info is None:
+            start_chunk = 0
+            end_chunk = total_chunks
+        else:
+            chunks_per_worker = int(np.ceil(total_chunks / worker_info.num_workers))
+            start_chunk = worker_info.id * chunks_per_worker
+            end_chunk = min(start_chunk + chunks_per_worker, total_chunks)
+
+        for chunk_index in range(start_chunk, end_chunk):
+            start = chunk_index * self.chunk_size
+            end = min(start + self.chunk_size, self.length)
+
+            features = torch.as_tensor(self.X[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
+            target = torch.as_tensor(self.y[start:end].compute(scheduler="synchronous"), dtype=torch.float32)
+
+            # Apply the transforms if they are provided.
+            if self.feature_transform is not None:
+                features = self.feature_transform.transform(features)
+
+            if self.target_transform is not None:
+                target = self.target_transform.transform(target)
+
+            yield features, target
+
+    def random_split(self, splits):
+        df = ddf.from_array(da.concatenate((self.X, self.y), axis=1), columns=self.feature_names+self.target_names)
+
+        train_df, valid_df, test_df = df.random_split(splits, shuffle=False)
+
+        train_dataset = DaskArrayTransformDataset(train_df[self.feature_names].to_dask_array(lengths=True),
+                                                  train_df[self.target_names].to_dask_array(lengths=True),
+                                                  feature_transform=self.feature_transform,
+                                                  target_transform=self.target_transform,
+                                                  feature_names=self.feature_names,
+                                                  target_names=self.target_names,
+                                                  chunk_size=self.chunk_size)
+
+        valid_dataset = DaskArrayTransformDataset(valid_df[self.feature_names].to_dask_array(lengths=True),
+                                                  valid_df[self.target_names].to_dask_array(lengths=True),
+                                                  feature_transform=self.feature_transform,
+                                                  target_transform=self.target_transform,
+                                                  feature_names=self.feature_names,
+                                                  target_names=self.target_names,
+                                                  chunk_size=self.chunk_size)
+
+        test_dataset = DaskArrayTransformDataset(test_df[self.feature_names].to_dask_array(lengths=True),
+                                                 test_df[self.target_names].to_dask_array(lengths=True),
+                                                 feature_transform=self.feature_transform,
+                                                 target_transform=self.target_transform,
+                                                 feature_names=self.feature_names,
+                                                 target_names=self.target_names,
+                                                 chunk_size=self.chunk_size)
+
+        return train_dataset, valid_dataset, test_dataset

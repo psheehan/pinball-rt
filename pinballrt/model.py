@@ -1,5 +1,6 @@
 import astropy.constants as const
 import astropy.units as u
+import astropy_xarray
 
 from .sources import DiffuseSource, EnergySource
 from .grids import Grid
@@ -41,7 +42,7 @@ class Model:
         """
         self.grid_list = {"cpu":grid(**grid_kwargs, device='cpu')}
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = grid(**grid_kwargs, device=d)
+            self.grid_list["cuda"] = grid(**grid_kwargs, device="cuda")
             self.grid = self.grid_list["cuda"]
         else:
             self.grid = self.grid_list["cpu"]
@@ -115,7 +116,7 @@ class Model:
             self.grid_list[device].add_sources(sources)
 
     def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", 
-                   return_timing=False, nbatch=1):
+                   return_timing=False, nbatch=1, progress=True):
         """
         Perform a thermal Monte Carlo simulation.
 
@@ -132,20 +133,25 @@ class Model:
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+        
+        self.grid_list[device].check_physical_properties(include_dust=True, include_gas=False)
+
         for source in self.grid_list[device].sources:
             if isinstance(source, DiffuseSource):
                 source.initialize_luminosity_array(wavelength="random")
 
-        told = self.grid.grid.temperature.numpy().copy()
+        told = self.grid_list[device].grid.temperature.numpy().copy()
 
         timing = {}
         count = 0
         while count < 10:
             iter_timing = {}
 
-            print("Iteration", count)
+            if progress:
+                print("Iteration", count)
+
             treallyold = told.copy()
-            told = self.grid.grid.temperature.numpy().copy()
+            told = self.grid_list[device].grid.temperature.numpy().copy()
 
             njobs = self.ncores * nbatch
 
@@ -156,28 +162,33 @@ class Model:
                                         SeedSequence(np.random.randint(10000)).spawn(njobs),
                                         [nphotons]*njobs,
                                         [njobs]*njobs,
-                                        [use_ml_step]*njobs))
-            total_energy = [r[0] for r in result]
+                                        [use_ml_step]*njobs,
+                                        [progress]*njobs))
+            results = [r for r in result]
+            total_energy = [r[0] for r in results]
+            iter_timing["photon propagation"] = dict(zip([str(i) for i in range(njobs)], [r[1] for r in results]))
             time.sleep(0.1)
             t2 = time.time()
             iter_timing["Total Time"] = t2 - t1
 
             total_energy = np.mean(np.array(total_energy), axis=0)
             with wp.ScopedDevice(self.grid.device):
-                self.grid.grid.energy = wp.array3d(total_energy, dtype=float)
+                self.grid_list[device].grid.energy = wp.array3d(total_energy, dtype=float)
 
             t1 = time.time()
-            self.grid.update_grid(timing=iter_timing)
+            self.grid_list[device].update_grid(timing=iter_timing)
             t2 = time.time()
             iter_timing["Update grid temperature time"] = t2 - t1
 
             for dev in self.grid_list:
                 with wp.ScopedDevice(self.grid_list[dev].device):
-                        self.grid_list[dev].grid.temperature = wp.array3d(self.grid.grid.temperature.numpy(), dtype=float)
-                        self.grid_list[dev].grid.energy = wp.zeros(self.grid.shape, dtype=float)
+                        self.grid_list[dev].grid.temperature = wp.array3d(self.grid_list[device].grid.temperature.numpy(), dtype=float)
+                        self.grid_list[dev].grid.energy = wp.zeros(self.grid_list[device].shape, dtype=float)
+
+            timing[str(count)] = iter_timing
 
             if count > 1:
-                R = np.maximum(told/self.grid.grid.temperature.numpy(), self.grid.grid.temperature.numpy()/told)
+                R = np.maximum(told/self.grid_list[device].grid.temperature.numpy(), self.grid_list[device].grid.temperature.numpy()/told)
                 Rold = np.maximum(told/treallyold, treallyold/told)
 
                 Q = np.percentile(R, p)
@@ -185,19 +196,21 @@ class Model:
 
                 Del = max(Q/Qold, Qold/Q)
 
-                print(count, Q, Del)
+                if progress:
+                    print(count, Q, Del)
+
                 if Q < Qthresh and Del < Delthresh:
                     break
             else:
-                print(count)
+                if progress:
+                    print(count)
 
-            timing[str(count)] = iter_timing
             count += 1
 
         if return_timing:
             return timing
 
-    def scattering_mc(self, nphotons, wavelengths, device="cpu", return_timing=False, nbatch=1, set_grid_opacities=True):
+    def scattering_mc(self, nphotons, wavelengths, device="cpu", return_timing=False, nbatch=1, set_grid_opacities=True, progress=True):
         """
         Perform a scattering Monte Carlo simulation.
 
@@ -210,6 +223,9 @@ class Model:
         device : str, optional
             The device to use for the simulation (default is "cpu").
         """
+
+        self.grid_list[device].check_physical_properties(include_dust=True, include_gas=False)
+
         for dev in self.grid_list:
             with wp.ScopedDevice(self.grid_list[dev].device):
                 self.grid_list[dev].scattering = torch.zeros((len(wavelengths),)+self.grid_list[dev].shape, 
@@ -241,8 +257,11 @@ class Model:
                                        [njobs]*njobs,
                                        [wavelength]*njobs,
                                        [i]*njobs,
-                                       [self.camera_list[device].i_wp]*njobs))
-            total_scattering = [r[0] for r in result]
+                                       [self.camera_list[device].i_wp]*njobs,
+                                       [progress]*njobs))
+            results = [r for r in result]
+            total_scattering = [r[0] for r in results]
+            iter_timing["photon propagation"] = dict(zip([str(i) for i in range(njobs)], [r[1] for r in results]))
             time.sleep(0.1)
             t2 = time.time()
             iter_timing["Total Time"] = t2 - t1
@@ -252,15 +271,15 @@ class Model:
 
             for source in self.grid_list[device].sources:
                 if isinstance(source, DiffuseSource) and not isinstance(source, EnergySource):
-                    total_scattering[i] += torch.tensor((source.luminosity * (self.grid.distance_unit**2 * u.Jy) * \
+                    total_scattering[i] += torch.tensor((source.luminosity * (self.grid_list[device].distance_unit**2 * u.Jy) * \
                                                          source.density / (4.*np.pi * u.steradian * \
-                                                                           (wp.to_torch(self.grid.grid.dust_density) * \
-                                                                            self.grid.dust.ml_kext(
-                                                                                p=wp.to_torch(self.grid.grid.p).flatten(), 
-                                                                                amax=wp.to_torch(self.grid.grid.amax).flatten(), 
-                                                                                nu=torch.ones(self.grid.shape).flatten()*frequency.to(u.GHz).value,
-                                                                                abundances=tuple([wp.to_torch(self.grid.grid.dust_abundances)[i].flatten() for i in range(self.grid.n_dust_abundances)])).reshape(self.grid.shape) * \
-                                                         self.grid.distance_unit**-1))).value, 
+                                                                           (wp.to_torch(self.grid_list[device].grid.dust_density) * \
+                                                                            self.grid_list[device].dust.ml_kext(
+                                                                                p=wp.to_torch(self.grid_list[device].grid.p).flatten(), 
+                                                                                amax=wp.to_torch(self.grid_list[device].grid.amax).flatten(), 
+                                                                                nu=torch.ones(self.grid_list[device].shape, device=device).flatten()*frequency.to(u.GHz).value,
+                                                                                abundances=tuple([wp.to_torch(self.grid_list[device].grid.dust_abundances)[i].flatten() for i in range(self.grid_list[device].n_dust_abundances)])).reshape(self.grid_list[device].shape)).cpu().numpy() * \
+                                                         self.grid_list[device].distance_unit**-1)).value, 
                                                          device=device)
 
             for dev in self.grid_list:
@@ -272,7 +291,8 @@ class Model:
             return timing
 
     def make_image(self, npix=100, pixel_size=None, channels=None, rest_frequency=None, incl=0, pa=0, distance=1*u.pc, 
-                   include_dust=True, include_gas=True, include_sources=True, nphotons=100000, device="cpu"):
+                   include_dust=True, include_gas=True, include_sources=True, nphotons=100000, device="cpu", return_timing=False,
+                   progress=True):
         """
         Create an image from the dust distribution.
 
@@ -303,6 +323,10 @@ class Model:
             The device to use for the simulation (default is "cpu").
         """
 
+        timing = {}
+
+        self.grid_list[device].check_physical_properties(include_dust=include_dust, include_gas=include_gas)
+
         if isinstance(npix, int):
             nx, ny = npix, npix
         elif isinstance(npix, (list, tuple, np.ndarray)):
@@ -312,8 +336,8 @@ class Model:
             pixel_size = ((1.25*self.grid.grid_size()*self.grid.distance_unit / distance).decompose()*
                           u.radian).to(u.arcsec) / npix
 
-        self.grid.grid.include_dust = include_dust
-        self.grid.grid.include_gas = include_gas
+        self.grid_list[device].grid.include_dust = include_dust
+        self.grid_list[device].grid.include_gas = include_gas
 
         # Check whether spectral is wavelength or frequency
 
@@ -334,7 +358,7 @@ class Model:
         # Check which lines from the gas should be included
 
         if include_gas:
-            self.grid.select_lines(lam)
+            self.grid_list[device].select_lines(lam)
 
         # First, run a scattering simulation to get the scattering phase function
 
@@ -342,29 +366,40 @@ class Model:
             self.camera_list[dev].set_orientation(incl, pa, distance)
 
         self.grid_list[device].set_grid_opacities(nu)
+        
         if include_dust:
-            self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False)
+            timing["scattering"] = self.scattering_mc(nphotons, lam, device=device, set_grid_opacities=False, return_timing=True,
+                                                      progress=progress)
 
         # Now set up the image proper.
 
         physical_pixel_size = (pixel_size*distance).to(self.grid.distance_unit, equivalencies=u.dimensionless_angles()).value
 
         image = xr.Dataset(
-            #data_vars={
-            #    "intensity": (["x", "y", "lam"], np.zeros((nx, ny, lam.size))),},
             coords={
-                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size),
-                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size),
-                "lam": ("lam", lam),
-                "nu": ("lam", (const.c / lam).to(u.GHz)),},
+                "x": ("x", (np.arange(nx) - nx / 2)*pixel_size.value),
+                "y": ("y", (np.arange(ny) - ny / 2)*pixel_size.value),
+                "lam": ("lam", lam.value),
+                "nu": ("lam", (const.c / lam).to(u.GHz).value),},
             attrs={
-                "pixel_size": pixel_size,})
+                "pixel_size": pixel_size,}).astropy.quantify(x=pixel_size.unit,
+                                                             y=pixel_size.unit,
+                                                             lam=lam.unit,
+                                                             nu=nu.unit)
 
-        new_x, new_y = xr.broadcast(image.x, image.y)
-        new_x, new_y = new_x.values.flatten(), new_y.values.flatten()
+        new_x, new_y = xr.broadcast(image.x.astropy.dequantify(), 
+                                    image.y.astropy.dequantify())
+        new_x, new_y = new_x.astropy.quantify(), new_y.astropy.quantify()
+
+        # convert to physical units
+        new_x = (new_x * distance).astropy.to(self.grid.distance_unit, 
+                                              equivalencies=u.dimensionless_angles()).values.flatten()
+        new_y = (new_y * distance).astropy.to(self.grid.distance_unit, 
+                                              equivalencies=u.dimensionless_angles()).values.flatten()
 
         njobs = self.ncores
 
+        t1 = time.time()
         intensity = np.array(list(self.pool.map(make_image_raytracing_task, 
                                                 zip([self.camera_list[device]]*njobs, 
                                                      np.array_split(new_x, self.ncores), 
@@ -374,8 +409,11 @@ class Model:
                                                      [physical_pixel_size]*njobs,
                                                      [image.nu]*njobs)
                                                 ))).sum(axis=0) * (u.Jy / u.steradian)
+        t2 = time.time()
+        timing["raytracing"] = t2 - t1
 
         if include_sources:
+            t1 = time.time()
             source_intensity = np.array(list(self.pool.map(make_image_source_task, 
                                                         zip([self.camera_list[device]]*njobs, 
                                                                 SeedSequence(np.random.randint(10000)).spawn(njobs),
@@ -385,12 +423,17 @@ class Model:
                                                                 [physical_pixel_size]*njobs,
                                                                 [njobs]*njobs,)
                                                         ))).mean(axis=0) * u.Jy/u.steradian
+            t2 = time.time()
+            timing["source raytracing"] = t2 - t1
 
             intensity += source_intensity
 
-        image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian)))
+        image = image.assign(intensity=(("x","y","lam"), intensity.to(u.Jy / u.steradian).value)).astropy.quantify(intensity=u.Jy / u.steradian)
 
-        return image
+        if return_timing:
+            return image, timing
+        else:
+            return image
 
     def make_spectrum(self, lam=np.array([1.])*u.micron, incl=0, pa=0, distance=1*u.pc, nphotons=10000, device="cpu"):
         """
@@ -423,20 +466,20 @@ class Model:
         return spectrum
     
 def thermal_mc_task(args):
-    grid, position, s, nphotons, njobs, use_ml_step = args
+    grid, position, s, nphotons, njobs, use_ml_step, progress = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
     photon_list = grid.emit(int(nphotons / njobs), timing=iter_timing)
-    grid.propagate_photons(photon_list, use_ml_step=use_ml_step, timing=iter_timing, position=position)
+    grid.propagate_photons(photon_list, use_ml_step=use_ml_step, timing=iter_timing, position=position, progress=progress)
 
     return grid.grid.energy.numpy(), iter_timing
 
 def scattering_mc_task(args):
-    grid, position, s, nphotons, njobs, wavelength, i, camera_direction = args
+    grid, position, s, nphotons, njobs, wavelength, i, camera_direction, progress = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
     photon_list = grid.emit(int(nphotons / njobs), wavelength, scattering=True, timing=iter_timing)
-    grid.propagate_photons_scattering(photon_list, i, camera_direction, timing=iter_timing, position=position)
+    grid.propagate_photons_scattering(photon_list, i, camera_direction, timing=iter_timing, position=position, progress=progress)
 
     return grid.scattering, iter_timing
 

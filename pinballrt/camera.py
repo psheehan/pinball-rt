@@ -43,9 +43,9 @@ class Camera:
         xflat, yflat = x.flatten(), y.flatten()
         intensity = np.zeros(xflat.shape+(nu.size,), dtype=np.float32)
         tau_intensity = np.zeros(xflat.shape+(nu.size,), dtype=float)
-        #image_ix, image_iy = np.meshgrid(np.arange(x.shape[0]), np.arange(x.shape[1]))
-        image_ix = (xflat / pixel_size + nx / 2).astype(np.int32)
-        image_iy = (yflat / pixel_size + ny / 2).astype(np.int32)
+        # image_ix, image_iy = np.meshgrid(np.arange(x.shape[0]), np.arange(x.shape[1]))
+        image_ix = np.rint(xflat / pixel_size + nx / 2).astype(np.int32)
+        image_iy = np.rint(yflat / pixel_size + ny / 2).astype(np.int32)
 
         pixel_too_large = np.zeros(xflat.shape).astype(bool)
 
@@ -70,6 +70,7 @@ class Camera:
         ray_list.p = wp.zeros(xflat.size, dtype=float)
         if self.grid.n_dust_abundances > 0:
             ray_list.dust_abundances = wp.array2d(np.zeros((xflat.size, self.grid.n_dust_abundances)), dtype=float)
+        ray_list.opacities_out_of_date = wp.zeros(xflat.size, dtype=bool)
 
         ray_list.radius = wp.array(np.zeros(xflat.shape), dtype=float)
         if isinstance(self.grid, LogUniformSphericalGrid):

@@ -23,9 +23,12 @@ dependencies = [
   "scipy",
   "tqdm",
   "xarray",
+  "astropy-xarray",
   "zuko", 
   "schwimmbad",
   "requests",
+  "dask",
+  "pyarrow",
 ]
 
 [project.optional-dependencies]
