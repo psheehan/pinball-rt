@@ -226,6 +226,10 @@ class Model:
 
         self.grid_list[device].check_physical_properties(include_dust=True, include_gas=False)
 
+        if not hasattr(self.camera_list[device], "i_wp"):
+            print("Camera orientation not set. Setting default orientation with inclination 0, position angle 0.")
+            self.camera_list[device].set_orientation(0., 0., 1.)
+
         for dev in self.grid_list:
             with wp.ScopedDevice(self.grid_list[dev].device):
                 self.grid_list[dev].scattering = torch.zeros((len(wavelengths),)+self.grid_list[dev].shape, 
