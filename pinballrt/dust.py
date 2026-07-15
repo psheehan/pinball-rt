@@ -2,8 +2,10 @@ import urllib
 import requests
 from .sources import BlackbodyStar
 from .grids import UniformSphericalGrid
+from .utils import initializer
 from torch.utils.data import DataLoader, TensorDataset, random_split, IterableDataset, get_worker_info
 from scipy.spatial.transform import Rotation
+from schwimmbad import SerialPool, MultiPool
 import pandas as pd
 import dask.dataframe as ddf
 import dask.array as da
@@ -19,6 +21,9 @@ import pytorch_lightning as pl
 import torch
 import os
 import zuko
+from tqdm import tqdm
+
+from numpy.random import SeedSequence, seed
 
 from .utils import GridStruct, random_direction
 from .photons import PhotonList
@@ -901,7 +906,7 @@ class Dust(pl.LightningDataModule):
 
     def run_dust_simulation(self, nphotons=1000, tau_range=(3.0, 1e4), temperature_range=(0.1*u.K, 1e4*u.K), 
                             amax_range=(1*u.micron, 10.0*u.cm), p_range=(2.5, 4.5), nu_range=None, use_ml_step=False, 
-                            position=0, time_limit=np.inf, device="cpu"):
+                            time_limit=np.inf, device="cpu", ncores=1, mpi=False, nbatch=1, progress=True):
         """
         Run a dust simulation that can be used to learn an ML-step model with the given parameters.
 
@@ -923,80 +928,31 @@ class Dust(pl.LightningDataModule):
         if nu_range is None:
             nu_range = (self.nu.min(), self.nu.max())
 
-        # Set up the star.
+        if ncores > 1:
+            if mpi:
+                from mpi4py.futures import MPIPoolExecutor
+                pool = MPIPoolExecutor(ncores)
+            else:
+                pool = MultiPool(ncores, initializer=initializer, initargs=(tqdm.get_lock(),))
+        else:
+            pool = SerialPool()
 
-        star = BlackbodyStar()
-
-        # Set up the grid.
-
-        grid = UniformSphericalGrid(ncells=1, dr=1.0*u.au, mirror=False, device=device)
-
-        density = np.ones(grid.shape) * 1e-16 * u.g / u.cm**3
-
-        grid.set_physical_properties(density=density, amax=1.0*u.micron, p=3.5, dust=self)
-        grid.check_physical_properties(include_dust=True, include_gas=False)
-        grid.add_sources(star)
-
-        # Emit the photons
-
-        photon_list = grid.emit(nphotons, wavelength="random", scattering=False)
-
-        with wp.ScopedDevice(grid.device):
-            initial_direction = np.zeros((nphotons, 3), dtype=np.float32)
-            initial_direction[:,0] = 1.
-            photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
-    
-            photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0].value), np.log10(nu_range[1].value), nphotons), dtype=float)
-            original_frequency = photon_list.frequency.numpy().copy()
-    
-            photon_list.temperature = wp.array(10.**np.random.uniform(np.log10(temperature_range[0].to(u.K).value), np.log10(temperature_range[1].to(u.K).value), nphotons), dtype=float)
-    
-            samples = suggest_opacity_sampling(nphotons, p_range=p_range, amax_range=amax_range, n_dust_subspecies=len(self.abundances)+1, mode="random")
-    
-            photon_list.amax = wp.array(samples[:,1], dtype=float)
-            photon_list.p = wp.array(samples[:,0], dtype=float)
-            if len(self.abundances) > 0:
-                photon_list.dust_abundances = wp.array2d(samples[:,2:], dtype=float)
-    
-            tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
-            photon_list.density = wp.array((tau / (self.kmean * self.ml_kabs(photon_list=photon_list) * \
-                                                                                1.*u.au) * self.kmean).to(1 / u.au), dtype=float)
-
-        grid.propagate_photons(photon_list, learning=True, use_ml_step=use_ml_step, time_limit=time_limit)
-
-        # Calculate roll, pitch, and yaw for the position relative to where it started.
-        # Also calculate roll, pitch, and yaw for the direction relative to the radial vector where it exits.
-
-        ypr = []
-        direction_ypr = []
-        for (direction0, position, direction) in zip(initial_direction, photon_list.position.numpy(), photon_list.direction.numpy()):
-            rot, _ = Rotation.align_vectors(position, direction0)
-            ypr.append(rot.as_euler('ZYX'))
-            
-            rot, _ = Rotation.align_vectors(rot.inv().apply(direction), direction0)
-            direction_ypr.append(rot.as_euler('ZYX'))
-
-        ypr = np.array(ypr)
-        direction_ypr = np.array(direction_ypr)
-
-        # Store the results in a pandas DataFrame
-
-        df = pd.DataFrame({"log10_nu0":np.log10(original_frequency),
-                       "log10_T":np.log10(photon_list.temperature.numpy()),
-                       "log10_amax":np.log10(photon_list.amax.numpy()),
-                       "p":photon_list.p.numpy(),
-                       "log10_tau_cell_nu0":np.log10(tau),
-                       "log10_nu":np.log10(photon_list.frequency.numpy().copy()),
-                       "log10_Eabs":np.log10(np.where(photon_list.deposited_energy.numpy() > 0, photon_list.deposited_energy.numpy(), photon_list.deposited_energy.numpy().min()/100)/photon_list.energy.numpy()),
-                       "log10_tau":np.log10(photon_list.tau.numpy().copy()),
-                       "yaw":ypr[:,0],
-                       "pitch":ypr[:,1],
-                       "direction_yaw":direction_ypr[:,0],
-                       "direction_pitch":direction_ypr[:,1],
-                       "in_grid":photon_list.in_grid.numpy()})
-
-        for i in range(len(self.abundances)):
-            df[f"abundance{i}"] = photon_list.dust_abundances.numpy()[:,i]
+        result = pool.map(mlstep_samples_task, 
+                          zip([self]*nbatch, 
+                              [device]*nbatch,
+                              range(nbatch), 
+                              SeedSequence(np.random.randint(10000)).spawn(nbatch),
+                              [int(nphotons/nbatch)]*nbatch,
+                              [tau_range]*nbatch,
+                              [nu_range]*nbatch,
+                              [amax_range]*nbatch,
+                              [p_range]*nbatch,
+                              [temperature_range]*nbatch,
+                              [use_ml_step]*nbatch,
+                              [time_limit]*nbatch,
+                              [progress]*nbatch))
+        results = [r for r in result]
+        df = pd.concat(results, axis=0)
 
         return df
 
@@ -1920,6 +1876,95 @@ def suggest_opacity_sampling(nsamples, p_range=None, amax_range=None, n_dust_sub
         samples[:, index+i] = (1. - samples[:, index:index+i].sum(axis=1)) * samples[:, index+i]
 
     return samples
+
+def mlstep_samples_task(args):
+    dust, device, position, s, nphotons, tau_range, nu_range, amax_range, p_range, temperature_range, use_ml_step, time_limit, progress = args
+    
+    seed(s.generate_state(1)[0])
+
+    # Set up the star.
+
+    star = BlackbodyStar()
+
+    # Set up the grid.
+
+    dust.to_device(device)
+
+    grid = UniformSphericalGrid(ncells=1, dr=1.0*u.au, mirror=False, device=device)
+
+    density = np.ones(grid.shape) * 1e-16 * u.g / u.cm**3
+
+    grid.set_physical_properties(density=density, amax=1.0*u.micron, p=3.5, dust=dust)
+    grid.check_physical_properties(include_dust=True, include_gas=False)
+    grid.add_sources(star)
+
+    # Emit the photons
+
+    photon_list = grid.emit(nphotons, wavelength="random", scattering=False)
+
+    with wp.ScopedDevice(grid.device):
+        initial_direction = np.zeros((nphotons, 3), dtype=np.float32)
+        initial_direction[:,0] = 1.
+        photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
+
+        photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0].value), np.log10(nu_range[1].value), nphotons), dtype=float)
+        original_frequency = photon_list.frequency.numpy().copy()
+
+        photon_list.temperature = wp.array(10.**np.random.uniform(np.log10(temperature_range[0].to(u.K).value), np.log10(temperature_range[1].to(u.K).value), nphotons), dtype=float)
+
+        samples = suggest_opacity_sampling(nphotons, p_range=p_range, amax_range=amax_range, n_dust_subspecies=len(dust.abundances)+1, mode="random")
+
+        photon_list.amax = wp.array(samples[:,1], dtype=float)
+        photon_list.p = wp.array(samples[:,0], dtype=float)
+        if len(dust.abundances) > 0:
+            photon_list.dust_abundances = wp.array2d(samples[:,2:], dtype=float)
+
+        tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
+        photon_list.density = wp.array((tau / (dust.kmean * dust.ml_kabs(photon_list=photon_list) * \
+                                                                            1.*u.au) * dust.kmean).to(1 / u.au), dtype=float)
+
+    grid.propagate_photons(photon_list, 
+                           learning=True, 
+                           use_ml_step=use_ml_step, 
+                           time_limit=time_limit, 
+                           position=position, 
+                           progress=progress)
+
+    # Calculate roll, pitch, and yaw for the position relative to where it started.
+    # Also calculate roll, pitch, and yaw for the direction relative to the radial vector where it exits.
+
+    ypr = []
+    direction_ypr = []
+    for (direction0, position, direction) in zip(initial_direction, photon_list.position.numpy(), photon_list.direction.numpy()):
+        rot, _ = Rotation.align_vectors(position, direction0)
+        ypr.append(rot.as_euler('ZYX'))
+        
+        rot, _ = Rotation.align_vectors(rot.inv().apply(direction), direction0)
+        direction_ypr.append(rot.as_euler('ZYX'))
+
+    ypr = np.array(ypr)
+    direction_ypr = np.array(direction_ypr)
+
+    # Store the results in a pandas DataFrame
+
+    df = pd.DataFrame({"log10_nu0":np.log10(original_frequency),
+                    "log10_T":np.log10(photon_list.temperature.numpy()),
+                    "log10_amax":np.log10(photon_list.amax.numpy()),
+                    "p":photon_list.p.numpy(),
+                    "log10_tau_cell_nu0":np.log10(tau),
+                    "log10_nu":np.log10(photon_list.frequency.numpy().copy()),
+                    "log10_Eabs":np.log10(np.where(photon_list.deposited_energy.numpy() > 0, photon_list.deposited_energy.numpy(), photon_list.deposited_energy.numpy().min()/100)/photon_list.energy.numpy()),
+                    "log10_tau":np.log10(photon_list.tau.numpy().copy()),
+                    "yaw":ypr[:,0],
+                    "pitch":ypr[:,1],
+                    "direction_yaw":direction_ypr[:,0],
+                    "direction_pitch":direction_ypr[:,1],
+                    "in_grid":photon_list.in_grid.numpy()})
+
+    for i in range(len(dust.abundances)):
+        df[f"abundance{i}"] = photon_list.dust_abundances.numpy()[:,i]
+
+    return df
 
 def load(filename, device="cpu"):
     """

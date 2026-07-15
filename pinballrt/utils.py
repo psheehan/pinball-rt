@@ -1,6 +1,7 @@
 import numpy as np
 import warp as wp
 import torch
+from tqdm import tqdm
 
 EPSILON = 1.0e-5
 
@@ -129,3 +130,9 @@ class GridStruct:
 
     include_dust: bool
     include_gas: bool
+
+def initializer(arg):
+    import warp as wp
+    #wp.config.quiet = True
+    wp.init()
+    tqdm.set_lock(arg)
