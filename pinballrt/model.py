@@ -7,6 +7,7 @@ from .grids import Grid
 from .dust import load
 from .gas import Gas
 from .camera import Camera
+from .utils import initializer
 from schwimmbad import SerialPool, MultiPool
 import xarray as xr
 import numpy as np
@@ -17,12 +18,6 @@ from numpy.random import SeedSequence, seed
 import time
 
 #wp.config.quiet = True
-
-def initializer(arg):
-    import warp as wp
-    #wp.config.quiet = True
-    wp.init()
-    tqdm.set_lock(arg)
 
 class Model:
     def __init__(self, grid: Grid, grid_kwargs={}, ncores=1, mpi=False):
