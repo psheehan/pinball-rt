@@ -1920,7 +1920,7 @@ def mlstep_samples_task(args):
             photon_list.dust_abundances = wp.array2d(samples[:,2:], dtype=float)
 
         tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
-        photon_list.density = wp.array((tau / (dust.kmean * dust.ml_kabs(photon_list=photon_list) * \
+        photon_list.density = wp.array((tau / (dust.kmean * dust.ml_kabs(photon_list=photon_list).cpu() * \
                                                                             1.*u.au) * dust.kmean).to(1 / u.au), dtype=float)
 
     grid.propagate_photons(photon_list, 
