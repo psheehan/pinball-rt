@@ -12,7 +12,7 @@ on:
 jobs:
   build:
 
-    runs-on: machine/id=${{ github.run_id }}/gpu=t4g/tenancy=spot
+    runs-on: machine/id=${{ github.run_id }}/gpu=t4/tenancy=spot
     strategy:
       fail-fast: false
       matrix:
