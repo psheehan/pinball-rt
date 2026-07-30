@@ -473,7 +473,10 @@ def thermal_mc_task(args):
     grid, position, s, nphotons, njobs, use_ml_step, progress = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
+    t1 = time.time()
     photon_list = grid.emit(int(nphotons / njobs), timing=iter_timing)
+    t2 = time.time()
+    iter_timing["total_emit_time"] = t2 - t1
     grid.propagate_photons(photon_list, use_ml_step=use_ml_step, timing=iter_timing, position=position, progress=progress)
 
     return grid.grid.energy.numpy(), iter_timing

@@ -561,6 +561,8 @@ class Grid:
     def propagate_photons(self, photon_list: PhotonList, use_ml_step=False, learning=False, debug=False, timing={}, position=0, time_limit=np.inf,
                           progress=True):
         with wp.ScopedDevice(self.device):
+            beginning_time = time.time()
+            t1 = time.time()
             nphotons = photon_list.position.numpy().shape[0]
             iphotons_original = torch.arange(nphotons, dtype=torch.int32, device=wp.device_to_torch(wp.get_device()))
 
@@ -581,12 +583,16 @@ class Grid:
             minimum_wall_distance_time = 0.
             move_time = 0.
             deposit_energy_time = 0.
+            reduce_tau_time = 0.
             photon_loc_time = 0.
             in_grid_time = 0.
             removing_photons_time = 0.
+            interaction_selection_time = 0.
             absorb_time = 0.
             ml_step_time = 0.
             absorb_random_nu_time = 0.
+            random_absorb_time = 0.
+            distance_calculation_time = 0.
 
             photon_list.kabs = wp.zeros(nphotons, dtype=float)
             photon_list.ksca = wp.zeros(nphotons, dtype=float)
@@ -602,21 +608,30 @@ class Grid:
             iphotons = wp.to_torch(photon_list.in_grid).nonzero().flatten().to(torch.int32)
             nphotons = iphotons.size(0)
 
+            t2 = time.time()
+            initializing_time = t2 - t1
+
+            t1 = time.time()
             wp.launch(kernel=self.check_in_grid,
                       dim=(nphotons,),
                       inputs=[photon_list, self.grid, iphotons])
             iphotons = wp.to_torch(photon_list.in_grid).nonzero().flatten().to(torch.int32)
             nphotons_done = iphotons_original.size(0) - iphotons.size(0)
             nphotons = iphotons.size(0)
+            t2 = time.time()
+            in_grid_time += t2 - t1
 
             t1 = time.time()
             self.dust.update_photon_opacities(photon_list, iphotons)
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
+            t1 = time.time()
             wp.launch(kernel=self.random_absorb, 
                       dim=(nphotons,), 
                       inputs=[photon_list, iphotons, np.random.randint(0, 100000)])
+            t2 = time.time()
+            random_absorb_time = t2 - t1
 
             count = 0
             nphotons_done = 0
@@ -647,7 +662,10 @@ class Grid:
                     t2 = time.time()
                     minimum_wall_distance_time += t2 - t1
 
+                t1 = time.time()
                 s = torch.minimum(wp.to_torch(s1), wp.to_torch(s2))
+                t2 = time.time()
+                distance_calculation_time += t2 - t1
 
                 if not learning and use_ml_step:
                     t1 = time.time()
@@ -659,9 +677,12 @@ class Grid:
                     t2 = time.time()
                     ml_step_time += t2 - t1
 
+                t1 = time.time()
                 wp.launch(kernel=self.calculate_deposited_energy,
                           dim=(nphotons,),
                           inputs=[photon_list, self.grid, s, iphotons, learning])
+                t2 = time.time()
+                deposit_energy_time += t2 - t1
 
                 # Do the ml step here
 
@@ -687,9 +708,12 @@ class Grid:
                 t2 = time.time()
                 deposit_energy_time += t2 - t1
 
+                t1 = time.time()
                 wp.launch(kernel=self.reduce_tau,
                            dim=(nphotons,),
                            inputs=[photon_list, s, iphotons])
+                t2 = time.time()
+                reduce_tau_time += t2 - t1
 
                 # Before we update the locations, we should rotate the direction vector of the ml photons to the new direction after the ml
 
@@ -724,6 +748,8 @@ class Grid:
                 absorb_indices = torch.logical_and(interaction, 
                                                    wp.to_torch(photon_list.absorb)).nonzero().flatten().to(torch.int32)
                 scatter_indices = torch.logical_and(interaction, wp.to_torch(photon_list.absorb) == False).nonzero().flatten().to(torch.int32)
+                t2 = time.time()
+                interaction_selection_time += t2 - t1
                 tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, 
                                                                                absorb_indices.size(0), 
                                                                                absorb_indices, 
@@ -762,18 +788,29 @@ class Grid:
             if progress:
                 progress_bar.close()
 
+            end_time = time.time()
+            propagation_only_time = end_time - start_time
+            propagate_photons_in_task_time = end_time - beginning_time
+
             timing["next_wall_time"] = next_wall_time
+            timing["distance_calculation_time"] = distance_calculation_time
             timing["dust_interpolation_time"] = dust_interpolation_time
             timing["tau_distance_time"] = tau_distance_time
             timing["minimum_wall_distance_time"] = minimum_wall_distance_time
             timing["move_time"] = move_time
             timing["deposit_energy_time"] = deposit_energy_time
+            timing["reduce_tau_time"] = reduce_tau_time
             timing["photon_loc_time"] = photon_loc_time
             timing["in_grid_time"] = in_grid_time
             timing["removing_photons_time"] = removing_photons_time
+            timing["interaction_selection_time"] = interaction_selection_time
             timing["absorb_time"] = absorb_time
             timing["ml_step_time"] = ml_step_time
             timing["absorb_random_nu_time"] = absorb_random_nu_time
+            timing["random_absorb_time"] = random_absorb_time
+            timing["initializing_time"] = initializing_time
+            timing["propagation_only_time"] = propagation_only_time
+            timing["propagate_photons_in_task_time"] = propagate_photons_in_task_time
 
     def set_grid_opacities(self, frequency):
         with wp.ScopedDevice(self.device):
