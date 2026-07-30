@@ -750,6 +750,7 @@ class Grid:
                 scatter_indices = torch.logical_and(interaction, wp.to_torch(photon_list.absorb) == False).nonzero().flatten().to(torch.int32)
                 t2 = time.time()
                 interaction_selection_time += t2 - t1
+                t1 = time.time()
                 tmp_photon_loc_time, tmp_absorb_random_nu_time = self.interact(photon_list, 
                                                                                absorb_indices.size(0), 
                                                                                absorb_indices, 
