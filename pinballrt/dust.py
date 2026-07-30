@@ -1544,6 +1544,14 @@ class GeneralScatteringDust(Dust):
     def to_device(self, device):
         super().to_device(device)
 
+        for model in ["scattering_phase_function","random_direction"]:
+            if hasattr(self, f"{model}_model"):
+                getattr(self, f"{model}_model").to(device)
+            if hasattr(self, f"{model}_x_scaler"):
+                getattr(self, f"{model}_x_scaler").to(device)
+            if hasattr(self, f"{model}_y_scaler"):
+                getattr(self, f"{model}_y_scaler").to(device)
+
     def scatter(self, photon_list, iphotons):
         nphotons = iphotons.size(0)
 
