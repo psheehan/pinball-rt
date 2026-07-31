@@ -50,7 +50,7 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
 
   cuda-tests:
-    runs-on: machine.dev
+    runs-on: machine/id=${{ github.run_id }}/gpu=t4
     strategy:
       fail-fast: false
       matrix:
