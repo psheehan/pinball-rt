@@ -9,9 +9,11 @@ on:
   pull_request:
     branches: [ "main" ]
 
-jobs:
-  build:
+permissions:
+  contents: read
 
+jobs:
+  non-cuda-tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -38,9 +40,38 @@ jobs:
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
     #    flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     
-    - name: Test with pytest
+    - name: Test non-CUDA with pytest
       run: |
-        pytest -s --cov=pinballrt --cov-report xml --cov-report term
+        pytest -s --cov=pinballrt --cov-report xml --cov-report term -k "not cuda"
+
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+
+  cuda-tests:
+    runs-on: machine/id=${{ github.run_id }}/gpu=t4/tenancy=spot
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install flake8 pytest pytest-cov
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        python -m pip install -e .[train]
+
+    - name: Test CUDA with pytest
+      run: |
+        pytest -s --cov=pinballrt --cov-report xml --cov-report term -k "cuda"
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v5
