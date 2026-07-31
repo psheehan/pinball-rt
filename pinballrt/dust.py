@@ -1200,9 +1200,14 @@ class Dust(pl.LightningDataModule):
         for i, key1 in enumerate(columns):
             for j, key2 in enumerate(columns):
                 if key1 == key2:
-                    ax[i,j].hist(df_true[key1], bins=50, histtype='step', density=True)
                     if predict:
-                        ax[i,j].hist(df_pred[key1], bins=50, histtype='step', density=True)
+                        bins = np.histogram(np.concatenate((df_true[key1], df_pred[key1]), axis=0), bins=50)[1]
+                    else:
+                        bins = np.histogram(df_true[key1], bins=50)[1]
+
+                    ax[i,j].hist(df_true[key1], bins=bins, histtype='step', density=True)
+                    if predict:
+                        ax[i,j].hist(df_pred[key1], bins=bins, histtype='step', density=True)
                 elif i > j:
                     ax[i,j].scatter(df_true[key2], df_true[key1], marker='.', s=1.0, alpha=1.0)
 
