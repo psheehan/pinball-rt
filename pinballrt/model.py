@@ -24,7 +24,7 @@ def initializer(arg):
     tqdm.set_lock(arg)
 
 class Model:
-    def __init__(self, grid: Grid, grid_kwargs={}, ncores=1, mpi=False):
+    def __init__(self, grid, ncores=1, mpi=False):
         """
         Initialize the Model with a grid and optional parameters.
 
@@ -39,12 +39,24 @@ class Model:
         mpi : bool, optional
             Whether to use mpi for parallel processing.
         """
-        self.grid_list = {"cpu":grid(**grid_kwargs, device='cpu')}
+
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = grid(**grid_kwargs, device=d)
-            self.grid = self.grid_list["cuda"]
+            if grid.device == 'cpu':
+                self.grid_list = {"cpu": grid}
+                cuda_grid = grid.copy("cuda")
+                self.grid_list["cuda"] = cuda_grid
+                self.grid = self.grid_list["cpu"]
+            else:
+                self.grid_list = {"cuda": grid}
+                cpu_grid = grid.copy("cpu")
+                self.grid_list["cpu"] = cpu_grid
+                self.grid = self.grid_list["cuda"]
         else:
-            self.grid = self.grid_list["cpu"]
+            if grid.device == 'cuda':
+                raise RuntimeError("CUDA is not available. No GPUs detected.")
+            else:
+                self.grid_list = {"cpu": grid}
+                self.grid = self.grid_list["cpu"]
 
         self.camera_list = {}
         for device in self.grid_list:

@@ -1,32 +1,41 @@
 from .Fittable_Model import Fittable_Model
-from ..grids import Grid
+import pandas as pd
 import numpy as np
 import astropy.units as u
 
+
 class Disk(Fittable_Model):
 
-    default_params = {"mass": 1e-3*u.Msun,
-                               "rin": 0.1*u.au,
-                               "rout": 100.0*u.au,
-                               "gamma": 1.0,
-                               "h_0": 0.05*u.au,
-                               "beta": 1.0}
-
     model_name = "disk"
+    model_default_params = pd.DataFrame.from_dict({
+        "disk_mass":  {"value": -3., "prior_min": -5., "prior_max": 0., 
+        "Fixed": False, "unit": u.Msun, "log":True, "component": model_name},
+        "disk_rin": {"value": -1., "prior_min": -2., "prior_max": 0., 
+        "Fixed": False, "unit": u.au, "log":True, "component": model_name},
+        "disk_rout": {"value": 2., "prior_min": 1., "prior_max": 3., 
+        "Fixed": False, "unit": u.au, "log":True, "component": model_name},
+        "gamma": {"value": 1., "prior_min": 0., "prior_max": 2., 
+        "Fixed": False,  "component": model_name},
+        "h0": {"value": 0.05, "prior_min": 0.01, "prior_max": 0.3, 
+        "Fixed": False, "unit": u.au, "component": model_name},
+        "beta": {"value": 1., "prior_min": 0.5, "prior_max": 1.5, 
+        "Fixed": False,  "component": model_name}
+    }, orient='index')
+
     density_coordinates = "cylindrical"
 
-    def surface_density(self, r):
-        sigma0 = ((2.0 - self.gamma) * self.mass / (2.0 * np.pi * self.rout**2))
-        sigma = sigma0 * (r / self.rout)**(-self.gamma) * np.exp(-(r / self.rout)**(2.0 - self.gamma))
-        return sigma.to(u.g / u.cm**2)
-    
-    def scale_height(self, r):
-        h = self.h_0 * (r / (1*u.au))**self.beta
-        return h.to(u.au)
-    
     def density(self, r, z):
-        sigma = self.surface_density(r)
-        h = self.scale_height(r)
+        mass  = self.disk_mass.cgs.value
+        rin   = self.disk_rin.cgs.value
+        rout  = self.disk_rout.cgs.value
+        gamma = self.gamma
+        h0    = self.h0.cgs.value
+        beta  = self.beta
+
+        sigma0 = ((2.0 - gamma) * mass / (2.0 * np.pi * rout**2))
+        sigma = sigma0 * (r / rout)**(-gamma) * np.exp(-(r / rout)**(2.0 - gamma))
+
+        h = h0 * (r / (1*u.au).cgs.value)**beta
+
         rho = sigma / (np.sqrt(2 * np.pi) * h) * np.exp(-0.5 * (z / h)**2)
-        return rho.to(u.g / u.cm**3)
-    
+        return rho * u.g / u.cm**3

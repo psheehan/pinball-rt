@@ -61,6 +61,15 @@ class Grid:
 
         self.__dict__.update(state)
 
+    def copy(self, device='cpu'):
+        state_dict = self.__getstate__()
+        state_dict['device'] = device
+        cls = self.__class__
+        new_grid = cls.__new__(cls)
+        new_grid.__setstate__(state_dict)
+        return new_grid
+
+
     def set_physical_properties(self, density=None, dusttogasratio=0.01, dust=None, amax=None, p=None, dust_abundances=(), gases=None, abundances=None, 
                                 velocity=None, microturbulence=None):
         with wp.ScopedDevice(self.device):
