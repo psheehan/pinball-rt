@@ -1,5 +1,5 @@
 from pinballrt.sources import BlackbodyStar, DiffuseSource, EnergySource, ExternalSource
-from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
+from pinballrt.grids import UniformCartesianGrid, UniformCylindricalGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
 from pinballrt.utils import calculate_Qvalue
 from pinballrt.gas import Gas
@@ -17,9 +17,11 @@ test_data = [
     (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0, "cpu"),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0, "cpu"),
     (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "gen", 73.0, "cpu"),
+    (UniformCylindricalGrid, {"ncells":9, "dr":2.0*u.au}, "iso", 93.0, "cpu"),
     (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0, "cuda"),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0, "cuda"),
     (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "gen", 73.0, "cuda"),
+    (UniformCylindricalGrid, {"ncells":9, "dr":2.0*u.au}, "iso", 93.0, "cuda"),
 ]
 
 @pytest.mark.parametrize("grid_class,grid_kwargs,dust,percentile,device", test_data)
@@ -55,6 +57,11 @@ def test_E2E(grid_class, grid_kwargs, dust, percentile, device, return_vals=Fals
         abundances = ()
         p = np.ones(model.grid.shape) * 3.5
         p[0, :, :] = 3.75
+    elif isinstance(model.grid, UniformCylindricalGrid):
+        amax = np.ones(model.grid.shape) * u.cm
+        amax[0, :, 0] = 1.0 * u.micron
+        abundances = (0.15,)
+        p = None
 
     if isinstance(model.grid, UniformCartesianGrid):
         vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
