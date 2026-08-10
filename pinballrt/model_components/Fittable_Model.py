@@ -1,146 +1,88 @@
 import copy
-from ..model import Model
-from  ..grids import UniformSphericalGrid
-from  ..grids import UniformCartesianGrid
-from  ..grids import LogUniformSphericalGrid
-from ..dust import load
-import numpy as np
-import astropy.units as u
-import pandas as pd
 import warnings
 
-class FittableModelMeta(type):
-    def __add__(cls, other_cls):
-        class CompoundModel(Fittable_Model):
-            default_params = cls.default_params + other_cls.default_params
-            def __init__(self, grid, ncores=1, mpi=False):
-                super().__init__(grid, ncores=ncores, mpi=mpi)
+import astropy.units as u
+import numpy as np
+import pandas as pd
 
-            def _calculate_density_grid(self):
-                mgrid1 = self._get_density_meshgrid(cls.density_coordinates)
-                mgrid2 = self._get_density_meshgrid(other_cls.density_coordinates)
+from ..dust import load
+from ..grids import LogUniformSphericalGrid, UniformCartesianGrid, UniformSphericalGrid
+from ..model import Model
 
-                density_grid1 = cls.density(self, *mgrid1)
-                density_grid2 = other_cls.density(self, *mgrid2)
+# class FittableModelMeta(type):
+#     def __add__(cls, other_cls):
+#         class CompoundModel(Fittable_Model):
+#             default_params = cls.default_params + other_cls.default_params
+#             def __init__(self, grid, ncores=1, mpi=False):
+#                 super().__init__(grid, ncores=ncores, mpi=mpi)
 
-                return density_grid1 + density_grid2
+#             def _calculate_density_grid(self):
+#                 mgrid1 = self._get_density_meshgrid(cls.density_coordinates)
+#                 mgrid2 = self._get_density_meshgrid(other_cls.density_coordinates)
 
-        return CompoundModel
+#                 density_grid1 = cls.density(self, *mgrid1)
+#                 density_grid2 = other_cls.density(self, *mgrid2)
 
-class Fittable_Model(Model, metaclass=FittableModelMeta):
+#                 return density_grid1 + density_grid2
 
+#         return CompoundModel
+
+
+class Fittable_Model(Model):
     model_name = "fittable_model"
     density_coordinates = "cylindrical"
     model_default_params = pd.DataFrame([])
 
-    def __init__(self, params=None, coord_sys=None):
-        uniform_cartesian_default_params = pd.DataFrame.from_dict({
-            'coord_sys': {'value': 'uniform_cartesian', 'component': 'grid'},
-            'ncells': {'value': 9, 'component':'grid'},
-            'dx': {'value': 1.0, 'unit': u.au, 'component':'grid'},
-            'device': {'value': 'cpu', 'component': 'grid'}}, orient='index')
+    def __init__(self, grid, components=None, params=None):
 
-        uniform_spherical_default_params = pd.DataFrame.from_dict({
-            'coord_sys': {'value': 'uniform_spherical', 'component': 'grid'},
-            'ncells': {'value': 9, 'component':'grid'},
-            'dr': {'value': 1.0, 'unit': u.au, 'component':'grid'},
-            'mirror': {'value': True, 'component':'grid'},
-            'device': {'value': 'cpu', 'component': 'grid'}}, orient='index')
+        # dust_default_params = pd.DataFrame.from_dict({
+        #     'dusttogasratio': {'value': 0.01, 'component':'dust'},
+        #     'dust_file': {'value': 'diana_wice.dst', 'component':'dust'},
+        #     'amax': {'value': 1.0, 'component':'dust', 'unit': u.cm},
+        #     'p': {'value': 3.0, 'component':'dust'},
+        #     'dust_abundances': {'value': [], 'component':'dust'}}, orient='index')
 
-        log_uniform_spherical_default_params = pd.DataFrame.from_dict({
-            'coord_sys': {'value': 'log_uniform_spherical', 'component': 'grid'},
-            'ncells': {'value': 9, 'component':'grid'},
-            'grid_rmin': {'value': 0.1, 'unit': u.au, 'component':'grid'},
-            'grid_rmix': {'value': 100.0, 'unit': u.au, 'component':'grid'},
-            'mirror': {'value': True, 'component':'grid'},
-            'device': {'value': 'cpu', 'component': 'grid'}}, orient='index')
+        # gas_default_params = pd.DataFrame.from_dict({
+        #     'gases': {'value': None, 'component':'gas'},
+        #     'abundances': {'value': None, 'component':'gas'},
+        #     'velocity': {'value': None, 'component':'dust'},
+        #     'microturbulence': {'value': None, 'component':'gas'}}, orient='index')
 
-        dust_default_params = pd.DataFrame.from_dict({
-            'dusttogasratio': {'value': 0.01, 'component':'dust'}, 
-            'dust_file': {'value': 'diana_wice.dst', 'component':'dust'}, 
-            'amax': {'value': 1.0, 'component':'dust', 'unit': u.cm}, 
-            'p': {'value': 3.0, 'component':'dust'},
-            'dust_abundances': {'value': [], 'component':'dust'}}, orient='index')
+        hyper_default_params = pd.DataFrame.from_dict(
+            {
+                "mpi": {"value": True, "component": "hyper"},
+                "ncores": {"value": 1, "component": "hyper"},
+            },
+            orient="index",
+        )
 
-        gas_default_params = pd.DataFrame.from_dict({
-            'gases': {'value': None, 'component':'gas'}, 
-            'abundances': {'value': None, 'component':'gas'}, 
-            'velocity': {'value': None, 'component':'dust'}, 
-            'microturbulence': {'value': None, 'component':'gas'}}, orient='index')
+        self.parameters = hyper_default_params.copy()
+        for component in components:
+            self.parameters = pd.concat([self.parameters, component.parameters])
 
-        hyper_default_params = pd.DataFrame.from_dict({
-            'mpi': {'value': True, 'component': 'hyper'},
-            'ncores': {'value': 1, 'component': 'hyper'}}, orient='index')
+        # self.parameters = self.default_parameters.copy()
+        # if isinstance(params, pd.DataFrame):
+        #     self._update_parameters_from_dataframe(df=params)
 
-        star_default_params = pd.DataFrame.from_dict({
-            'teff': {'value': 4000, 'unit': u.K, 'fixed':True, 'component': 'star'},
-            'luminosity': {'value': 1.0, 'unit':u.Lsun, 'fixed':True, 'component': 'star'}
-            'x_star': {'value': 0., 'unit':u.au, 'fixed':True, 'component': 'star'},
-            'y_star': {'value': 0., 'unit':u.au, 'fixed':True, 'component': 'star'},
-            'z_star': {'value': 0., 'unit':u.au, 'fixed':True, 'component': 'star'},
-            'nu_star': {'value': np.logspace(0.5, 6.45, 1000), 'unit':u.GHz, 'fixed':True,
-                        'component': 'star'},
-            'star_mass': {'value':0, 'priors':[-1, 1], 'units':u.msun, 'fixed':False,
-                          'component': 'star'}}, orient='index')
-
-        if coord_sys:
-            if coord_sys == 'uniform_cartesian':
-                grid_default_params = uniform_cartesian_defaults_params
-                self.coord_sys = 'uniform_cartesian'
-            elif coord_sys == 'uniform_spherical':
-                grid_default_params = uniform_spherical_default_params
-                self.coord_sys = 'uniform_spherical'
-            elif coord_sys == 'log_uniform_spherical':
-                grid_default_params = log_uniform_spherical_default_params
-                self.coord_sys = 'log_uniform_spherical'
-
-        elif isinstance(params, pd.DataFrame):
-            if 'coord_sys' in params.index:
-                coord_sys = params.loc['coord_sys', 'value']
-                if coord_sys == 'uniform_cartesian':
-                    grid_default_params = uniform_cartesian_defaults_params
-                    self.coord_sys = 'uniform_cartesian'
-                elif coord_sys == 'uniform_spherical':
-                    grid_default_params = uniform_spherical_default_params
-                    self.coord_sys = 'uniform_spherical'
-                elif coord_sys == 'log_uniform_spherical':
-                    grid_default_params = log_uniform_spherical_default_params
-                    self.coord_sys = 'log_uniform_spherical'
-            else:
-                grid_default_params = uniform_spherical_default_params
-                self.coord_sys = 'uniform_spherical'
-        else:
-            grid_default_params = uniform_spherical_default_params
-            self.coord_sys = 'uniform_spherical'
-
-        self.default_parameters = pd.concat([grid_default_params, hyper_default_params, 
-                                             self.model_default_params, dust_default_params,
-                                             gas_default_params])
-
-        self.parameters = self.default_parameters.copy()
-        if isinstance(params, pd.DataFrame):
-            self._update_parameters_from_dataframe(df=params)
-
-        if self.coord_sys == 'uniform_cartesian':
-            grid = UniformCartesianGrid(ncells=self.ncells, dx=self.dx, device=self.device)
-            self.grid_unit = self.parameters.loc['dx', 'unit']
-        elif self.coord_sys == 'uniform_spherical':
-            grid = UniformSphericalGrid(ncells=self.ncells, dr=self.dr, mirror=self.mirror,
-                                              device=self.device)
-            self.grid_unit = self.parameters.loc['dr', 'unit']
-        elif self.coord_sys == 'log_uniform_spherical':
-            grid = LogUniformSphericalGrid(ncells=self.ncells, rmin=self.grid_rmin, rmax=self.grid_rmax,
-                                                 mirror=self.mirror, device=self.device)
-            self.grid_unit = self.parameters.loc['rmin', 'unit']
+        # if self.coord_sys == 'uniform_cartesian':
+        #     grid = UniformCartesianGrid(ncells=self.ncells, dx=self.dx, device=self.device)
+        #     self.grid_unit = self.parameters.loc['dx', 'unit']
+        # elif self.coord_sys == 'uniform_spherical':
+        #     grid = UniformSphericalGrid(ncells=self.ncells, dr=self.dr, mirror=self.mirror,
+        #                                       device=self.device)
+        #     self.grid_unit = self.parameters.loc['dr', 'unit']
+        # elif self.coord_sys == 'log_uniform_spherical':
+        #     grid = LogUniformSphericalGrid(ncells=self.ncells, rmin=self.grid_rmin, rmax=self.grid_rmax,
+        #                                          mirror=self.mirror, device=self.device)
+        #     self.grid_unit = self.parameters.loc['rmin', 'unit']
 
         super().__init__(grid, ncores=self.ncores, mpi=self.mpi)
         self.update_parameters()
 
-    
     # def __getattr__(self, param_name):
     #     if param_name.startswith('_'):
     #         raise AttributeError(param_name)
-        
+
     #     matches =  self.parameters.loc[self.parameters.name == param_name]
     #     if matches.empty:
     #         raise KeyError(f"No parameter named '{param_name}'")
@@ -151,9 +93,9 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
     #         return self.get_param_quantity(param_name)
 
     def __getattr__(self, param_name):
-        value = self.parameters.loc[param_name, 'value'] 
-        unit = self.parameters.loc[param_name, 'unit'] 
-        log = self.parameters.loc[param_name, 'log'] 
+        value = self.parameters.loc[param_name, "value"]
+        unit = self.parameters.loc[param_name, "unit"]
+        log = self.parameters.loc[param_name, "log"]
 
         if pd.isna(unit):
             if log == True:
@@ -165,9 +107,10 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
                 return 10**value * unit
             else:
                 return value * unit
+
     @property
     def free_parameters(self):
-        return(self.parameters.loc[self.parameters['fixed'] == False])
+        return self.parameters.loc[self.parameters["fixed"] == False]
 
     # def param_lookup(self, param_name, attr, component=None):
     #     if component:
@@ -189,7 +132,6 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
     #             raise KeyError(f"Ambiguous, please specify component")
     #         else:
     #             return matches.iloc[0]
-                
 
     # def get_param_quantity(self, param_name, component=None):
     #     value = self.param_lookup(param_name, 'value', component=component)
@@ -206,7 +148,7 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
     #             return 10**value * unit
     #         else:
     #             return value * unit
-    
+
     # def update_param(self, param_name, attr, new_value, component=None):
     #     if component:
     #         matches = self.parameters.loc[(self.parameters['name'] == param_name) &
@@ -242,13 +184,13 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
     #     attrs = [attr for attr in param_dict.keys() if attr != 'name']
     #     for attr in attrs:
     #         value = param_dict[attr]
-    #         self.update_param(param_name, attr, value, component=component) 
+    #         self.update_param(param_name, attr, value, component=component)
 
     def _update_parameters_from_dict(self, param_dict):
-        if 'name' not in param_dict.keys():
+        if "name" not in param_dict.keys():
             raise KeyError("Need to specify parameter name in dictionary")
-        param_name = param_dict['name']
-        attrs = [attr for attr in param_dict.keys() if attr != 'name']
+        param_name = param_dict["name"]
+        attrs = [attr for attr in param_dict.keys() if attr != "name"]
         for attr in attrs:
             value = param_dict[attr]
             self.update_param(param_name, attr, value)
@@ -259,11 +201,13 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
 
     # def _update_parameters_from_keywords(self, component=None, **kwargs):
     #     for param_name, value in kwargs.items():
-    #         self.update_param(param_name, "value", value, component=component) 
+    #         self.update_param(param_name, "value", value, component=component)
 
     def _update_parameters_from_array(self, param_arr):
         if len(self.free_parameters.index) != len(param_arr):
-            raise KeyError("Number of input parameters does not match number of free parameters")
+            raise KeyError(
+                "Number of input parameters does not match number of free parameters"
+            )
         free_param_names = m.free_parameters.index
         for i in range(len(param_arrs)):
             self.update_param(free_param_names[i], "value", param_arr[i])
@@ -301,13 +245,21 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
             elif isinstance(params, pd.DataFrame):
                 self._update_parameters_from_dataframe(params)
             else:
-                self._update_parameters_from_keywords(component=component, **kwargs) 
+                self._update_parameters_from_keywords(component=component, **kwargs)
 
         density_grid = self._calculate_density_grid()
-        self.set_physical_properties(density=density_grid, dusttogasratio=self.dusttogasratio, dust=self.dust_file,
-                                     amax=self.amax, p=self.p, dust_abundances=self.dust_abundances,
-                                     gases=self.gases, abundances=self.abundances, velocity=self.velocity,
-                                     microturbulence=self.microturbulence)
+        self.set_physical_properties(
+            density=density_grid,
+            dusttogasratio=self.dusttogasratio,
+            dust=self.dust_file,
+            amax=self.amax,
+            p=self.p,
+            dust_abundances=self.dust_abundances,
+            gases=self.gases,
+            abundances=self.abundances,
+            velocity=self.velocity,
+            microturbulence=self.microturbulence,
+        )
 
     # def __getitem__(self, key):
     #     """Return the quantity of the parameter identified by a `(name, kind)` tuple."""
@@ -324,7 +276,6 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
         """Build the coordinate meshgrid for `self.density_coordinates` and evaluate `self.density`."""
         mgrid = self._get_density_meshgrid(self.density_coordinates)
         return self.density(*mgrid)
-
 
     def _get_density_meshgrid(self, density_coords):
         """Build a coordinate meshgrid over the model's grid cell centers.
@@ -349,17 +300,17 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
             x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
             y_edges = (self.grid.grid.w2.numpy() * self.grid_unit).cgs.value
             y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
-            z_edges = (self.grid.grid.w3.numpy() * self.grid.unit ).cgs.value
+            z_edges = (self.grid.grid.w3.numpy() * self.grid.unit).cgs.value
             z_centers = 0.5 * (z_edges[:-1] + z_edges[1:])
 
-            xx, yy, zz = np.meshgrid(x_centers, y_centers, z_centers, indexing='ij')
+            xx, yy, zz = np.meshgrid(x_centers, y_centers, z_centers, indexing="ij")
 
             rr = np.sqrt(xx + yy + zz)
-            tt = np.arccos(zz/rr)
+            tt = np.arccos(zz / rr)
             pp = np.atan2(yy, xx)
 
             rcyl = np.sqrt(xx**2 + yy**2)
-        
+
         elif self.grid.coordinate_system == "spherical":
             r_edges = (self.grid.grid.w1.numpy() * self.grid_unit).cgs.value
             r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
@@ -368,7 +319,9 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
             phi_edges = self.grid.grid.w3.numpy()
             phi_centers = 0.5 * (phi_edges[:-1] + phi_edges[1:])
 
-            rr, tt, pp = np.meshgrid(r_centers, theta_centers, phi_centers, indexing='ij')
+            rr, tt, pp = np.meshgrid(
+                r_centers, theta_centers, phi_centers, indexing="ij"
+            )
             rcyl = rr * np.sin(tt)
             zz = rr * np.cos(tt)
 
@@ -376,4 +329,3 @@ class Fittable_Model(Model, metaclass=FittableModelMeta):
             return rcyl, zz
         elif density_coords == "spherical":
             return rr, tt, pp
-
