@@ -17,7 +17,7 @@ class ModelComponent:
         return self.parameters[param_name].quantity
 
     def update_parameters(self, updates=None, **kwargs):
-        valid_params = [p.name for p in self.defaults_parameters]
+        valid_params = [p.name for p in self.default_parameters]
         if isinstance(updates, Parameter):
             if updates.name not in valid_params:
                 raise KeyError("Invalid parameter")

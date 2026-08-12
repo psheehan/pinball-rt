@@ -172,3 +172,14 @@ class ParameterSet(Sequence):
                     new_set.add(parameter=p, overlap_method=overlap_method)
 
         return new_set
+
+    def __repr__(self):
+        lines = []
+        for p in self.parameters:
+            if p.fixed:
+                fix_string = "Fixed"
+            else:
+                fix_string = "Free"
+
+            lines.append(f"{p.name}: {p.quantity} [{fix_string}]")
+        return "\n".join(lines)

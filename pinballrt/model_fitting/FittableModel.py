@@ -26,28 +26,36 @@ class FittableModel(Model):
         [
             Parameter(name="gases", value=None, component="gas"),
             Parameter(name="abundances", value=None, component="gas"),
-            Parameter(name="velocity", value=None, unit=u.km / u.s, component="gas"),
+            Parameter(name="velocity", value=None, component="gas"),
             Parameter(name="microturbulence", value=None, component="gas"),
         ]
     )
 
-    def __init__(self, grid, components=None, parameters=None):
+    def __init__(self, grid, mpi=None, ncores=None, components=None, parameters=None):
         if components:
             self.components = components
+            component_defaults = [
+                component.default_parameters for component in components
+            ]
         else:
             self.components = []
-        component_defaults = [component.default_parameters for component in components]
+            component_defaults = []
         all_default_parameters = [
             self.hyper_defaults,
             self.dust_defaults,
             self.gas_defaults,
         ] + component_defaults
+        self.component_names = [component.name for component in self.components]
         self.default_parameters = ParameterSet.merge(all_default_parameters)
         self.parameters = self.default_parameters.copy()
-        self.component_names = [component.name for component in self.components]
-        self.update_parameters(parameters)
+        if mpi:
+            self.parameters["mpi"].value = mpi
+        if ncores:
+            self.parameters["ncores"].value = ncores
 
         super().__init__(grid, ncores=self.parameters.ncores, mpi=self.parameters.mpi)
+
+        self.update_parameters(parameters)
 
     def __getattr__(self, component_name):
         ind = self.component_names.index(component_name)
@@ -57,18 +65,19 @@ class FittableModel(Model):
         ModelComponent.update_parameters(self, updates=updates, **kwargs)
         density_grids = []
         for component in self.components:
-            new_component_params = self.parameters.get_component(component)
+            new_component_params = self.parameters.get_component(component.name)
             component.update_parameters(new_component_params)
             mgrid = self._get_density_meshgrid(component.density_coordinates)
             density_grids.append(component.density(*mgrid))
 
-        density_grid = np.mean(np.array(density_grids), axis=0)
+        density_grid = np.mean(np.array(density_grids), axis=0) * u.g / u.cm**3
+        print(np.shape(density_grid), density_grid.unit)
         self.set_physical_properties(
             density=density_grid,
             dusttogasratio=self.parameters.dusttogasratio,
             dust=self.parameters.dust_file,
             amax=self.parameters.amax,
-            p=self.parameters.pmax,
+            p=self.parameters.p,
             dust_abundances=self.parameters.dust_abundances,
             gases=self.parameters.gases,
             abundances=self.parameters.abundances,
@@ -95,9 +104,9 @@ class FittableModel(Model):
             if `density_coords == "spherical"`.
         """
         if self.grid.coordinate_system == "cartesian":
-            x_edges = (self.grid.grid.w1.numpy() * self.grid_unit).cgs.value
+            x_edges = (self.grid.grid.w1.numpy() * self.grid.distance_unit).cgs.value
             x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
-            y_edges = (self.grid.grid.w2.numpy() * self.grid_unit).cgs.value
+            y_edges = (self.grid.grid.w2.numpy() * self.grid.distance_unit).cgs.value
             y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
             z_edges = (self.grid.grid.w3.numpy() * self.grid.unit).cgs.value
             z_centers = 0.5 * (z_edges[:-1] + z_edges[1:])
@@ -111,7 +120,7 @@ class FittableModel(Model):
             rcyl = np.sqrt(xx**2 + yy**2)
 
         elif self.grid.coordinate_system == "spherical":
-            r_edges = (self.grid.grid.w1.numpy() * self.grid_unit).cgs.value
+            r_edges = (self.grid.grid.w1.numpy() * self.grid.distance_unit).cgs.value
             r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
             theta_edges = self.grid.grid.w2.numpy()
             theta_centers = 0.5 * (theta_edges[:-1] + theta_edges[1:])
