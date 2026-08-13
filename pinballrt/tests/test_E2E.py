@@ -17,11 +17,11 @@ test_data = [
     (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0, "cpu"),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0, "cpu"),
     (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "gen", 73.0, "cpu"),
-    (UniformCylindricalGrid, {"ncells":9, "dr":2.0*u.au}, "iso", 93.0, "cpu"),
+    (UniformCylindricalGrid, {"ncells":9, "dr":1.0*u.au}, "iso", 93.0, "cpu"),
     (UniformCartesianGrid, {"ncells":9, "dx":2.0*u.au}, "iso", 98.0, "cuda"),
     (UniformSphericalGrid, {"ncells":9, "dr":2.0*u.au}, "hg", 93.0, "cuda"),
     (LogUniformSphericalGrid, {"ncells":9, "rmin":0.1*u.au, "rmax":20.0*u.au}, "gen", 73.0, "cuda"),
-    (UniformCylindricalGrid, {"ncells":9, "dr":2.0*u.au}, "iso", 93.0, "cuda"),
+    (UniformCylindricalGrid, {"ncells":9, "dr":1.0*u.au}, "iso", 93.0, "cuda"),
 ]
 
 @pytest.mark.parametrize("grid_class,grid_kwargs,dust,percentile,device", test_data)
@@ -66,6 +66,10 @@ def test_E2E(grid_class, grid_kwargs, dust, percentile, device, return_vals=Fals
     if isinstance(model.grid, UniformCartesianGrid):
         vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
                                  0.5*(model.grid.grid.w2.numpy()[1:] + model.grid.grid.w2.numpy()[0:-1]), 
+                                 0.5*(model.grid.grid.w3.numpy()[1:] + model.grid.grid.w3.numpy()[0:-1]), indexing='ij')
+    elif isinstance(model.grid, UniformCylindricalGrid):
+        vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
+                                 np.zeros(model.grid.grid.n2),
                                  0.5*(model.grid.grid.w3.numpy()[1:] + model.grid.grid.w3.numpy()[0:-1]), indexing='ij')
     else:
         vx, vy, vz = np.meshgrid(0.5*(model.grid.grid.w1.numpy()[1:] + model.grid.grid.w1.numpy()[0:-1]), 
@@ -115,7 +119,7 @@ def test_E2E(grid_class, grid_kwargs, dust, percentile, device, return_vals=Fals
         Q = calculate_Qvalue(mom0.intensity.data.value, base_mom0.intensity, percentile=99.0, clip=0.1)
         assert Q < 1.025, f"Mom0 difference exceeds tolerance: {Q}"
     else:
-        return model.grid.grid.temperature.numpy(), model.grid.scattering.numpy(), image, mom0
+        return model.grid.grid.temperature.numpy(), model.grid.scattering.cpu().numpy(), image, mom0
 
 def update_test(test, grid_class):
     found = False
