@@ -11,3 +11,6 @@ grids
 
 .. autoclass:: LogUniformSphericalGrid
    :show-inheritance:
+
+.. autoclass:: UniformCylindricalGrid
+   :show-inheritance:
