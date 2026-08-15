@@ -2300,19 +2300,20 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
 class UniformCylindricalGrid(Grid):
     def __init__(self, ncells=9, dr=1.0*u.au, mirror=True, device="cpu"):
         """
-        A grid in spherical coordinates with uniform cell sizes in r, theta, and phi.
+        A grid in cylindrical coordinates with uniform cell sizes in r, phi, and z.
 
         Parameters
         ----------
         ncells : int or tuple
             The number of cells in each dimension. If an integer is provided, the same
-            cells will be used in all dimensions. If a tuple is provided, it should contain
-            three integers specifying the number of cells in the x, y, and z dimensions.
+            three integers specifying the number of cells in the r, phi, and z dimensions. If
+            a tuple is provided, it should contain three integers specifying the number of cells 
+            in the r, phi, and z dimensions.
         dr : astropy Quantity
-            The size each cell in the radial and vertical dimensions.
+            The size of each cell in the radial (r) and vertical (z) dimensions.
         mirror : bool
-            If True, the grid will only cover theta from 0 to pi/2, with mirror symmetry
-            applied at the midplane. If False, the grid will cover theta from 0 to pi.
+            If True, the grid will only cover z from 0 to n3*dr, with mirror symmetry
+            applied at the midplane. If False, the grid will cover z from -n3*dr/2 to n3*dr/2.
         device : str
             The device to use for computations. Can be "cpu" or "cuda".
         """
