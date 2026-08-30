@@ -25,7 +25,7 @@ def initializer(arg):
     tqdm.set_lock(arg)
 
 class Model:
-    def __init__(self, grid: Grid, grid_kwargs={}, ncores=1, mpi=False):
+    def __init__(self, grid: Grid, ncores=1, mpi=False):
         """
         Initialize the Model with a grid and optional parameters.
 
@@ -40,9 +40,9 @@ class Model:
         mpi : bool, optional
             Whether to use mpi for parallel processing.
         """
-        self.grid_list = {"cpu":grid(**grid_kwargs, device='cpu')}
+        self.grid_list = {"cpu":grid.copy_to(device="cpu")}
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = grid(**grid_kwargs, device="cuda")
+            self.grid_list["cuda"] = grid.copy_to(device="cuda")
             self.grid = self.grid_list["cuda"]
         else:
             self.grid = self.grid_list["cpu"]

@@ -19,7 +19,7 @@ First lets set up our model using a cartesian grid:
 .. code-block:: python
 
    # Set up the grid.
-   model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
+   model = Model(grid=UniformCartesianGrid(ncells=9, dx=2.0*u.au))
 
 In this case, we are setting up a 9 x 9 x 9 cartesian grid with a cell size of 2 au. For additional grid geometries 
 that are available, see :doc:`grids`. Next, we need to load the dust properties. We'll do this using precomputed 
@@ -87,12 +87,8 @@ using either the ``multiprocessing`` backend or MPI.:
 
 .. code-block:: python
 
-   model = Model(grid=UniformCartesianGrid, 
-                 grid_kwargs={"ncells":9, "dx":2.0*u.au}, 
-                 ncores=4)            # multiprocessing
-   model = Model(grid=UniformCartesianGrid, 
-                 grid_kwargs={"ncells":9, "dx":2.0*u.au}, 
-                 ncores=4, mpi=True)  # MPI
+   model = Model(grid=UniformCartesianGrid(ncells=9, dx=2.0*u.au), ncores=4)            # multiprocessing
+   model = Model(grid=UniformCartesianGrid(ncells=9, dx=2.0*u.au), ncores=4, mpi=True)  # MPI
 
 Note that to run with MPI, you need to launch the script using the ``mpirun`` or ``mpiexec`` command, or start an 
 interactive ipython session using ``ipyparallel``, and have ``mpi4py`` installed. Both modules must be installed 

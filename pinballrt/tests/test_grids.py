@@ -29,7 +29,7 @@ def test_grid_pickle(grid_class, grid_kwargs, percentile, return_vals=False):
     d = os.path.join(os.path.dirname(__file__), "data/diana.iso.dst")
 
     # Set up the grid.
-    model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
+    model = Model(grid=grid_class(**grid_kwargs))
 
     density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
     amax = np.ones(model.grid.shape) * u.cm
@@ -56,7 +56,7 @@ def test_grid_physical_properties_shapes():
     d = os.path.join(os.path.dirname(__file__), "data/diana.iso.dst")
 
     # Set up the grid.
-    model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
+    model = Model(grid=UniformCartesianGrid(ncells=9, dx=2.0*u.au))
 
     density = np.ones(model.grid.shape)*1.0e-16 * u.g / u.cm**3
     
@@ -82,7 +82,7 @@ def test_grid_default_physical_properties():
     d = load(os.path.join(os.path.dirname(__file__), "data/diana.iso.dst"))
 
     # Set up the grid.
-    model = Model(grid=UniformCartesianGrid, grid_kwargs={"ncells":9, "dx":2.0*u.au})
+    model = Model(grid=UniformCartesianGrid(ncells=9, dx=2.0*u.au))
 
     with pytest.raises(ValueError):
         model.grid_list["cpu"].check_physical_properties(include_dust=True, include_gas=True)

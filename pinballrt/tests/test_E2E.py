@@ -36,7 +36,7 @@ def test_E2E(grid_class, grid_kwargs, dust, percentile, device, return_vals=Fals
     d = os.path.join(os.path.dirname(__file__), f"data/diana.{dust}.dst")
 
     # Set up the grid.
-    model = Model(grid=grid_class, grid_kwargs=grid_kwargs)
+    model = Model(grid=grid_class(**grid_kwargs))
 
     density = np.ones(model.grid.shape)*1.0e-14 * u.g / u.cm**3
     
