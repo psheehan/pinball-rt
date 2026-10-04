@@ -25,6 +25,9 @@ from tqdm import tqdm
 
 from numpy.random import SeedSequence, seed
 
+from functools import partial
+from zuko.transforms import MonotonicAffineTransform
+
 from .utils import GridStruct, random_direction
 from .photons import PhotonList
 
@@ -519,7 +522,7 @@ class Dust(pl.LightningDataModule):
                               torch.log10(wp.to_torch(photon_list.temperature)[iphotons]),
                               torch.log10(wp.to_torch(photon_list.amax)[iphotons]),
                               torch.log10(wp.to_torch(photon_list.p)[iphotons]),
-                              torch.log10(wp.to_torch(photon_list.density)[iphotons] * wp.to_torch(photon_list.kabs)[iphotons] * s[iphotons]),
+                              torch.log10(wp.to_torch(photon_list.density)[iphotons] * wp.to_torch(photon_list.pmo)[iphotons] * s[iphotons]),
                               )), 0, 1)
 
         test_x = self.ml_step_model.condition(self.ml_step_y_scaler.transform(test_y)).sample().detach()
@@ -529,7 +532,7 @@ class Dust(pl.LightningDataModule):
 
     def initialize_model(self, model="random_nu", model_type="MLP", input_size=2, output_size=1, hidden_units=(48, 48, 48)):
         if model_type == 'flow':
-            setattr(self, f"{model}_model", RealNVP(input_size, output_size, transforms=len(hidden_units), hidden_features=hidden_units[0]))
+            setattr(self, f"{model}_model", RealNVP(input_size, output_size, transforms=len(hidden_units), hidden_features=hidden_units[0], univariate=partial(MonotonicAffineTransform, slope=1e-2)))
         elif model == "ml_step_filter":
             setattr(self, f"{model}_model", MultiLayerPerceptron(input_size, output_size, hidden_units=hidden_units, final_activation=nn.Sigmoid))
         else:
@@ -641,7 +644,7 @@ class Dust(pl.LightningDataModule):
         self.num_workers = num_workers
 
         self.trainer.fit_loop.max_epochs += epochs
-        self.trainer.fit(model=self.dustLM, datamodule=self, ckpt_path=ckpt_path)
+        self.trainer.fit(model=self.dustLM, datamodule=self, ckpt_path=ckpt_path, weights_only=False)
 
     def test_model(self, plot=False):
         '''
@@ -1200,9 +1203,10 @@ class Dust(pl.LightningDataModule):
         for i, key1 in enumerate(columns):
             for j, key2 in enumerate(columns):
                 if key1 == key2:
-                    ax[i,j].hist(df_true[key1], bins=50, histtype='step', density=True)
+                    counts, bins = np.histogram(np.concatenate([df_true[key1].values, df_pred[key1].values]) if predict else df_true[key1].values, bins=50)
+                    ax[i,j].hist(df_true[key1], bins=bins, histtype='step', density=True)
                     if predict:
-                        ax[i,j].hist(df_pred[key1], bins=50, histtype='step', density=True)
+                        ax[i,j].hist(df_pred[key1], bins=bins, histtype='step', density=True)
                 elif i > j:
                     ax[i,j].scatter(df_true[key2], df_true[key1], marker='.', s=1.0, alpha=1.0)
 
@@ -1907,9 +1911,6 @@ def mlstep_samples_task(args):
         initial_direction[:,0] = 1.
         photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
 
-        photon_list.frequency = wp.array(10.**np.random.uniform(np.log10(nu_range[0].value), np.log10(nu_range[1].value), nphotons), dtype=float)
-        original_frequency = photon_list.frequency.numpy().copy()
-
         photon_list.temperature = wp.array(10.**np.random.uniform(np.log10(temperature_range[0].to(u.K).value), np.log10(temperature_range[1].to(u.K).value), nphotons), dtype=float)
 
         samples = suggest_opacity_sampling(nphotons, p_range=p_range, amax_range=amax_range, n_dust_subspecies=len(dust.abundances)+1, mode="random")
@@ -1919,8 +1920,11 @@ def mlstep_samples_task(args):
         if len(dust.abundances) > 0:
             photon_list.dust_abundances = wp.array2d(samples[:,2:], dtype=float)
 
+        photon_list.frequency = dust.random_nu(photon_list)
+        original_frequency = photon_list.frequency.numpy().copy()
+
         tau = 10.**np.random.uniform(np.log10(tau_range[0]), np.log10(tau_range[1]), nphotons)
-        photon_list.density = wp.array((tau / (dust.kmean * dust.ml_kabs(photon_list=photon_list).cpu() * \
+        photon_list.density = wp.array((tau / (dust.ml_planck_mean_opacity(wp.to_torch(photon_list.p), wp.to_torch(photon_list.amax), wp.to_torch(photon_list.temperature)).cpu() * dust.kmean.unit * \
                                                                             1.*u.au) * dust.kmean).to(1 / u.au), dtype=float)
 
     grid.propagate_photons(photon_list, 

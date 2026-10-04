@@ -471,10 +471,18 @@ class Grid:
             self.grid.temperature = wp.array3d(temperature, dtype=float)
 
     @wp.kernel
-    def reset_do_ml_step(photon_list: PhotonList): # pragma: no cover
-        ip = wp.tid()
+    def reset_do_ml_step(photon_list: PhotonList,
+                         iphotons: wp.array(dtype=int)): # pragma: no cover
+        ip = iphotons[wp.tid()]
 
         photon_list.do_ml_step[ip] = False
+
+    @wp.kernel
+    def absorb_can_do_ml_step(photon_list: PhotonList,
+                              absorb_indices: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = absorb_indices[i]
+        photon_list.do_ml_step[ip] = True
 
     @wp.kernel
     def check_do_ml_step(photon_list: PhotonList,
@@ -491,7 +499,7 @@ class Grid:
         """
         ip = iphotons[wp.tid()]
 
-        photon_list.do_ml_step[ip] = photon_list.in_grid[ip] and \
+        photon_list.do_ml_step[ip] = photon_list.do_ml_step[ip] and photon_list.in_grid[ip] and \
                                         photon_list.frequency[ip] >= 10.**log10_nu_min and \
                                         photon_list.frequency[ip] <= 10.**log10_nu_max and \
                                         photon_list.temperature[ip] >= 10.**log10_T_min and \
@@ -500,15 +508,31 @@ class Grid:
                                         s3[ip] > s2[ip]
 
     @wp.kernel
+    def update_pmo(photon_list: PhotonList,
+                   grid: GridStruct,
+                   iphotons: wp.array(dtype=int)): # pragma: no cover
+        i = wp.tid()
+        ip = iphotons[i]
+
+        ix, iy, iz = photon_list.indices[ip][0], photon_list.indices[ip][1], photon_list.indices[ip][2]
+
+        photon_list.pmo[ip] = grid.planck_mean_opacity[ix, iy, iz]
+
+    @wp.kernel
     def ml_deposited_energy(photon_list: PhotonList,
                              deposited_energy: wp.array(dtype=float),
-                             iphotons: wp.array(dtype=int)): # pragma: no cover
+                             iphotons: wp.array(dtype=int),
+                             learning: bool,
+                             distances: wp.array(dtype=float)): # pragma: no cover
         """
         Calculate the deposited energy for the modified random walk step.
         """
         i = wp.tid()
         ip = iphotons[i]
-        photon_list.deposited_energy[ip] = deposited_energy[i] * photon_list.energy[ip]
+        if learning:
+            photon_list.deposited_energy[ip] += wp.float64(deposited_energy[i] * photon_list.energy[ip] - 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip])))
+        else:
+            photon_list.deposited_energy[ip] = wp.float64(deposited_energy[i] * photon_list.energy[ip])
 
     @wp.kernel
     def ml_rotate_direction(photon_list: PhotonList,
@@ -538,7 +562,7 @@ class Grid:
 
         photon_list.tau[ip] = tau[i] + s[ip] * photon_list.alpha[ip]
 
-    def ml_step(self, photon_list, s, iphotons):
+    def ml_step(self, photon_list, s, iphotons, learning):
         """
         Perform the "modified" random walk step for the photons.
         """
@@ -548,7 +572,7 @@ class Grid:
 
         wp.launch(kernel=self.ml_deposited_energy,
                   dim=(nphotons,),
-                  inputs=[photon_list, wp.from_torch(deposited_energy), iphotons])
+                  inputs=[photon_list, wp.from_torch(deposited_energy), iphotons, learning, s])
 
         wp.launch(kernel=self.update_frequency,
                   dim=(nphotons,),
@@ -578,6 +602,7 @@ class Grid:
             photon_list.alpha = wp.zeros(nphotons, dtype=float)
             if use_ml_step:
                 photon_list.do_ml_step = wp.zeros(nphotons, dtype=bool)
+                photon_list.pmo = wp.zeros(nphotons, dtype=float)
 
             photon_list.deposited_energy = wp.zeros(nphotons, dtype=float)
 
@@ -620,6 +645,23 @@ class Grid:
             t2 = time.time()
             dust_interpolation_time += t2 - t1
 
+            if use_ml_step:
+                self.grid.planck_mean_opacity = wp.array(self.dust.ml_planck_mean_opacity(torch.tensor(self.grid.p.numpy().flatten()), torch.tensor(self.grid.amax.numpy().flatten()), 
+                                                                        torch.tensor(self.grid.temperature.numpy().flatten(), dtype=torch.float32), 
+                                                                        abundances=tuple([torch.tensor(self.grid.dust_abundances.numpy()[i].flatten(), dtype=torch.float32) for 
+                                                                                            i in range(self.n_dust_abundances)])).numpy().reshape(self.shape) / self.dust.kmean.value, dtype=float)
+                print((self.grid.dust_density.numpy() * self.grid.planck_mean_opacity.numpy() * (self.grid.w1.numpy()[1] - self.grid.w1.numpy()[0])).max())
+
+                if not learning:
+                    wp.launch(kernel=self.update_pmo,
+                              dim=(nphotons,),
+                              inputs=[photon_list, self.grid, iphotons])
+                else:
+                    photon_list.pmo = wp.array(self.dust.ml_planck_mean_opacity(torch.tensor(photon_list.p.numpy()), torch.tensor(photon_list.amax.numpy()), 
+                                                                                torch.tensor(photon_list.temperature.numpy(), dtype=torch.float32), 
+                                                                                abundances=tuple([torch.tensor(photon_list.dust_abundances.numpy()[:,i], dtype=torch.float32) for 
+                                                                                                           i in range(self.n_dust_abundances)])).numpy() / self.dust.kmean.value, dtype=float)
+
             wp.launch(kernel=self.random_absorb, 
                       dim=(nphotons,), 
                       inputs=[photon_list, iphotons, np.random.randint(0, 100000)])
@@ -657,14 +699,12 @@ class Grid:
 
                 if use_ml_step:
                     t1 = time.time()
-                    wp.launch(kernel=self.reset_do_ml_step,
-                              dim=(nphotons,),
-                              inputs=[photon_list])
                     wp.launch(kernel=self.check_do_ml_step,
                               dim=(nphotons,),
                               inputs=[photon_list, s1, s2, s3, iphotons, self.dust.log10_nu0_min, self.dust.log10_nu0_max, self.dust.log10_T_min, self.dust.log10_T_max])
                     s[wp.to_torch(photon_list.do_ml_step)] = wp.to_torch(s3)[wp.to_torch(photon_list.do_ml_step)]
-                    iml_photons = iphotons_original[wp.to_torch(photon_list.do_ml_step)]
+                    iml_photons = torch.logical_and(wp.to_torch(photon_list.do_ml_step),
+                                                    wp.to_torch(photon_list.in_grid)).nonzero().flatten().to(torch.int32)
                     t2 = time.time()
                     ml_step_time += t2 - t1
 
@@ -676,12 +716,12 @@ class Grid:
 
                 if use_ml_step and iml_photons.size(0) > 0:
                     t1 = time.time()
-                    yaw, pitch, roll = self.ml_step(photon_list, s, iml_photons)
+                    yaw, pitch, roll = self.ml_step(photon_list, s, iml_photons, learning)
                     t2 = time.time()
                     ml_step_time += t2 - t1
 
                 # Now back to your regularly scheduled programming
-
+                
                 t1 = time.time()
                 wp.launch(kernel=self.move,
                           dim=(nphotons,),
@@ -756,6 +796,15 @@ class Grid:
                 removing_photons_time += t2 - t1
 
                 if nphotons > 0:
+                    if use_ml_step:
+                        wp.launch(kernel=self.reset_do_ml_step,
+                                    dim=(iphotons_original.size(0),),
+                                    inputs=[photon_list, iphotons_original])
+    
+                        wp.launch(kernel=self.absorb_can_do_ml_step,
+                                    dim=(absorb_indices.size(0),),
+                                    inputs=[photon_list, absorb_indices])
+                                        
                     if not learning:
                         wp.launch(kernel=self.photon_cell_properties,
                                   dim=(nphotons,),
@@ -767,6 +816,14 @@ class Grid:
                     self.dust.update_photon_opacities(photon_list, iphotons_opacities)
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
+
+                    if use_ml_step and not learning:
+                        wp.launch(kernel=self.update_pmo,
+                                dim=(nphotons,),
+                                inputs=[photon_list, self.grid, iphotons])
+
+                        seed = np.random.randint(0, 100000)
+                        wp.launch(kernel=self.random_absorb, dim=(iml_photons.size(0),), inputs=[photon_list, iml_photons, seed])
 
             if progress:
                 progress_bar.close()
@@ -1394,10 +1451,10 @@ class UniformCartesianGrid(Grid):
         if sz2 < s:
             s = sz2
 
-        if s * photon_list.kabs[ip] * photon_list.density[ip] < 10.**log10_tau_min:
+        if s * photon_list.pmo[ip] * photon_list.density[ip] < 10.**log10_tau_min:
             s = 0.
 
-        max_tau_distance = 10.**log10_tau_max / photon_list.alpha[ip]
+        max_tau_distance = 10.**log10_tau_max / (photon_list.pmo[ip] * photon_list.density[ip])
 
         distances[ip] = wp.min(s, max_tau_distance)
 
