@@ -52,6 +52,7 @@ jobs:
   cuda-tests:
     runs-on: machine/id=${{ github.run_id }}/gpu=t4/tenancy=spot
     strategy:
+      max-parallel: 1
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
