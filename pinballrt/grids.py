@@ -1894,11 +1894,11 @@ class UniformSphericalGrid(Grid):
         if grid.mirror_symmetry:
             if photon_list.cos_theta[ip] < 0:
                 photon_list.theta[ip] = np.pi - photon_list.theta[ip]
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
                 photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
 
             if equal_zero(photon_list.cos_theta[ip], EPSILON) and photon_list.direction[ip][2] < 0:
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
 
         # --- Radial index ---
         if photon_list.radius[ip] >= grid.w1[grid.n1-1]:
@@ -2179,11 +2179,11 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
         if grid.mirror_symmetry:
             if photon_list.cos_theta[ip] < 0:
                 photon_list.theta[ip] = np.pi - photon_list.theta[ip]
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
                 photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
 
             if equal_zero(photon_list.cos_theta[ip], EPSILON) and photon_list.direction[ip][2] < 0:
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
 
         # --- Radial index ---
         if photon_list.radius[ip] >= grid.w1[grid.n1-1]:
