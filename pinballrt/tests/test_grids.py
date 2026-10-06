@@ -2,6 +2,8 @@ from pinballrt.sources import BlackbodyStar, DiffuseSource, EnergySource, Extern
 from pinballrt.grids import UniformCartesianGrid, UniformSphericalGrid, LogUniformSphericalGrid
 from pinballrt.model import Model
 from pinballrt.dust import load
+import warp as wp
+import torch
 
 import astropy.units as u
 from astropy.modeling import models
@@ -113,3 +115,63 @@ def test_grid_default_physical_properties():
 
     assert np.all(model.grid_list["cpu"].grid.velocity.numpy() == 0.0)
     assert np.all(model.grid_list["cpu"].grid.microturbulence.numpy() == 0.0)
+
+def test_deposit_energy():
+    star = BlackbodyStar()
+    
+    # Set up the grid.
+
+    for i in range(2):
+        grid = UniformSphericalGrid(ncells=1, dr=1.0*u.au, mirror=False, device="cpu")
+
+        d = load(os.path.join(os.path.dirname(__file__), "data/diana_wice.dst"))
+
+        density = np.ones(grid.shape) * 1e-17 * u.g / u.cm**3
+
+        grid.set_physical_properties(density=density, amax=1.0*u.micron, p=3.5, dust=d)
+        grid.check_physical_properties(include_dust=True, include_gas=False)
+        grid.add_sources(star)
+
+        grid.grid.temperature.numpy()[0,0,0] = 150.
+
+        # Emit the photons
+
+        nphotons = 10000
+
+        photon_list = grid.emit(nphotons, wavelength="random", scattering=False)
+
+        with wp.ScopedDevice(grid.device):
+            initial_direction = np.zeros((nphotons, 3), dtype=np.float32)
+            initial_direction[:,0] = 1.
+            photon_list.direction = wp.array(initial_direction, dtype=wp.vec3)
+
+            photon_list.temperature = wp.array(np.repeat(150., nphotons), dtype=float)
+
+            photon_list.amax = wp.array(np.repeat((1.0*u.micron).to(u.cm), nphotons), dtype=float)
+            photon_list.p = wp.array(np.repeat(3.5, nphotons), dtype=float)
+            if len(d.abundances) > 0:
+                photon_list.dust_abundances = wp.array2d(np.repeat(d.abundances[np.newaxis, :], nphotons, axis=0), dtype=float)
+
+            tau = np.repeat(150., nphotons)
+            photon_list.density = wp.array((tau / (d.ml_planck_mean_opacity(wp.to_torch(photon_list.p), 
+                                                                            wp.to_torch(photon_list.amax), 
+                                                                            wp.to_torch(photon_list.temperature)) * d.kmean.unit * \
+                                                                                1.*u.au) * d.kmean).to(1 / u.au), dtype=float)
+
+            grid.grid.dust_density.numpy()[0,0,0] = photon_list.density.numpy()[0]
+
+            photon_list.frequency = star.random_nu(nphotons)
+
+            grid.grid.energy.numpy()[0,0,0] = 0.
+
+        if i == 0:
+            grid.propagate_photons(photon_list, learning=True, use_ml_step=False)
+            photon_accumulated_energy = np.sum(photon_list.deposited_energy.numpy())
+        else:
+            grid.propagate_photons(photon_list, learning=False, use_ml_step=False)
+            grid_accumulated_energy = grid.grid.energy.numpy()[0,0,0]
+
+    print("Photon accumulated energy:", photon_accumulated_energy)
+    print("Grid accumulated energy:", grid_accumulated_energy)
+
+    assert np.isclose(photon_accumulated_energy, grid_accumulated_energy, rtol=0.02)

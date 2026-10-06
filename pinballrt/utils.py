@@ -110,7 +110,7 @@ class GridStruct:
     dust_density: wp.array3d(dtype=float)
     gas_density: wp.array3d(dtype=float)
     temperature: wp.array3d(dtype=float)
-    energy: wp.array3d(dtype=float)
+    energy: wp.array3d(dtype=wp.float64)
     amax: wp.array3d(dtype=float)
     p: wp.array3d(dtype=float)
     dust_abundances: wp.array4d(dtype=float)

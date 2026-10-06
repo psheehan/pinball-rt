@@ -546,7 +546,7 @@ class EnergySource(GridSource):
     def emit(self, nphotons, distance_unit, wavelength="random", simulation="thermal", device="cpu", timing={}):
         photon_list = super().emit(nphotons, distance_unit, wavelength, simulation, device, timing)
 
-        self.grid.grid.energy = wp.array3d(self.luminosity.to(u.L_sun).value + self.grid.grid.energy.numpy(), dtype=float)
+        self.grid.grid.energy = wp.array3d(self.luminosity.to(u.L_sun).value + self.grid.grid.energy.numpy(), dtype=wp.float64)
 
         return photon_list
     
