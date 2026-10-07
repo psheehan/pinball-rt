@@ -50,7 +50,7 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
 
   cuda-tests:
-    runs-on: machine/id=${{ github.run_id }}/gpu=t4/tenancy=spot
+    runs-on: machine/id=${{ github.run_id }}/gpu=l4/tenancy=spot
     strategy:
       max-parallel: 1
       fail-fast: false
