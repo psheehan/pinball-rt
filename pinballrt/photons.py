@@ -10,7 +10,7 @@ class PhotonList:
     in_grid: wp.array(dtype=bool)
     do_ml_step: wp.array(dtype=bool)
     
-    deposited_energy: wp.array(dtype=float)
+    deposited_energy: wp.array(dtype=wp.float64)
 
     density: wp.array(dtype=float)
     temperature: wp.array(dtype=float)

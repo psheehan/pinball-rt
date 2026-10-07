@@ -73,7 +73,7 @@ class Grid:
                     self.grid.dust_density = wp.array3d((density * dusttogasratio * self.dust.kmean).to(1. / self.distance_unit).value, dtype=float)
                     self.grid.gas_density = wp.array3d(density.to(u.g / u.cm**3), dtype=float)
 
-                    self.grid.energy = wp.zeros(density.shape, dtype=float)
+                    self.grid.energy = wp.zeros(density.shape, dtype=wp.float64)
                     self.grid.temperature = wp.array3d(np.ones(density.shape) * 0.1, dtype=float)
                     self.dust_mass = (density * dusttogasratio * self.volume.cpu().numpy() * self.distance_unit**3).decompose()
                 else:
@@ -127,12 +127,13 @@ class Grid:
                 if isinstance(microturbulence, (int, float)):
                     self.grid.microturbulence = wp.array3d(np.ones(self.shape)*microturbulence, dtype=float)
                 elif isinstance(microturbulence, np.ndarray):
-                    self.grid.microturbulence = wp.array3d(microturbulence, dtype=float)
-                elif isinstance(microturbulence, u.Quantity):
+                    if not isinstance(microturbulence, u.Quantity):
+                        microturbulence = microturbulence * u.km / u.s
+                    
                     if len(microturbulence.shape) == 0:
                         self.grid.microturbulence = wp.array3d(np.ones(self.shape)*microturbulence.to(u.km / u.s).value, dtype=float)
                     else:
-                        self.grid.microturbulence = wp.array3d(microturbulence.to(u.km / u.s), dtype=float)
+                        self.grid.microturbulence = wp.array3d(microturbulence.to(u.km / u.s).value, dtype=float)
 
     def check_physical_properties(self, include_dust=True, include_gas=False):
         with wp.ScopedDevice(self.device):
@@ -295,7 +296,7 @@ class Grid:
 
         ip = iphotons[wp.tid()]
 
-        deposited_energy = 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip]))
+        deposited_energy = wp.float64(10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip])))
         if track:
             photon_list.deposited_energy[ip] += deposited_energy
         else:
@@ -315,7 +316,7 @@ class Grid:
     @wp.kernel
     def deposit_scattering(photon_list: PhotonList,
                        distances: wp.array(dtype=float),
-                       scattering: wp.array3d(dtype=float),
+                       scattering: wp.array3d(dtype=wp.float64),
                        iphotons: wp.array(dtype=int)): # pragma: no cover
 
         ip = iphotons[wp.tid()]
@@ -330,7 +331,7 @@ class Grid:
         else:
             average_energy = (1.0 - np.exp(-tau_abs)) / tau_abs * photon_list.energy[ip]
 
-        scattering[ix,iy,iz] += average_energy * distances[ip]
+        scattering[ix,iy,iz] += wp.float64(average_energy * distances[ip])
 
         photon_list.energy[ip] = photon_list.energy[ip] * wp.exp(-tau_abs)
         photon_list.tau[ip] -= tau_scat
@@ -532,7 +533,7 @@ class Grid:
         if learning:
             photon_list.deposited_energy[ip] += wp.float64(deposited_energy[i] * photon_list.energy[ip] - 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip])))
         else:
-            photon_list.deposited_energy[ip] = wp.float64(deposited_energy[i] * photon_list.energy[ip])
+            photon_list.deposited_energy[ip] = wp.float64(deposited_energy[i] * photon_list.energy[ip] - 10.**(wp.log10(photon_list.energy[ip]) + wp.log10(distances[ip]) + wp.log10(photon_list.kabs[ip]) + wp.log10(photon_list.density[ip])))
 
     @wp.kernel
     def ml_rotate_direction(photon_list: PhotonList,
@@ -604,7 +605,7 @@ class Grid:
                 photon_list.do_ml_step = wp.zeros(nphotons, dtype=bool)
                 photon_list.pmo = wp.zeros(nphotons, dtype=float)
 
-            photon_list.deposited_energy = wp.zeros(nphotons, dtype=float)
+            photon_list.deposited_energy = wp.zeros(nphotons, dtype=wp.float64)
 
             next_wall_time = 0.
             dust_interpolation_time = 0.
@@ -1093,7 +1094,7 @@ class Grid:
     def add_intensity(ray_list: PhotonList,
                       s: wp.array(dtype=float),
                       grid: GridStruct,
-                      scattering: wp.array4d(dtype=float),
+                      scattering: wp.array4d(dtype=wp.float64),
                       irays: wp.array(dtype=int)): # pragma: no cover
 
         iray, inu = wp.tid()
@@ -1119,7 +1120,7 @@ class Grid:
             if alpha_ext > 0.:
                 intensity_abs = intensity_abs * (1.0 - wp.exp(-tau_cell)) / alpha_ext
 
-                intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * scattering[inu,ix,iy,iz]
+                intensity_sca = (1.0 - wp.exp(-tau_cell)) * albedo_total * wp.float32(scattering[inu,ix,iy,iz])
 
         intensity_line = float(0.)
         if grid.include_gas:
@@ -1959,11 +1960,11 @@ class UniformSphericalGrid(Grid):
         if grid.mirror_symmetry:
             if photon_list.cos_theta[ip] < 0:
                 photon_list.theta[ip] = np.pi - photon_list.theta[ip]
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
                 photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
 
             if equal_zero(photon_list.cos_theta[ip], EPSILON) and photon_list.direction[ip][2] < 0:
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
 
         # --- Radial index ---
         if photon_list.radius[ip] >= grid.w1[grid.n1-1]:
@@ -2244,11 +2245,11 @@ class LogUniformSphericalGrid(UniformSphericalGrid):
         if grid.mirror_symmetry:
             if photon_list.cos_theta[ip] < 0:
                 photon_list.theta[ip] = np.pi - photon_list.theta[ip]
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
                 photon_list.cos_theta[ip] = -photon_list.cos_theta[ip]
 
             if equal_zero(photon_list.cos_theta[ip], EPSILON) and photon_list.direction[ip][2] < 0:
-                photon_list.direction[ip][2] *= -1.
+                photon_list.direction[ip][2] = photon_list.direction[ip][2] * -1.
 
         # --- Radial index ---
         if photon_list.radius[ip] >= grid.w1[grid.n1-1]:

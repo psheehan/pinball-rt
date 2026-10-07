@@ -168,7 +168,7 @@ class Model:
 
             total_energy = np.mean(np.array(total_energy), axis=0)
             with wp.ScopedDevice(self.grid.device):
-                self.grid_list[device].grid.energy = wp.array3d(total_energy, dtype=float)
+                self.grid_list[device].grid.energy = wp.array3d(total_energy, dtype=wp.float64)
 
             t1 = time.time()
             self.grid_list[device].update_grid(timing=iter_timing)
@@ -178,7 +178,7 @@ class Model:
             for dev in self.grid_list:
                 with wp.ScopedDevice(self.grid_list[dev].device):
                         self.grid_list[dev].grid.temperature = wp.array3d(self.grid_list[device].grid.temperature.numpy(), dtype=float)
-                        self.grid_list[dev].grid.energy = wp.zeros(self.grid_list[device].shape, dtype=float)
+                        self.grid_list[dev].grid.energy = wp.zeros(self.grid_list[device].shape, dtype=wp.float64)
 
             timing[str(count)] = iter_timing
 
@@ -228,7 +228,7 @@ class Model:
         for dev in self.grid_list:
             with wp.ScopedDevice(self.grid_list[dev].device):
                 self.grid_list[dev].scattering = torch.zeros((len(wavelengths),)+self.grid_list[dev].shape, 
-                                                             dtype=torch.float32, 
+                                                             dtype=torch.float64, 
                                                              device=wp.device_to_torch(wp.get_device()))
                 
         if set_grid_opacities:
