@@ -423,9 +423,6 @@ class Grid:
     
         seed = np.random.randint(0, 100000)
         wp.launch(kernel=self.random_tau, dim=(nphotons,), inputs=[photon_list, iphotons, seed])
-        if not scattering:
-            seed = np.random.randint(0, 100000)
-            wp.launch(kernel=self.random_absorb, dim=(nphotons,), inputs=[photon_list, iphotons, seed])
 
         t1 = time.time()
         wp.launch(kernel=self.photon_loc,
@@ -759,6 +756,9 @@ class Grid:
                     self.dust.update_photon_opacities(photon_list, iphotons_opacities)
                     t2 = time.time()
                     dust_interpolation_time += t2 - t1
+
+                    seed = np.random.randint(0, 100000)
+                    wp.launch(kernel=self.random_absorb, dim=(interaction_indices.size(0),), inputs=[photon_list, interaction_indices, seed])
 
             if progress:
                 progress_bar.close()
