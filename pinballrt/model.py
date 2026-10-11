@@ -40,9 +40,17 @@ class Model:
         mpi : bool, optional
             Whether to use mpi for parallel processing.
         """
-        self.grid_list = {"cpu":grid.copy_to(device="cpu")}
+        if grid.device == "cpu":
+            self.grid_list = {"cpu":grid}
+        else:
+            self.grid_list = {"cpu":grid.copy_to(device="cpu")}
+
         if wp.get_cuda_device_count() > 0:
-            self.grid_list["cuda"] = grid.copy_to(device="cuda")
+            if grid.device == "cuda":
+                self.grid_list["cuda"] = grid
+            else:
+                self.grid_list["cuda"] = grid.copy_to(device="cuda")
+
             self.grid = self.grid_list["cuda"]
         else:
             self.grid = self.grid_list["cpu"]
