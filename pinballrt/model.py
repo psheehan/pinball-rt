@@ -115,8 +115,8 @@ class Model:
         for device in self.grid_list:
             self.grid_list[device].add_sources(sources)
 
-    def thermal_mc(self, nphotons, use_ml_step=False, Qthresh=2.0, Delthresh=1.1, p=99., device="cpu", 
-                   return_timing=False, nbatch=1, progress=True):
+    def thermal_mc(self, nphotons, use_ml_step=False, use_mrw=False, mrw_gamma=4., Qthresh=2.0, Delthresh=1.1, 
+                   p=99., device="cpu", return_timing=False, nbatch=1, progress=True):
         """
         Perform a thermal Monte Carlo simulation.
 
@@ -163,6 +163,8 @@ class Model:
                                         [nphotons]*njobs,
                                         [njobs]*njobs,
                                         [use_ml_step]*njobs,
+                                        [use_mrw]*njobs,
+                                        [mrw_gamma]*njobs,
                                         [progress]*njobs))
             results = [r for r in result]
             total_energy = [r[0] for r in results]
@@ -470,11 +472,11 @@ class Model:
         return spectrum
     
 def thermal_mc_task(args):
-    grid, position, s, nphotons, njobs, use_ml_step, progress = args
+    grid, position, s, nphotons, njobs, use_ml_step, use_mrw, mrw_gamma, progress = args
     seed(s.generate_state(1)[0])
     iter_timing = {}
     photon_list = grid.emit(int(nphotons / njobs), timing=iter_timing)
-    grid.propagate_photons(photon_list, use_ml_step=use_ml_step, timing=iter_timing, position=position, progress=progress)
+    grid.propagate_photons(photon_list, use_ml_step=use_ml_step, use_mrw=use_mrw, mrw_gamma=mrw_gamma, timing=iter_timing, position=position, progress=progress)
 
     return grid.grid.energy.numpy(), iter_timing
 

@@ -118,6 +118,8 @@ class GridStruct:
     kabs: wp.array4d(dtype=float)
     ksca: wp.array4d(dtype=float)
     g: wp.array4d(dtype=float)
+    rosseland_mean_opacity: wp.array3d(dtype=float)
+    planck_mean_opacity: wp.array3d(dtype=float)
 
     velocity: wp.array4d(dtype=float)
     microturbulence: wp.array3d(dtype=float)
@@ -129,3 +131,4 @@ class GridStruct:
 
     include_dust: bool
     include_gas: bool
+

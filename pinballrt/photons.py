@@ -9,6 +9,7 @@ class PhotonList:
     energy: wp.array(dtype=float)
     in_grid: wp.array(dtype=bool)
     do_ml_step: wp.array(dtype=bool)
+    do_mrw: wp.array(dtype=bool)
     
     deposited_energy: wp.array(dtype=wp.float64)
 
@@ -21,6 +22,8 @@ class PhotonList:
     scattering_phase_function: wp.array(dtype=float)
     albedo: wp.array(dtype=float)
     kext: wp.array2d(dtype=float)
+    rmo: wp.array(dtype=float)
+    pmo: wp.array(dtype=float)
     ray_albedo: wp.array2d(dtype=float)
     absorb: wp.array(dtype=bool)
     amax: wp.array(dtype=float)
