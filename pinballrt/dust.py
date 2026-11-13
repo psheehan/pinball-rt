@@ -718,7 +718,7 @@ class Dust(pl.LightningDataModule):
             temperature = np.repeat(np.expand_dims(np.repeat(np.expand_dims(self.temperature*u.K, (0, -1)), self.nu.size, axis=0), 0), max(samples.shape[0], 1), axis=0)
             nu = np.repeat(np.repeat(np.expand_dims(self.nu, (0, -1, -2)), self.temperature.size, axis=2), max(samples.shape[0], 1), axis=0)
             
-            ksi = scipy.integrate.cumulative_trapezoid(np.repeat(np.expand_dims(self.kabs[count:count+n,:], (-1, -2)), self.temperature.size, axis=-2) * models.BlackBody(temperature)(nu), np.log10(self.nu.to(u.GHz).value), axis=1, initial=0)
+            ksi = scipy.integrate.cumulative_trapezoid(np.repeat(np.expand_dims(self.kabs[count:count+n,:], (-1, -2)), self.temperature.size, axis=-2) * models.BlackBody(temperature)(nu), self.nu.to(u.GHz).value, axis=1, initial=0)
             ksi /= ksi[:,-1:,:,:]
             
             samples = np.concat((samples, np.log10(temperature.to(u.K).value), ksi), axis=-1)
@@ -1079,12 +1079,12 @@ class Dust(pl.LightningDataModule):
 
         nu2 = self.random_nu_ml(p, amax, T, abundances=abundances)
 
-        counts, bins, _ = plt.hist(np.log10(nu2), 300)
+        counts, bins, _ = plt.hist(nu2, 300)
 
         bb = models.BlackBody(temperature=T[0] * u.K)
-        pdf = bb(10.**bins[1:]*u.GHz).value * self.ml_kabs(torch.tensor(p[0], dtype=torch.float32).repeat((bins[1:].size,)), 
+        pdf = bb(bins[1:]*u.GHz).value * self.ml_kabs(torch.tensor(p[0], dtype=torch.float32).repeat((bins[1:].size,)), 
                                                            torch.tensor(amax[0], dtype=torch.float32).repeat((bins[1:].size,)), 
-                                                           torch.tensor(10.**bins[1:], dtype=torch.float32), 
+                                                           torch.tensor(bins[1:], dtype=torch.float32), 
                                                            abundances=tuple([torch.tensor(a[0], dtype=torch.float32).repeat((bins[1:].size,)) for a in abundances])).numpy()
         pdf *= counts.max() / pdf.max()
 
